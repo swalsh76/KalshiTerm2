@@ -25,6 +25,20 @@ project (no PyPI). No **[OPEN]** items remain in PLAN.md §12.
 - License is MIT.
 - Never hard-code `localhost` or Kalshi URLs outside `kalshi-core` config.
 
+## Scope discipline
+
+KalshiTerm 1 died of feature creep and directional changes. Guard against it:
+
+- Build only the current phase in PLAN.md §10. Anything else is out of scope until the
+  user says otherwise.
+- If a request, idea or "while we're here" improvement isn't in the plan, **say so
+  explicitly** ("this is scope creep: ...") before doing anything, and ask whether to
+  add it to the plan, defer it, or drop it.
+- Changes to architecture or direction go into PLAN.md first (with the user's approval),
+  then code. Never drift silently from the plan.
+- Park deferred ideas in PLAN.md §13 (Parking lot), not in code or TODO comments.
+- Prefer the smallest thing that satisfies the phase's deliverable.
+
 ## Conventions
 
 - uv workspace, three packages under `packages/` (`kalshi-core`, `kalshiterm-server`,

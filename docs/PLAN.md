@@ -432,6 +432,9 @@ Each phase ends with passing tests and CI green.
 - **API drift** — Kalshi endpoints have changed hosts before; all URLs live in
   `kalshi-core` config, not scattered constants.
 - **Clock skew** — breaks request signing; `kterm doctor` checks it.
+- **Scope creep** — the predecessor project (KalshiTerm 1) failed through feature creep
+  and shifting direction. Work proceeds phase by phase; out-of-plan ideas go to §13,
+  and changes of direction are made in this document first, with approval.
 - **Real money** — demo is the default; production trading requires explicit opt-in and
   passes the risk layer on every order.
 
@@ -451,3 +454,9 @@ Each phase ends with passing tests and CI green.
 | — | Server host | Mac Studio M4, Docker on macOS (supersedes Pi/Windows ideas) | **Decided** |
 | — | TLS approach | Self-signed + TOFU pinning | **Decided** |
 | — | Server location | Remote host on same LAN | **Decided** |
+
+## 13. Parking Lot
+
+Ideas raised but **not** in scope. Not to be built until promoted into a phase.
+
+- Automated trading strategies (decision #2: manual first; strategy interface later).
