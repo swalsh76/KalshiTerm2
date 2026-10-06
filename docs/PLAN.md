@@ -1,8 +1,8 @@
 # KalshiTerm — Master Plan
 
-> Status: **Draft / pre-implementation.** This document is the source of truth for the
-> architecture and build order. Items marked **[OPEN]** are undecided; see
-> [§12 Open Decisions](#12-open-decisions).
+> Status: **Pre-implementation; design decisions resolved except package names.** This
+> document is the source of truth for the architecture and build order. Items marked
+> **[OPEN]** are undecided; see [§12 Open Decisions](#12-open-decisions).
 
 ## Contents
 
@@ -72,7 +72,8 @@ pulls in only what it needs.
 | `kalshiterm-server` | Ingestor, analytics worker, API, DB schema/migrations, ops CLI | `kalshi-core`, `sqlalchemy` 2.0, `asyncpg`, `alembic`, `fastapi`, `uvicorn`, `zeroconf` |
 | `kalshiterm-client` | Data access, trading, risk layer, CLI, UI | `kalshi-core`, `httpx`, `typer`, `keyring`, UI stack (see §7) |
 
-> Package names are provisional — PyPI availability not yet checked. **[OPEN]**
+> Package names are provisional — all three were unclaimed on PyPI as of 2026-10-06
+> but not yet reserved. **[OPEN]**
 
 ```
 KalshiTerm2/
@@ -101,7 +102,7 @@ KalshiTerm2/
   (HTTP mocks), `testcontainers` (Postgres), `pre-commit`.
 - CI: GitHub Actions test matrix (3.11–3.13, Linux/Windows/macOS for client & core);
   multi-arch (amd64/arm64) Docker image to GHCR; **PyPI Trusted Publishing** on tags.
-- Repo hygiene: `LICENSE` **[OPEN: MIT vs Apache-2.0]**, `CHANGELOG.md`, `SECURITY.md`,
+- Repo hygiene: `LICENSE` (**MIT**), `CHANGELOG.md`, `SECURITY.md`,
   `CONTRIBUTING.md`.
 - All configuration via **pydantic-settings** (env vars and/or TOML). No hard-coded
   `localhost` anywhere.
@@ -241,7 +242,7 @@ charts (candles, depth), integrated order entry.
   harder testing, and asyncio integration via `qasync`.
 - **D** has the highest ceiling and is what modern trading front ends use.
 
-### 7.3 Recommendation: D (web) + Typer CLI — **[OPEN: confirm D vs B]**
+### 7.3 Decision: D (web) + Typer CLI
 
 - `kalshiterm-client` runs a **local FastAPI backend on 127.0.0.1** that holds trading
   keys, talks to Kalshi and to the LAN server. The browser never sees keys.
@@ -281,8 +282,15 @@ kterm-server token create --role read   # credential for a client
 - Postgres stays on the internal Docker network by default.
 - **Optional `--expose-db`** for ad-hoc analysis (Jupyter, DBeaver): read-only role,
   `pg_hba` restricted to the LAN subnet, `scram-sha-256`, TLS.
-- **API tokens**: `kterm-server token create --role read|admin`; stored hashed
-  server-side; stored in the OS keychain (`keyring`) client-side.
+- **Multi-user**: the server has named users (`kterm-server user add <name>`). Each user
+  has one or more API tokens; per-user data (watchlists, alert rules, UI layouts) is
+  scoped by user, while market data and analytics results are shared.
+- **API tokens**: `kterm-server token create --user <name> --role read|admin`; stored
+  hashed server-side; stored in the OS keychain (`keyring`) client-side.
+- Users never share trading credentials: trading keys stay on each user's own
+  workstation (§2), so multi-user affects only the data side.
+- Watchlist membership drives orderbook capture, so the ingested watchlist is the union
+  of all users' watchlists, and the storage governor (§9.3) still applies globally.
 
 ### 8.4 TLS (self-signed)
 
@@ -391,11 +399,12 @@ Each phase ends with passing tests and CI green.
 
 | # | Decision | Recommendation | Status |
 |---|---|---|---|
-| 1 | Client UI: D (web) vs B (Qt) | D (web), with Typer CLI | **[OPEN]** |
-| 2 | Trading mode: manual only vs automated strategies | Manual first; strategy interface in a later phase | **[OPEN]** |
-| 3 | Ingestion scope: all markets vs watchlist | Tickers/trades for all; orderbooks watchlist-only | **[OPEN]** |
-| 4 | Server users: single vs multi-user | — | **[OPEN]** |
-| 5 | Package names & license | Names as in §3 (check PyPI); MIT or Apache-2.0 | **[OPEN]** |
+| 1 | Client UI: D (web) vs B (Qt) | D (web), with Typer CLI | **Decided** — D (web) + Typer CLI |
+| 2 | Trading mode: manual only vs automated strategies | Manual first; strategy interface in a later phase | **Decided** — manual first |
+| 3 | Ingestion scope: all markets vs watchlist | Tickers/trades for all; orderbooks watchlist-only | **Decided** — as recommended |
+| 4 | Server users: single vs multi-user | — | **Decided** — multi-user (see §8.3) |
+| 5a | License | MIT or Apache-2.0 | **Decided** — MIT |
+| 5b | Package names | Names as in §3 | **[OPEN]** — all three unclaimed on PyPI as of 2026-10-06; confirm, then claim early |
 | — | Server host runs Docker | Required | **Decided** |
 | — | Server disk budget | 150 GB | **Decided** |
 | — | TLS approach | Self-signed + TOFU pinning | **Decided** |

@@ -7,8 +7,9 @@ architecture, packaging, deployment, and build order. Update it when decisions c
 
 ## Status
 
-Pre-implementation. No code yet. Next step is **Phase 0 (scaffolding)**, blocked on the
-**[OPEN]** items in PLAN.md §12 — ask the user to resolve them before starting.
+Pre-implementation. No code yet. Next step is **Phase 0 (scaffolding)**. Decisions made:
+web UI + Typer CLI, manual trading first, multi-user server, MIT license. The only
+remaining **[OPEN]** item in PLAN.md §12 is confirming the package names (§3).
 
 ## Non-negotiables
 
@@ -19,6 +20,8 @@ Pre-implementation. No code yet. Next step is **Phase 0 (scaffolding)**, blocked
 - Server deploys **only via Docker Compose** on a remote LAN host; API is the only exposed
   port; self-signed TLS with trust-on-first-use pinning.
 - Storage budget is **150 GB**, enforced by the storage governor (PLAN.md §9).
+- Server is multi-user: named users, per-user tokens, per-user watchlists/alerts/layouts.
+- License is MIT.
 - Never hard-code `localhost` or Kalshi URLs outside `kalshi-core` config.
 
 ## Conventions
