@@ -1,6 +1,6 @@
 # KalshiTerm — Master Plan
 
-> Status: **Pre-implementation; design decisions resolved except package names.** This
+> Status: **Pre-implementation; all design decisions resolved.** This
 > document is the source of truth for the architecture and build order. Items marked
 > **[OPEN]** are undecided; see [§12 Open Decisions](#12-open-decisions).
 
@@ -30,8 +30,8 @@
 - Deliver a **Bloomberg-terminal-style** interface: dense, linked, keyboard-driven, live.
 - Run the server stack (Postgres + ingestion + analytics + API) on a **separate machine
   on the same LAN** as the client.
-- Written in **Python**, structured as standard packages suitable for **public
-  distribution on PyPI**.
+- Written in **Python**, structured as standard installable packages. The project is
+  **private**: no PyPI publishing; distribution is via the private git repo.
 
 ## 2. System Architecture
 
@@ -63,8 +63,8 @@ WebSocket requires an authenticated connection even for public channels).
 
 ## 3. Repository & Packaging
 
-A **uv workspace** monorepo publishing **three PyPI distributions**, so each install
-pulls in only what it needs.
+A **uv workspace** monorepo with **three packages** (private; never published to PyPI),
+so each install pulls in only what it needs.
 
 | Package | Purpose | Key dependencies |
 |---|---|---|
@@ -72,8 +72,7 @@ pulls in only what it needs.
 | `kalshiterm-server` | Ingestor, analytics worker, API, DB schema/migrations, ops CLI | `kalshi-core`, `sqlalchemy` 2.0, `asyncpg`, `alembic`, `fastapi`, `uvicorn`, `zeroconf` |
 | `kalshiterm-client` | Data access, trading, risk layer, CLI, UI | `kalshi-core`, `httpx`, `typer`, `keyring`, UI stack (see §7) |
 
-> Package names are provisional — all three were unclaimed on PyPI as of 2026-10-06
-> but not yet reserved. **[OPEN]**
+> Package names are internal to the workspace; PyPI availability is irrelevant.
 
 ```
 KalshiTerm2/
@@ -89,21 +88,21 @@ KalshiTerm2/
 ├── deploy/
 │   ├── docker-compose.yml
 │   └── Dockerfile
-├── docs/                           # MkDocs-Material
-└── .github/workflows/              # CI, image build, PyPI publish
+├── docs/                           # Markdown docs (MkDocs optional)
+└── .github/workflows/              # CI
 ```
 
 **Standards**
 
 - `src/` layout; PEP 621 `pyproject.toml`; **hatchling** build backend; version from git
-  tags (`hatch-vcs`); `py.typed` markers.
+  tags (`hatch-vcs`) or a static version; `py.typed` markers.
 - Python **3.11+**.
 - Tooling: `ruff` (lint + format), `mypy` (strict), `pytest` + `pytest-asyncio`, `respx`
   (HTTP mocks), `testcontainers` (Postgres), `pre-commit`.
-- CI: GitHub Actions test matrix (3.11–3.13, Linux/Windows/macOS for client & core);
-  multi-arch (amd64/arm64) Docker image to GHCR; **PyPI Trusted Publishing** on tags.
-- Repo hygiene: `LICENSE` (**MIT**), `CHANGELOG.md`, `SECURITY.md`,
-  `CONTRIBUTING.md`.
+- CI: GitHub Actions test matrix (3.11–3.13; Linux for all packages, plus Windows and
+  macOS for client & core, since the workstation may be either); server Docker image
+  built in CI to verify it. No registry push or PyPI publish required.
+- Repo hygiene: `LICENSE` (**MIT**), `CHANGELOG.md`, `SECURITY.md`.
 - All configuration via **pydantic-settings** (env vars and/or TOML). No hard-coded
   `localhost` anywhere.
 
@@ -248,8 +247,12 @@ charts (candles, depth), integrated order entry.
   keys, talks to Kalshi and to the LAN server. The browser never sees keys.
 - Frontend: **React + TypeScript + Vite**, **dockview** (panels), **Perspective** (live
   grids), **TradingView Lightweight Charts** (charts), global command bar.
-- Built frontend assets ship **inside the wheel**: `pip install kalshiterm-client` →
-  `kterm ui`. No Node needed by end users.
+- Built frontend assets ship **inside the wheel** (built by a release script/CI), so
+  `uv tool install` of the client → `kterm ui` needs no Node on the workstation.
+- The client runs **natively** on the workstation (Windows or macOS), **not in Docker**:
+  it needs the OS keychain (`keyring`), a trading-key file, and a browser reaching
+  127.0.0.1. Docker Desktop's VM would break the keychain, complicate the loopback
+  binding, and put the trading key in a container for no gain. Docker is for the server.
 - Local backend hardening: bind 127.0.0.1 only, Origin checks, per-session token
   (prevents CSRF from other browser tabs placing orders).
 - **Fallback:** if pure Python is a hard requirement, choose **B (Qt)**.
@@ -260,21 +263,22 @@ charts (candles, depth), integrated order entry.
 
 - **Docker Engine + Compose v2** (any Linux, Windows with WSL2, or Docker-capable NAS).
 - Docker is the **only** supported server deployment path.
-- Multi-arch images (amd64 / arm64).
+- Image is built on the host from the repo (any arch); no registry required.
 - Accurate clock (NTP / chrony) — required for Kalshi request signing.
 
 ### 8.2 Bootstrap
 
 ```bash
-pip install kalshiterm-server
-kterm-server init          # writes docker-compose.yml, .env, secrets, TLS cert
-docker compose up -d
-kterm-server token create --role read   # credential for a client
+git clone <private-repo> && cd KalshiTerm2/deploy
+docker compose run --rm api kterm-server init   # writes .env, secrets, TLS cert
+docker compose up -d --build
+docker compose exec api kterm-server user add <name>
+docker compose exec api kterm-server token create --user <name> --role read
 ```
 
 - Data directory is configurable (`KTERM_DATA_DIR`); a dedicated disk/partition is
   recommended.
-- Upgrades: `docker compose pull && docker compose up -d` (migrations run on startup).
+- Upgrades: `git pull && docker compose up -d --build` (migrations run on startup).
 
 ### 8.3 Network exposure & security (LAN treated as untrusted)
 
@@ -372,7 +376,7 @@ Each phase ends with passing tests and CI green.
 
 | Phase | Deliverable |
 |---|---|
-| **0. Scaffolding** | uv workspace, three package skeletons, ruff/mypy/pytest, pre-commit, CI matrix, multi-arch image build, MkDocs skeleton, license & repo hygiene files |
+| **0. Scaffolding** | uv workspace, three package skeletons, ruff/mypy/pytest, pre-commit, CI matrix, server image build, docs skeleton, MIT license & repo hygiene files |
 | **1. kalshi-core** | Signing (RSA-PSS + Ed25519), REST client & models, WS client with reconnect/resubscribe/seq-gap recovery, rate limiter; integration-tested against demo |
 | **2. Server storage & ingestion** | Schema + Alembic, Timescale hypertables, compression/retention policies, continuous aggregates, ingestor, Compose stack, `kterm-server init`, storage governor, **48-h calibration run** |
 | **3. Server API** | REST + WS push with catch-up, token auth, TLS, health/status endpoints |
@@ -381,7 +385,7 @@ Each phase ends with passing tests and CI green.
 | **5. Client data side** | Server API client, CLI data views |
 | **6. Client trading** | Risk layer first, order management, private WS channels; **demo-only until sign-off**; test proving trading works with server offline |
 | **7. Terminal UI** | Bloomberg-style UI per §7 decision (local backend, panels, grids, charts, command bar, order entry) |
-| **8. Release** | Docs site, PyPI Trusted Publishing, GHCR images, v0.1.0 |
+| **8. Packaging** | Frontend build bundled into client wheel, install docs, tagged v0.1.0 |
 
 ## 11. Risks & Notes
 
@@ -404,7 +408,8 @@ Each phase ends with passing tests and CI green.
 | 3 | Ingestion scope: all markets vs watchlist | Tickers/trades for all; orderbooks watchlist-only | **Decided** — as recommended |
 | 4 | Server users: single vs multi-user | — | **Decided** — multi-user (see §8.3) |
 | 5a | License | MIT or Apache-2.0 | **Decided** — MIT |
-| 5b | Package names | Names as in §3 | **[OPEN]** — all three unclaimed on PyPI as of 2026-10-06; confirm, then claim early |
+| 5b | Package names | Names as in §3 | **Decided** — keep as-is; private, no PyPI |
+| 6 | Distribution | — | **Decided** — private git repo, no PyPI; client native on Windows/macOS, server in Docker |
 | — | Server host runs Docker | Required | **Decided** |
 | — | Server disk budget | 150 GB | **Decided** |
 | — | TLS approach | Self-signed + TOFU pinning | **Decided** |
