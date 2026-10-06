@@ -440,7 +440,7 @@ Each phase ends with passing tests and CI green.
 | Phase | Deliverable |
 |---|---|
 | **0. Scaffolding** | uv workspace, three package skeletons, ruff/mypy/pytest, pre-commit, CI matrix, server image build, docs skeleton, MIT license & repo hygiene files |
-| **1. kalshi-core** | Signing (RSA-PSS + Ed25519), REST client & models, WS client with reconnect/resubscribe/seq-gap recovery, rate limiter; integration-tested read-only (production data key; demo where applicable) |
+| **1. kalshi-core** | Signing (RSA-PSS + Ed25519), REST client & models, WS client with reconnect/resubscribe/seq-gap recovery, rate limiter, **multivariate market support** (`/events/multivariate`, MVE market fields `mve_collection_ticker` / `mve_selected_legs`, WS `multivariate_market_lifecycle` channel); integration-tested read-only (production data key; demo where applicable) |
 | **2. Server storage & ingestion** | Schema + Alembic, Timescale hypertables, compression/retention policies, continuous aggregates, ingestor, Compose stack, `kterm-server init`, storage governor, **48-h calibration run** |
 | **3. Server API** | REST + WS push with catch-up, token auth, TLS, health/status endpoints |
 | **3b. LAN features** | zeroconf discovery, client profiles, TOFU cert pinning, `cert rotate`, `kterm server status`, backup/restore |
@@ -452,7 +452,10 @@ Each phase ends with passing tests and CI green.
 
 ## 11. Risks & Notes
 
-- **Data volume** — full-universe orderbook streaming is very large; orderbooks are
+- **Data volume** — multivariate (`KXMVE…`) markets are numerous and busy and are now kept, so
+  the Phase 2 calibration run must measure them separately; the storage governor still
+  applies, and MVE retention may need to be tighter than for ordinary markets. Full-universe
+  orderbook streaming is very large; orderbooks are
   watchlist-only by design, and the storage governor enforces the budget.
 - **Kalshi API terms** — if the server ever serves data to people other than the owner,
   review Kalshi's terms on data redistribution.
@@ -479,6 +482,7 @@ Each phase ends with passing tests and CI green.
 | 6 | Distribution | — | **Decided** — private git repo, no PyPI; client native on Windows/macOS, server in Docker |
 | — | Server host runs Docker | Required | **Decided** |
 | — | Server disk budget | 100 GB (Mac Studio host); backups on NAS | **Decided** |
+| 7 | Multivariate (combo) markets | Keep: ingest and store them (decided 2026-10-06; they dominate the live trade stream) | **Decided** |
 | — | Dev credentials | Read-only production Kalshi key (decided 2026-10-06), layered safeguards in §4; demo stays default | **Decided** |
 | — | Server host | Mac Studio M4, Docker on macOS (supersedes Pi/Windows ideas) | **Decided** |
 | — | TLS approach | Self-signed + TOFU pinning | **Decided** |
