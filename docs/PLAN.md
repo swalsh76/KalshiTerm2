@@ -114,14 +114,28 @@ KalshiTerm2/
 |---|---|
 | REST (prod) | `https://external-api.kalshi.com/trade-api/v2` |
 | REST (demo) | `https://external-api.demo.kalshi.co/trade-api/v2` |
-| WebSocket (prod) | `wss://external-api-ws.kalshi.com/` |
+| WebSocket (prod) | `wss://external-api-ws.kalshi.com/trade-api/ws/v2` |
+| WebSocket (demo) | `wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2` |
+
+**Read-only safeguards (production data key in use during dev)**
+
+1. **Key level:** a dedicated read-only Kalshi key (scope `read`), stored outside the repo
+   (`~/.kalshiterm/`, mode 600). Only the Key ID goes in the gitignored `.env`.
+2. **No write code exists** before Phase 6: no order, cancel, amend or transfer endpoints.
+3. **GET-only transport guard** in the HTTP client (added with the REST client), with a
+   test; Phase 6 must remove it deliberately.
+4. **Explicit production opt-in** via `KALSHI_ENV=production`; demo stays the default;
+   a clear banner is logged when running against production.
+5. **Opt-in live tests:** integration tests against production run only when explicitly
+   enabled and use a few cheap read calls (rate-limit friendly).
 
 **Authentication**
 
 - Headers: `KALSHI-ACCESS-KEY`, `KALSHI-ACCESS-TIMESTAMP` (ms), `KALSHI-ACCESS-SIGNATURE`.
 - Signature over `timestamp + METHOD + path` (path excludes query string), base64-encoded.
 - Supports **RSA-PSS/SHA-256** and **Ed25519** keys.
-- WS auth headers are sent during the handshake.
+- WS auth headers are sent during the handshake; the signed string is
+  `timestamp + "GET" + "/trade-api/ws/v2"`.
 
 **WebSocket channels**
 
@@ -136,7 +150,9 @@ KalshiTerm2/
 - WS client: auto-reconnect with backoff, automatic resubscription,
   **sequence-gap detection on `orderbook_delta` → automatic REST re-snapshot**.
 - Client-side rate limiter; handles WS command rate-limit errors.
-- **Demo environment is the default everywhere**; production requires explicit opt-in.
+- **Demo environment is the default everywhere**; production requires explicit opt-in
+  (`KALSHI_ENV=production`).
+- **Read-only until Phase 6** (see safeguards below).
 - `kterm doctor`-style clock-skew check (signed requests fail on skewed clocks).
 
 ## 5. kalshiterm-server
@@ -342,8 +358,9 @@ the laptop match production.
 - The dev stack runs locally in Docker Desktop on the MacBook; the client runs natively on
   the same machine via a `local` connection profile (the address lives in profile config,
   never hard-coded).
-- Dev uses the Kalshi **demo** environment and a data-only demo key. Production data is
-  needed only for the Phase 2 48-hour calibration run, which runs on the Mac Studio.
+- Dev uses a **read-only production data key** (decision 2026-10-06), under the safeguards
+  in §4; the default environment in code remains demo. Production data is also used for
+  the Phase 2 48-hour calibration run, which runs on the Mac Studio.
 - Dev storage budget is small (`KTERM_STORAGE_BUDGET_GB=10`–`20`) so the governor's
   thresholds are exercised; set the Docker VM disk cap to match.
 - Backups: `KTERM_BACKUP_TARGET` unset or a local folder; the NAS is production only.
@@ -413,7 +430,7 @@ Each phase ends with passing tests and CI green.
 | Phase | Deliverable |
 |---|---|
 | **0. Scaffolding** | uv workspace, three package skeletons, ruff/mypy/pytest, pre-commit, CI matrix, server image build, docs skeleton, MIT license & repo hygiene files |
-| **1. kalshi-core** | Signing (RSA-PSS + Ed25519), REST client & models, WS client with reconnect/resubscribe/seq-gap recovery, rate limiter; integration-tested against demo |
+| **1. kalshi-core** | Signing (RSA-PSS + Ed25519), REST client & models, WS client with reconnect/resubscribe/seq-gap recovery, rate limiter; integration-tested read-only (production data key; demo where applicable) |
 | **2. Server storage & ingestion** | Schema + Alembic, Timescale hypertables, compression/retention policies, continuous aggregates, ingestor, Compose stack, `kterm-server init`, storage governor, **48-h calibration run** |
 | **3. Server API** | REST + WS push with catch-up, token auth, TLS, health/status endpoints |
 | **3b. LAN features** | zeroconf discovery, client profiles, TOFU cert pinning, `cert rotate`, `kterm server status`, backup/restore |
@@ -435,7 +452,8 @@ Each phase ends with passing tests and CI green.
 - **Scope creep** — the predecessor project (KalshiTerm 1) failed through feature creep
   and shifting direction. Work proceeds phase by phase; out-of-plan ideas go to §13,
   and changes of direction are made in this document first, with approval.
-- **Real money** — demo is the default; production trading requires explicit opt-in and
+- **Real money / live key** — demo is the default; dev uses a read-only production data
+  key under the §4 safeguards; production trading requires explicit opt-in and
   passes the risk layer on every order.
 
 ## 12. Open Decisions
@@ -451,6 +469,7 @@ Each phase ends with passing tests and CI green.
 | 6 | Distribution | — | **Decided** — private git repo, no PyPI; client native on Windows/macOS, server in Docker |
 | — | Server host runs Docker | Required | **Decided** |
 | — | Server disk budget | 100 GB (Mac Studio host); backups on NAS | **Decided** |
+| — | Dev credentials | Read-only production Kalshi key (decided 2026-10-06), layered safeguards in §4; demo stays default | **Decided** |
 | — | Server host | Mac Studio M4, Docker on macOS (supersedes Pi/Windows ideas) | **Decided** |
 | — | TLS approach | Self-signed + TOFU pinning | **Decided** |
 | — | Server location | Remote host on same LAN | **Decided** |

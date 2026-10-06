@@ -16,8 +16,10 @@ project (no PyPI). No **[OPEN]** items remain in PLAN.md §12.
 
 - **Trades go client → Kalshi directly, never through the server.** The trading key never
   leaves the workstation; the server has its own data-only key.
-- **Demo environment is the default** everywhere. Production trading requires explicit
-  opt-in and every order passes the client risk layer.
+- **Demo environment is the default** in code and config. Production use is explicit
+  opt-in (`KALSHI_ENV=production`) and **read-only until Phase 6** (read-only key, no
+  write code, GET-only transport guard; PLAN.md §4). Production trading requires the
+  user's sign-off and every order passes the client risk layer.
 - Client runs natively (Windows/macOS), not in Docker.
 - Server deploys **only via Docker Compose** on a remote LAN host; API is the only exposed
   port; self-signed TLS with trust-on-first-use pinning.
