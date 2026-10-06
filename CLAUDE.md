@@ -20,7 +20,7 @@ project (no PyPI). No **[OPEN]** items remain in PLAN.md §12.
 - Client runs natively (Windows/macOS), not in Docker.
 - Server deploys **only via Docker Compose** on a remote LAN host; API is the only exposed
   port; self-signed TLS with trust-on-first-use pinning.
-- Storage budget is **150 GB**, enforced by the storage governor (PLAN.md §9).
+- Storage budget is **100 GB** (backups go to the NAS), enforced by the storage governor (PLAN.md §9).
 - Server is multi-user: named users, per-user tokens, per-user watchlists/alerts/layouts.
 - License is MIT.
 - Never hard-code `localhost` or Kalshi URLs outside `kalshi-core` config.
