@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Private keys (keep outside the repo; safety net)
+*.pem
+*.key
