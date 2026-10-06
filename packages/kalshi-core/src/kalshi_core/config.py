@@ -34,6 +34,10 @@ class KalshiSettings(BaseSettings):
     env: Environment = Environment.DEMO
     key_id: str | None = None
     private_key_path: Path | None = Field(default=None)
+    # Kalshi read budget in tokens/second for the account tier (Basic = 200).
+    read_tokens_per_second: float = Field(default=200, gt=0)
+    # Fraction of the budget we actually use; the rest is margin against clock/jitter.
+    rate_limit_margin: float = Field(default=0.9, gt=0, le=1)
 
     @property
     def is_production(self) -> bool:

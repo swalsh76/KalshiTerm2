@@ -149,7 +149,13 @@ KalshiTerm2/
 - Async REST client with typed request/response models and pagination helpers.
 - WS client: auto-reconnect with backoff, automatic resubscription,
   **sequence-gap detection on `orderbook_delta` → automatic REST re-snapshot**.
-- Client-side rate limiter; handles WS command rate-limit errors.
+- Client-side rate limiter mirroring Kalshi's **token-bucket** model (docs, Oct 2026):
+  Basic tier = 200 read / 100 write tokens per second, most requests cost 10 tokens,
+  buckets hold one second of budget, read and write are independent, and overage is a bare
+  HTTP 429 (no `Retry-After`). We default to **90% of the budget** (180 read tokens/s ≈ 18
+  requests/s on Basic) via `KALSHI_RATE_LIMIT_MARGIN`; a higher tier is a one-value change
+  (`KALSHI_READ_TOKENS_PER_SECOND`). The write bucket is added in Phase 6. 429 backoff
+  lives in the REST client; handles WS command rate-limit errors.
 - **Demo environment is the default everywhere**; production requires explicit opt-in
   (`KALSHI_ENV=production`).
 - **Read-only until Phase 6** (see safeguards below).
