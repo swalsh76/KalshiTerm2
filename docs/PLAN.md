@@ -333,6 +333,25 @@ docker compose exec api kterm-server token create --user <name> --role read
 - CI runs the server via Compose and the client in a **separate container on a separate
   Docker network**, exercising real networking, TLS pinning, and token auth.
 
+### 8.8 Development environment
+
+Development happens on a **MacBook Pro M4**; the production server host is a separate
+**Mac Studio M4**. Same arch (arm64) and same Docker Desktop on macOS, so images tested on
+the laptop match production.
+
+- The dev stack runs locally in Docker Desktop on the MacBook; the client runs natively on
+  the same machine via a `local` connection profile (the address lives in profile config,
+  never hard-coded).
+- Dev uses the Kalshi **demo** environment and a data-only demo key. Production data is
+  needed only for the Phase 2 48-hour calibration run, which runs on the Mac Studio.
+- Dev storage budget is small (`KTERM_STORAGE_BUDGET_GB=10`–`20`) so the governor's
+  thresholds are exercised; set the Docker VM disk cap to match.
+- Backups: `KTERM_BACKUP_TARGET` unset or a local folder; the NAS is production only.
+- Laptop sleep/battery cause ingestion gaps in dev; that is acceptable. Gap handling
+  (`since` catch-up, WS reconnect) is worth testing by sleeping the laptop on purpose.
+- Dev and production use distinct `.env` files and Compose project names so config and
+  volumes never mix.
+
 ## 9. Storage Budget & Retention (100 GB)
 
 Docker cannot cap a Postgres volume, so the server governs its own footprint.
