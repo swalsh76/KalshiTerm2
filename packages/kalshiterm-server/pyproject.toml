@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kalshiterm-server"
+version = "0.0.0"
+description = "KalshiTerm server: ingestion, analytics, API"
+readme = "README.md"
+license = "MIT"
+license-files = ["../../LICENSE"]
+requires-python = ">=3.11"
+dependencies = ["kalshi-core"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kalshiterm_server"]
+
+[tool.uv.sources]
+kalshi-core = { workspace = true }
