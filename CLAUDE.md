@@ -7,7 +7,8 @@ architecture, packaging, deployment, and build order. Update it when decisions c
 
 ## Status
 
-Pre-implementation. No code yet. Next step is **Phase 0 (scaffolding)**. Decisions made:
+Phase 0 (scaffolding) is built on branch `phase-0-scaffolding`, awaiting approval to merge;
+next is Phase 1 (kalshi-core). Decisions made:
 web UI + Typer CLI, manual trading first, multi-user server, MIT license, private
 project (no PyPI). No **[OPEN]** items remain in PLAN.md §12.
 

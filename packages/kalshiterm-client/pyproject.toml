@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kalshiterm-client"
+version = "0.0.0"
+description = "KalshiTerm client: data, trading, UI"
+readme = "README.md"
+license = "MIT"
+license-files = ["../../LICENSE"]
+requires-python = ">=3.11"
+dependencies = ["kalshi-core"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kalshiterm_client"]
+
+[tool.uv.sources]
+kalshi-core = { workspace = true }
