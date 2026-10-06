@@ -14,7 +14,7 @@
 6. [kalshiterm-client](#6-kalshiterm-client)
 7. [Client Interface (Bloomberg-style)](#7-client-interface-bloomberg-style)
 8. [Remote LAN Deployment](#8-remote-lan-deployment)
-9. [Storage Budget & Retention (150 GB)](#9-storage-budget--retention-150-gb)
+9. [Storage Budget & Retention (100 GB)](#9-storage-budget--retention-100-gb)
 10. [Build Phases](#10-build-phases)
 11. [Risks & Notes](#11-risks--notes)
 12. [Open Decisions](#12-open-decisions)
@@ -261,6 +261,17 @@ charts (candles, depth), integrated order entry.
 
 ### 8.1 Host requirements
 
+**Target host: Mac Studio (M4, arm64) running Docker on macOS**, 100 GB data budget.
+(Any Linux/Windows-WSL2 host also works; the image builds on the host for any arch.)
+
+- Always-on: disable sleep, enable "start up automatically after a power failure".
+  Docker Desktop starts at login, not boot, and FileVault disables auto-login — so either
+  accept auto-login or use a launchd-managed runtime (OrbStack/Colima).
+- Postgres uses a **named Docker volume**, not a bind mount. Set the Docker VM disk cap
+  to ~100 GB plus margin for images; it does not shrink on its own.
+- mDNS cannot be advertised from inside the container through the Docker VM: use a
+  manual host/IP or run the zeroconf advertiser on the host.
+
 - **Docker Engine + Compose v2** (any Linux, Windows with WSL2, or Docker-capable NAS).
 - Docker is the **only** supported server deployment path.
 - Image is built on the host from the repo (any arch); no registry required.
@@ -322,7 +333,7 @@ docker compose exec api kterm-server token create --user <name> --role read
 - CI runs the server via Compose and the client in a **separate container on a separate
   Docker network**, exercising real networking, TLS pinning, and token auth.
 
-## 9. Storage Budget & Retention (150 GB)
+## 9. Storage Budget & Retention (100 GB)
 
 Docker cannot cap a Postgres volume, so the server governs its own footprint.
 
@@ -330,19 +341,22 @@ Docker cannot cap a Postgres volume, so the server governs its own footprint.
 
 | Use | Allocation |
 |---|---|
-| Postgres overhead (WAL, temp, compression rewrites) + free-space headroom | 25 GB |
-| Local backups (2 rolling compressed `pg_dump`s) | 15 GB |
-| Reference data, analytics results, continuous aggregates | 10 GB |
-| Hot uncompressed chunks (last 7 days) | 15 GB |
-| Compressed history | ~85 GB |
-| **Total** | **150 GB** |
+| Postgres overhead (WAL, temp, compression rewrites) + free-space headroom | 15 GB |
+| Backups | 0 GB (stored on the NAS, §9.5) |
+| Reference data, analytics results, continuous aggregates | 8 GB |
+| Hot uncompressed chunks (last 7 days) | 10 GB |
+| Compressed history | ~67 GB |
+| **Total** | **100 GB** |
+
+The budget is per host (`KTERM_STORAGE_BUDGET_GB`); the Mac Studio target is 100 GB.
+A larger host can raise it and scale compressed history accordingly.
 
 ### 9.2 Retention defaults (all configurable)
 
 | Data | Raw retention | Then |
 |---|---|---|
 | Trades | Forever (compressed after 7 days) | — |
-| Tickers | 30 days | 1-min / 1-hour aggregates kept forever |
+| Tickers | 14 days | 1-min / 1-hour aggregates kept forever |
 | Orderbook deltas (watchlist only) | 14 days | Dropped |
 | Orderbook snapshots (watchlist, every 60 s) | 90 days | 5-min downsample kept 1 year |
 | Markets / events / settlements | Forever | — |
@@ -351,7 +365,7 @@ TimescaleDB native compression expected to yield ~10–20× on aged chunks.
 
 ### 9.3 Storage governor
 
-- Runs inside the analytics worker; budget set by `KTERM_STORAGE_BUDGET_GB=150`.
+- Runs inside the analytics worker; budget set by `KTERM_STORAGE_BUDGET_GB=100`.
 - Tracks per-table size, daily growth rate, and **projected days to full**; exposed on
   `/status`, `kterm server status`, and the UI.
 - **80% of budget:** alert + tighten raw retention windows.
@@ -365,9 +379,12 @@ production data** to measure rows/bytes per day; defaults will be tuned from mea
 
 ### 9.5 Backups
 
-- Scheduled `pg_dump`, two rolling copies (counted in the budget).
-- `KTERM_BACKUP_TARGET` may point to an SMB/NFS share — recommended, since a same-disk
-  backup does not protect against disk failure.
+- Scheduled `pg_dump` streamed to `KTERM_BACKUP_TARGET`, an SMB/NFS share on the NAS.
+  Backups consume none of the local budget, and being off-host they survive disk failure.
+- The NAS has ample space, so retention is generous and configurable (default: 7 daily +
+  4 weekly). No local staging copy is kept.
+- If the NAS is unreachable the backup job fails loudly (alert + `/status`), never
+  silently; the mount must be present after reboots, so check it before each run.
 - `kterm-server backup` / `kterm-server restore`.
 
 ## 10. Build Phases
@@ -411,6 +428,7 @@ Each phase ends with passing tests and CI green.
 | 5b | Package names | Names as in §3 | **Decided** — keep as-is; private, no PyPI |
 | 6 | Distribution | — | **Decided** — private git repo, no PyPI; client native on Windows/macOS, server in Docker |
 | — | Server host runs Docker | Required | **Decided** |
-| — | Server disk budget | 150 GB | **Decided** |
+| — | Server disk budget | 100 GB (Mac Studio host); backups on NAS | **Decided** |
+| — | Server host | Mac Studio M4, Docker on macOS (supersedes Pi/Windows ideas) | **Decided** |
 | — | TLS approach | Self-signed + TOFU pinning | **Decided** |
 | — | Server location | Remote host on same LAN | **Decided** |
