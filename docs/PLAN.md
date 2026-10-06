@@ -123,7 +123,7 @@ KalshiTerm2/
    (`~/.kalshiterm/`, mode 600). Only the Key ID goes in the gitignored `.env`.
 2. **No write code exists** before Phase 6: no order, cancel, amend or transfer endpoints.
 3. **GET-only transport guard** in the HTTP client (added with the REST client), with a
-   test; Phase 6 must remove it deliberately.
+   test (implemented in slice 4: `ReadOnlyViolation`); Phase 6 must remove it deliberately.
 4. **Explicit production opt-in** via `KALSHI_ENV=production`; demo stays the default;
    a clear banner is logged when running against production.
 5. **Opt-in live tests:** integration tests against production run only when explicitly
@@ -168,7 +168,11 @@ One Docker image, three service roles: `kterm-server ingest`, `kterm-server anal
 
 ### 5.1 Ingestor
 
-- **Discovery poller** (REST): series, events, markets, settlements — periodic refresh.
+- **Discovery poller** (REST): series, events, markets — periodic refresh. Market outcomes
+  (`result`, `settlement_value_dollars`, `settlement_ts`) come from the market object itself:
+  Kalshi's `/portfolio/settlements` endpoint is account-scoped (your own positions), not
+  market-wide. Markets older than the historical cutoff live under `/historical/*` (to
+  evaluate for backfill in Phase 2).
 - **Stream subscriber** (WS): `ticker`, `trade`, `market_lifecycle_v2` for all ingested
   markets; `orderbook_delta` for the **watchlist only**.
 - Batched writes to Postgres via `COPY` (asyncpg).
@@ -178,7 +182,7 @@ One Docker image, three service roles: `kterm-server ingest`, `kterm-server anal
 ### 5.2 Storage
 
 - **PostgreSQL + TimescaleDB** (pinned official image).
-- Reference tables: `series`, `events`, `markets`, `settlements`.
+- Reference tables: `series`, `events`, `markets` (outcomes stored on the market row).
 - Hypertables: `tickers`, `trades`, `orderbook_snapshots`, `orderbook_deltas`.
 - Continuous aggregates: 1-minute and 1-hour candles.
 - Results: `analysis_results`, `alerts`.
@@ -401,7 +405,7 @@ A larger host can raise it and scale compressed history accordingly.
 | Tickers | 14 days | 1-min / 1-hour aggregates kept forever |
 | Orderbook deltas (watchlist only) | 14 days | Dropped |
 | Orderbook snapshots (watchlist, every 60 s) | 90 days | 5-min downsample kept 1 year |
-| Markets / events / settlements | Forever | — |
+| Markets / events (incl. outcomes) | Forever | — |
 
 TimescaleDB native compression expected to yield ~10–20× on aged chunks.
 
