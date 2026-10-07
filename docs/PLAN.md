@@ -465,6 +465,14 @@ Each phase ends with passing tests and CI green.
 
 ## 11. Risks & Notes
 
+- **Client throughput (offline benchmark, `packages/kalshi-core/bench/throughput.py`,
+  2026-10-06, M4 MacBook Pro, one core):** the WebSocket client reads and dispatches
+  ~120–220k msgs/s (4–8 µs each; the low end with `permessage-deflate`, which Kalshi
+  negotiates), and the orderbook feed applies ~130–145k deltas/s across 50 markets — roughly
+  50× the live peak seen so far, so parsing is not the bottleneck. **The real risk is the
+  unbounded receive queue:** with a slow consumer each queued message costs ~1.8 KB, so at
+  ~700 msgs/s a stalled database writer grows memory ~1.3 MB/s (~4.7 GB/h) with no warning.
+  Phase 2 needs a bounded queue with an explicit overflow policy (open decision).
 - **Multivariate volume (measured 2026-10-06, Tuesday evening, ~10–45 s samples):** the
   `multivariate_market_lifecycle` channel delivers ~400–500 messages/s (~100 market creations/s,
   plus ~100/s each of `determined` and `settled`), versus ~2/s for ordinary markets. Unfiltered
