@@ -21,13 +21,14 @@ import contextlib
 import logging
 import time
 import uuid
-from collections import Counter, deque
+from collections import Counter, OrderedDict, deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from kalshi_core.models import Trade
 from kalshi_core.orderbook import (
     DELTA,
     GAP,
@@ -220,6 +221,19 @@ WHERE t.market_id = $1
 
 
 @dataclass(frozen=True, slots=True)
+class GapInfo:
+    """A period the live stream may have missed, reported when the connection comes back."""
+
+    started: datetime  # when we last heard from the stream
+    ended: datetime  # when the new connection was established
+    reason: str  # "connection_lost" | "overflow"
+    dropped: int  # messages the client had to drop (overflow only)
+
+
+SEEN_IDS = 200_000  # recent trade ids remembered, so a backfill never repeats a live trade
+
+
+@dataclass(frozen=True, slots=True)
 class WatchOp:
     ticker: str
     watch: bool  # False = unwatch
@@ -275,6 +289,9 @@ class StreamIngestor:
         self._buffer: list[Item] = []
         self._agg = Aggregates()
         self._in_flight = 0
+        self.on_gap: Callable[[GapInfo], None] | None = None
+        self._last_heard: datetime | None = None
+        self._seen_ids: OrderedDict[str, None] = OrderedDict()
         self._ops: list[WatchOp] = []  # watch/unwatch requests not yet applied
         self._watched: set[str] = set()  # tickers whose trades also go to trades_watchlist
         self._wake = asyncio.Event()
@@ -302,6 +319,49 @@ class StreamIngestor:
         """Close the coverage period and stop the copy (what was copied is kept)."""
         self._ops.extend(WatchOp(t, False) for t in tickers)
         self._wake.set()
+
+    def _remember(self, trade_id: str) -> bool:
+        """Note a trade id; False if it was already seen recently."""
+        if trade_id in self._seen_ids:
+            return False
+        self._seen_ids[trade_id] = None
+        if len(self._seen_ids) > SEEN_IDS:
+            self._seen_ids.popitem(last=False)
+        return True
+
+    async def backfill_trade(self, trade: Trade, known: set[str]) -> str:
+        """Feed one REST trade through the normal write path.
+
+        Returns "added", "combo_large", "duplicate" or "combo_skipped". Unrepresentable values
+        are rejected by the write path like any other row. ``known``
+        holds ids already in the database for the window; the recent-id memory covers live
+        trades still in the buffer. Combo trades below the large-trade threshold are not
+        stored or counted (the per-minute counters cannot be de-duplicated).
+        """
+        if trade.trade_id in known or trade.trade_id in self._seen_ids:
+            return "duplicate"
+        payload = TradeMsg(
+            trade_id=trade.trade_id,
+            market_ticker=trade.ticker,
+            yes_price_dollars=trade.yes_price_dollars,
+            no_price_dollars=trade.no_price_dollars,
+            count_fp=trade.count_fp,
+            taker_side=trade.taker_side,
+            is_block_trade=trade.is_block_trade,
+        )
+        received = from_epoch(self._clock())
+        kind, notional = "trade", 0
+        if trade.ticker.startswith(MVE_PREFIX):
+            try:
+                value = notional_e6(trade.count_fp, price_paid(payload))
+            except (PrecisionError, ArithmeticError):
+                value = 0
+            if value < self._large_trade_e6:
+                return "combo_skipped"
+            kind, notional = "combo_large", value
+        self._remember(trade.trade_id)
+        await self._buffer_item(Item(kind, payload, trade.created_time, received, notional))
+        return "combo_large" if kind == "combo_large" else "added"
 
     @property
     def watched(self) -> frozenset[str]:
@@ -380,6 +440,17 @@ class StreamIngestor:
             self.reconnects += 1
             log.warning("reconnected: data may have been missed (%s)", message.msg)
             self._wake.set()  # get everything received before the gap onto disk
+            if self.on_gap is not None:
+                ended = from_epoch(message.received_at or self._clock())
+                info = message.msg if isinstance(message.msg, dict) else {}
+                self.on_gap(
+                    GapInfo(
+                        started=self._last_heard or ended,
+                        ended=ended,
+                        reason=str(info.get("reason") or "connection_lost"),
+                        dropped=int(info.get("dropped") or 0),
+                    )
+                )
             return
         if message.type not in CHANNEL_TYPES:
             return
@@ -396,6 +467,7 @@ class StreamIngestor:
             self.rejected += 1
             return
         received = from_epoch(message.received_at or self._clock())
+        self._last_heard = received
         exchange_ms = getattr(payload, "ts_ms", None) or message.sending_ts_ms
         ts = from_ms(exchange_ms) if exchange_ms else received
         kind = message.type
@@ -407,6 +479,8 @@ class StreamIngestor:
             kind, notional = "combo_large", keep
         elif kind not in ORDINARY_KINDS:
             return
+        if isinstance(payload, TradeMsg):
+            self._remember(payload.trade_id)
         await self._buffer_item(Item(kind, payload, ts, received, notional))
 
     def _count_combo(

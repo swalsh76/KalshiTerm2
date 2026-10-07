@@ -108,6 +108,24 @@ class MarketsPage(KalshiModel):
     cursor: str = ""
 
 
+class Trade(KalshiModel):
+    """One executed trade from ``GET /markets/trades`` (all markets, combos included)."""
+
+    trade_id: str
+    ticker: str
+    yes_price_dollars: Decimal
+    no_price_dollars: Decimal
+    count_fp: Decimal
+    taker_side: str | None = None
+    is_block_trade: bool = False
+    created_time: datetime
+
+
+class TradesPage(KalshiModel):
+    trades: list[Trade]
+    cursor: str = ""
+
+
 class EventsPage(KalshiModel):
     events: list[Event]
     cursor: str = ""

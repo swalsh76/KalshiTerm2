@@ -34,6 +34,8 @@ from kalshi_core.models import (
     OrderBook,
     Series,
     SeriesList,
+    Trade,
+    TradesPage,
 )
 from kalshi_core.ratelimit import TokenBucket, read_bucket
 
@@ -154,7 +156,11 @@ class KalshiRestClient:
         return ExchangeStatus.model_validate(await self._get("/exchange/status"))
 
     async def _iter_items(
-        self, path: str, page_model: type[MarketsPage] | type[EventsPage], attr: str, params: Any
+        self,
+        path: str,
+        page_model: type[MarketsPage] | type[EventsPage] | type[TradesPage],
+        attr: str,
+        params: Any,
     ) -> AsyncIterator[Any]:
         """Follow Kalshi's cursor pagination until it returns an empty cursor."""
         cursor: str | None = None
@@ -174,6 +180,12 @@ class KalshiRestClient:
     async def iter_markets(self, **params: Any) -> AsyncIterator[Market]:
         async for market in self._iter_items("/markets", MarketsPage, "markets", params):
             yield market
+
+    async def iter_trades(self, **params: Any) -> AsyncIterator[Trade]:
+        """Executed trades across all markets; filter with ``min_ts`` / ``max_ts`` (epoch
+        seconds) and optionally ``ticker``. Used to backfill what a disconnect missed."""
+        async for trade in self._iter_items("/markets/trades", TradesPage, "trades", params):
+            yield trade
 
     async def events_page(self, **params: Any) -> EventsPage:
         """One page of ordinary events (Kalshi excludes multivariate events here)."""
