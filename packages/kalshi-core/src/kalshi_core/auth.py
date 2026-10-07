@@ -1,17 +1,15 @@
-"""Request signing for the Kalshi API (Ed25519 and RSA-PSS/SHA-256)."""
+"""Request signing for the Kalshi API. Ed25519 only: RSA-PSS is deliberately unsupported."""
 
 import base64
 import time
 from pathlib import Path
 
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
 from kalshi_core.config import KalshiSettings
 
-PrivateKey = Ed25519PrivateKey | RSAPrivateKey
+PrivateKey = Ed25519PrivateKey
 
 HEADER_KEY = "KALSHI-ACCESS-KEY"
 HEADER_TIMESTAMP = "KALSHI-ACCESS-TIMESTAMP"
@@ -23,7 +21,7 @@ class AuthError(Exception):
 
 
 def load_private_key(path: Path) -> PrivateKey:
-    """Load an unencrypted PEM private key (Ed25519 or RSA)."""
+    """Load an unencrypted PEM Ed25519 private key."""
     try:
         data = path.expanduser().read_bytes()
     except OSError as exc:
@@ -32,8 +30,11 @@ def load_private_key(path: Path) -> PrivateKey:
         key = serialization.load_pem_private_key(data, password=None)
     except (ValueError, TypeError) as exc:
         raise AuthError(f"{path} is not an unencrypted PEM private key") from exc
-    if not isinstance(key, Ed25519PrivateKey | RSAPrivateKey):
-        raise AuthError(f"unsupported key type {type(key).__name__}; use Ed25519 or RSA")
+    if not isinstance(key, Ed25519PrivateKey):
+        raise AuthError(
+            f"unsupported key type {type(key).__name__}: only Ed25519 keys are supported "
+            "(create an Ed25519 key; RSA is intentionally not implemented)"
+        )
     return key
 
 
@@ -53,17 +54,7 @@ class KalshiSigner:
     def sign(self, timestamp_ms: int, method: str, path: str) -> str:
         """Base64 signature over ``timestamp + METHOD + path`` (query string excluded)."""
         message = f"{timestamp_ms}{method.upper()}{path.split('?', 1)[0]}".encode()
-        if isinstance(self._key, Ed25519PrivateKey):
-            raw = self._key.sign(message)
-        else:
-            raw = self._key.sign(
-                message,
-                padding.PSS(
-                    mgf=padding.MGF1(hashes.SHA256()),
-                    salt_length=padding.PSS.DIGEST_LENGTH,
-                ),
-                hashes.SHA256(),
-            )
+        raw = self._key.sign(message)
         return base64.b64encode(raw).decode()
 
     def headers(self, method: str, path: str, *, timestamp_ms: int | None = None) -> dict[str, str]:
