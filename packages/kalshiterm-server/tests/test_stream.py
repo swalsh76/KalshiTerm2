@@ -119,6 +119,11 @@ async def until(predicate: Callable[[], bool], seconds: float = 10.0) -> None:
             await asyncio.sleep(0.01)
 
 
+def ordinary(ingestor: StreamIngestor) -> dict[str, int]:
+    """Rows written to the three ordinary-market tables (combo tables are tested separately)."""
+    return {t: ingestor.written[t] for t in ("tickers", "trades", "market_lifecycle")}
+
+
 async def run(url: str, messages: list[WsMessage], **kwargs: Any) -> StreamIngestor:
     engine = db.make_engine(url)
     try:
@@ -135,7 +140,7 @@ async def test_rows_land_with_exact_fixed_point_values_and_both_timestamps(
 ) -> None:
     trade = trade_msg(offset_ms=500)
     ingestor = await run(migrated_db_url, [ticker_msg(), trade, lifecycle_msg(offset_ms=900)])
-    assert ingestor.written == {"tickers": 1, "trades": 1, "market_lifecycle": 1}
+    assert ordinary(ingestor) == {"tickers": 1, "trades": 1, "market_lifecycle": 1}
 
     [t] = await rows(
         migrated_db_url,
@@ -233,7 +238,7 @@ async def test_combo_market_messages_are_skipped_and_counted(migrated_db_url: st
         ],
     )
     assert ingestor.skipped_mve == 2
-    assert ingestor.written == {"tickers": 1, "trades": 0, "market_lifecycle": 0}
+    assert ordinary(ingestor) == {"tickers": 1, "trades": 0, "market_lifecycle": 0}
     assert (
         await scalar(migrated_db_url, "select count(*) from markets where ticker like 'KXMVE%'")
         == 0
@@ -254,7 +259,7 @@ async def test_unrepresentable_or_malformed_rows_are_rejected_without_blocking_t
         ],
     )
     assert ingestor.rejected == 3
-    assert ingestor.written == {"tickers": 1, "trades": 1, "market_lifecycle": 0}
+    assert ordinary(ingestor) == {"tickers": 1, "trades": 1, "market_lifecycle": 0}
     assert "rejected" in caplog.text
 
 
@@ -300,11 +305,11 @@ async def test_database_errors_are_retried_without_loss_duplication_or_reorderin
         )
         real_write, failures = ingestor._write, [3]
 
-        async def flaky(batch: Any) -> None:
+        async def flaky(batch: Any, agg: Any) -> None:
             if failures[0] > 0:
                 failures[0] -= 1
                 raise OSError("database unreachable")
-            await real_write(batch)
+            await real_write(batch, agg)
 
         ingestor._write = flaky  # type: ignore[method-assign]
         task = asyncio.create_task(ingestor.run())
@@ -333,7 +338,7 @@ async def test_shutdown_gives_up_after_a_few_attempts_instead_of_hanging(
             stream([ticker_msg(offset_ms=i) for i in range(30)]), engine, sleep=instant
         )
 
-        async def always_down(batch: Any) -> None:
+        async def always_down(batch: Any, agg: Any) -> None:
             raise OSError("database unreachable")
 
         ingestor._write = always_down  # type: ignore[method-assign]
@@ -365,10 +370,10 @@ async def test_a_stalled_database_pauses_intake_instead_of_buffering_without_lim
         )
         real_write = ingestor._write
 
-        async def maybe_down(batch: Any) -> None:
+        async def maybe_down(batch: Any, agg: Any) -> None:
             if not database_up[0]:
                 raise OSError("database unreachable")
-            await real_write(batch)
+            await real_write(batch, agg)
 
         ingestor._write = maybe_down  # type: ignore[method-assign]
         task = asyncio.create_task(ingestor.run())
