@@ -441,7 +441,7 @@ A larger host can raise it and scale compressed history accordingly.
 | Multivariate (combo) markets | One compact row per market (legs as an array, plus outcome), 30 days; raw combo tickers/trades 3 days | No candles for combo markets |
 | Orderbook deltas (watchlist only) | 14 days | Dropped |
 | Orderbook snapshots (watchlist, every 60 s) | 90 days | 5-min downsample kept 1 year |
-| Markets / events (incl. outcomes) | **OPEN — decide before slice 2.7.** "Forever" is infeasible: ≈85k ordinary markets settle per day at ≈1 KB per `markets` row (rules text ≈580 chars, almost all unique) ≈ 31 GB/year vs an 8 GB reference allocation | — |
+| Markets / events (incl. outcomes) — decision 15 | Age counts from `settlement_ts`; unsettled rows never expire. **0–30 days: full row. 30–90 days: slimmed to an outcome-only row** (rules text and sub-titles dropped; ticker, event, status, result, settlement, times and strikes kept). **After 90 days: deleted, except markets that are watched (ever, see decision 12) or pinned.** Events follow their markets; series are kept (≈15k rows). | — |
 
 TimescaleDB native compression: plan on **4–9×** until the calibration run (synthetic ticker
 data measured 8.8× for integers, 3.5× for `numeric`; real data should compress better). Measured
@@ -584,6 +584,7 @@ dev key.
 | 9 | Trade retention | 30 days raw (watchlist markets forever), 1-min/1-hour candles forever | **Decided** |
 | 10 | Combo-market storage | Compact: one row per market (legs as array + outcome), 30 days; raw combo tickers/trades 3 days; no candles | **Decided** |
 | 12 | Watchlist removal | A market that has ever been watched keeps its raw trades forever (`trades_watchlist`); removal stops orderbook capture but deletes nothing | **Decided** |
+| 15 | Settled-market retention | Full rows 30 days after settlement, then outcome-only rows to day 90, then deleted unless watched or pinned. Estimated steady state ≈4.6 GB of the 8 GB reference allocation (30 d × 85k/day × ~1 KB + 60 d × 85k/day × ~0.37 KB + ~0.2 GB unsettled). Implemented in slice 2.7; the `pins` table is added with it | **Decided** |
 | 14 | Numeric representation | `bigint` fixed-point only: dollars/strikes at 10⁻⁶ (`*_e6`), counts at 10⁻² (`*_e2`); loud failure on finer precision | **Decided** |
 | 13 | Auto top-N churn | 12-hour minimum dwell once added; manual entries never auto-removed | **Decided** |
 | 11 | Calibration host | MacBook with sleep disabled (before the Mac Studio is the host) | **Decided** |
