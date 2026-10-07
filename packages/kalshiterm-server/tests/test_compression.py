@@ -9,6 +9,7 @@ from kalshiterm_server.ingest.stream import StreamIngestor
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from test_stream import Gate, rows, scalar, trade_msg, until
+from test_stream_schema import query
 
 pytestmark = pytest.mark.db
 
@@ -18,17 +19,19 @@ TABLES = ["orderbook_deltas", "orderbook_snapshots", "tickers", "trades", "trade
 async def test_the_big_tables_are_compressed_after_one_day_ordered_by_market_then_time(
     migrated_db_url: str,
 ) -> None:
-    settings = await rows(
+    settings = await query(
         migrated_db_url,
         "select hypertable::text, coalesce(segmentby, ''), orderby from "
         "timescaledb_information.hypertable_compression_settings "
-        "where orderby is not null order by 1",
+        "where orderby is not null and hypertable::text = any(:tables) order by 1",
+        tables=TABLES,
     )
     assert settings == [(t, "", "market_id,ts DESC") for t in TABLES]
-    jobs = await rows(
+    jobs = await query(
         migrated_db_url,
         "select hypertable_name, config->>'compress_after' from timescaledb_information.jobs "
-        "where proc_name = 'policy_compression' order by 1",
+        "where proc_name = 'policy_compression' and hypertable_name = any(:tables) order by 1",
+        tables=TABLES,
     )
     assert jobs == [(t, "1 day") for t in TABLES]
 

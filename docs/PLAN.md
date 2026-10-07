@@ -512,11 +512,25 @@ A larger host can raise it and scale compressed history accordingly.
 | Data | Raw retention | Then |
 |---|---|---|
 | Trades (30 days raw; markets ever watched: forever, in `trades_watchlist`) | Compressed after 1 day | 1-min / 1-hour candles forever |
-| Tickers (ordinary markets) | 14 days, compressed after 1 day | 1-min / 1-hour aggregates kept forever |
+| Tickers (ordinary markets) | 14 days, compressed after 1 day | 1-hour aggregates (`ticker_1h`) kept forever; **1-minute aggregates (`ticker_1m`) 30 days** (decided 2026-10-07: ~7,400 rows/min, ~10.7 M/day, too big to keep forever) |
 | Multivariate (combo) markets — decision 17 | **No per-combo rows.** Per-minute universe counters (`combo_stats_1m`: creations, determinations, settlements, tickers, trades, contracts, taker dollars; kept forever, ~1 row per minute per family) and a log of individual combo trades with ≥ $500 taker dollars (`combo_large_trades`, ≈15 k rows/day, 365 days). | No candles for combo markets |
 | Orderbook deltas (watchlist only) | 14 days | Dropped |
-| Orderbook snapshots (watchlist, every 300 s by default) | 90 days | 5-min downsample kept 1 year |
+| Orderbook snapshots (watchlist, every 300 s by default) | **365 days** (at the default interval they already are the 5-minute downsample; a shorter interval would need a real downsample step) | Dropped |
 | Markets / events (incl. outcomes) — decision 15 | Age counts from `settlement_ts`; unsettled rows never expire. **0–30 days: full row. 30–90 days: slimmed to an outcome-only row** (rules text and sub-titles dropped; ticker, event, status, result, settlement, times and strikes kept). **After 90 days: deleted, except markets that are watched (ever, see decision 12) or pinned.** Events follow their markets; series are kept (≈15k rows). | — |
+
+**Candles and retention (slice 2.7b, 2026-10-07):** continuous aggregates `candles_1m` /
+`candles_1h` (trades: open, high, low, close, volume, count; forever) and `ticker_1m` (30 days) /
+`ticker_1h` (forever) (price OHLC without null prices, last bid/ask, volume, open interest, tick
+count), each with a `*_v` view in dollars. Refresh policies look back only 1-2 days, so dropping
+old raw chunks never touches history; this is tested (raw deleted, candle unchanged).
+Aggregates compress after 3 days (segmented by market). Raw retention is on: trades 30 d,
+tickers 14 d, deltas 14 d, snapshots 365 d, `combo_large_trades` 365 d. Live check on 5 minutes of
+real data: 2,617 of 2,617 minute candles; high/low/volume/count exact for all; total volume
+equal to the trade table. **Known limit:** Kalshi stamps several trades with the same
+microsecond, so open/close are ambiguous in those minutes (≈5% of minute candles; 1,716 such
+instants in the sample). Retention periods are constants in migration 0010 until the
+configuration work in 2.8/2.9. Aggregates created `WITH NO DATA`: a database that already holds
+more than ~2 days of history before this migration would need a manual refresh.
 
 **Compression, measured (slice 2.7a, 2026-10-07, 8 minutes of real data, 62 watched markets):**
 layout = batches ordered by `market_id, ts DESC`, no `segmentby`, compressed after 1 day.
@@ -597,7 +611,7 @@ container and run on the Linux CI job only (macOS/Windows runners have no Docker
 | 2.4 | Combo-market storage (decision 10) |
 | 2.5 (a: live add/remove on the feed — done; b: orderbook storage — done; c: watchlist controller — done) | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API). Semantics (decisions 12–13): **adding** a market subscribes it live (`add_markets`, fresh snapshot), copies its last 30 days of raw trades into `trades_watchlist`, and opens a `watchlist_periods` row; **while watched**, snapshots/deltas are stored and trades go to both trade tables; **removing** stops orderbook capture (`delete_markets`) and closes the period but deletes nothing — orderbook data ages out under normal retention, `trades_watchlist` is kept forever. Capture covers the union of all users' watchlists (reference-counted). Auto top-N entries stay ≥12 h once added; manual entries are never auto-removed. Needs a `kalshi-core` extension (live add/remove on `OrderBookFeed`) and a live probe of Kalshi's undocumented per-subscription market limit |
 | 2.6 — done | Gap handling: gap log; trade backfill via REST on a `reconnected` event and on startup (tickers cannot be backfilled, so those gaps are recorded) |
-| 2.7 (a: compression — done; b: candles + raw-data retention; c: settled-market slimming/deletion + `pins`) | Split because raw-data retention must not be switched on before the candles that replace it exist. **a:** columnar compression after 1 day. **b:** 1-minute and 1-hour continuous aggregates (trades OHLC/volume, ticker aggregates), then retention (trades 30 d, tickers 14 d, orderbook deltas 14 d, snapshots 90 d + 5-min downsample, `combo_large_trades` 365 d). **c:** decision 15 (full 30 d / slim to 90 d / delete unless watched or pinned) as a scheduled job, plus the `pins` table |
+| 2.7 (a: compression — done; b: candles + raw-data retention — done; c: settled-market slimming/deletion + `pins`) | Split because raw-data retention must not be switched on before the candles that replace it exist. **a:** columnar compression after 1 day. **b:** 1-minute and 1-hour continuous aggregates (trades OHLC/volume, ticker aggregates), then retention (trades 30 d, tickers 14 d, orderbook deltas 14 d, snapshots 90 d + 5-min downsample, `combo_large_trades` 365 d). **c:** decision 15 (full 30 d / slim to 90 d / delete unless watched or pinned) as a scheduled job, plus the `pins` table |
 | 2.8 | Storage governor + `kterm-server status` |
 | 2.9 | `kterm-server init`, production Compose, health checks, Mac Studio deployment (TLS certificate generation moves to Phase 3 with the API) |
 | 2.10 | 48-hour calibration run (decision 11), then retune retention defaults |
@@ -693,3 +707,4 @@ dev key.
 Ideas raised but **not** in scope. Not to be built until promoted into a phase.
 
 - Automated trading strategies (decision #2: manual first; strategy interface later).
+- Exclude the fast crypto 15-minute books from the auto top-N (they made 58% of orderbook deltas in the 2.7a sample). Raised 2026-10-07; deferred until the storage governor (2.8) shows whether it is needed.
