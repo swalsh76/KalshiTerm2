@@ -7,10 +7,13 @@ architecture, packaging, deployment, and build order. Update it when decisions c
 
 ## Status
 
-Phase 0 (scaffolding) is built on branch `phase-0-scaffolding`, awaiting approval to merge;
-next is Phase 1 (kalshi-core). Decisions made:
-web UI + Typer CLI, manual trading first, multi-user server, MIT license, private
-project (no PyPI). No **[OPEN]** items remain in PLAN.md §12.
+Phases 0 (scaffolding) and 1 (`kalshi-core`) are complete and merged to `main`; next is
+Phase 2 (server storage and ingestion). Decisions made: web UI + Typer CLI, manual trading
+first, multi-user server, MIT license, private project (no PyPI), multivariate markets kept,
+read-only production key for dev. No **[OPEN]** items remain in PLAN.md §12.
+
+Live integration tests are opt-in: `KALSHI_INTEGRATION=1 uv run pytest
+packages/kalshi-core/tests/test_live.py -s` (read-only; skipped by default and in CI).
 
 ## Non-negotiables
 

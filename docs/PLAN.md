@@ -470,7 +470,9 @@ Each phase ends with passing tests and CI green.
   `/markets` is dominated by `KXMVE…` combo markets (1000 of the first 1000 open), and each
   carries 2–58 legs (median ~5). At ~1 KB per creation message this alone is on the order of
   10 GB/day uncompressed. Only the 48-hour calibration run can say what is sustainable;
-  expect MVE to need compact storage and short raw retention.
+  expect MVE to need compact storage and short raw retention. Also measured: the unfiltered
+  `trade` channel delivers ~180 trades/s across all markets (1,472 in 8 s), and Kalshi lists
+  ~14,700 series.
 - **Data volume** — multivariate (`KXMVE…`) markets are numerous and busy and are now kept, so
   the Phase 2 calibration run must measure them separately; the storage governor still
   applies, and MVE retention may need to be tighter than for ordinary markets. Full-universe

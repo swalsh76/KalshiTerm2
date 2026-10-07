@@ -48,4 +48,5 @@ explicit_package_bases = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = ["integration: hits the real Kalshi API (opt-in via KALSHI_INTEGRATION=1)"]
 testpaths = ["packages"]
