@@ -228,7 +228,9 @@ async def test_known_markets_keep_their_id_and_unknown_ones_get_placeholders(
     )
 
 
-async def test_combo_market_messages_are_skipped_and_counted(migrated_db_url: str) -> None:
+async def test_combo_messages_never_reach_the_ordinary_tables_or_the_market_list(
+    migrated_db_url: str,
+) -> None:
     ingestor = await run(
         migrated_db_url,
         [
@@ -237,12 +239,10 @@ async def test_combo_market_messages_are_skipped_and_counted(migrated_db_url: st
             ticker_msg("KXA-E1-X"),
         ],
     )
-    assert ingestor.skipped_mve == 2
     assert ordinary(ingestor) == {"tickers": 1, "trades": 0, "market_lifecycle": 0}
-    assert (
-        await scalar(migrated_db_url, "select count(*) from markets where ticker like 'KXMVE%'")
-        == 0
-    )
+    assert ingestor.combo_counted == {"ticker": 1, "trade": 1}
+    combo_count = "select count(*) from markets where ticker like 'KXMVE%'"
+    assert await scalar(migrated_db_url, combo_count) == 0  # no placeholder rows for combos
 
 
 async def test_unrepresentable_or_malformed_rows_are_rejected_without_blocking_the_rest(

@@ -747,7 +747,6 @@ source = { editable = "packages/kalshiterm-server" }
 dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
-    { name = "httpx" },
     { name = "kalshi-core" },
     { name = "pydantic-settings" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -758,7 +757,6 @@ dependencies = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
     { name = "asyncpg", specifier = ">=0.29" },
-    { name = "httpx", specifier = ">=0.27" },
     { name = "kalshi-core", editable = "packages/kalshi-core" },
     { name = "pydantic-settings", specifier = ">=2.4" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },

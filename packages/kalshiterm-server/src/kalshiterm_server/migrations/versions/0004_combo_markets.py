@@ -23,7 +23,8 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-def upgrade() -> None:
+def create_per_combo_tables() -> None:
+    """The per-combo tables and views (also recreated by the 0005 downgrade)."""
     op.execute(
         """
         CREATE TABLE combo_markets (
@@ -73,22 +74,6 @@ def upgrade() -> None:
         op.execute(f"CREATE INDEX {table}_market_ts_idx ON {table} (market_id, ts DESC)")
     op.execute(
         """
-        CREATE TABLE combo_stats_1m (
-            minute         timestamptz NOT NULL,
-            family         text        NOT NULL,
-            created        integer     NOT NULL DEFAULT 0,
-            determined     integer     NOT NULL DEFAULT 0,
-            settled        integer     NOT NULL DEFAULT 0,
-            close_updated  integer     NOT NULL DEFAULT 0,
-            ticker_msgs    integer     NOT NULL DEFAULT 0,
-            trades         integer     NOT NULL DEFAULT 0,
-            contracts_e2   bigint      NOT NULL DEFAULT 0,
-            PRIMARY KEY (minute, family)
-        )
-        """
-    )
-    op.execute(
-        """
         CREATE VIEW combo_markets_v AS
         SELECT c.*, (c.settlement_value_e6::numeric / 1000000)::numeric(30,6) AS settlement_value,
                cardinality(c.leg_market_ids) AS leg_count
@@ -103,6 +88,26 @@ def upgrade() -> None:
                (t.count_e2::numeric / 100)::numeric(30,2) AS count,
                t.taker_side, t.is_block_trade
         FROM combo_trades t JOIN combo_markets c ON c.id = t.market_id
+        """
+    )
+
+
+def upgrade() -> None:
+    create_per_combo_tables()
+    op.execute(
+        """
+        CREATE TABLE combo_stats_1m (
+            minute         timestamptz NOT NULL,
+            family         text        NOT NULL,
+            created        integer     NOT NULL DEFAULT 0,
+            determined     integer     NOT NULL DEFAULT 0,
+            settled        integer     NOT NULL DEFAULT 0,
+            close_updated  integer     NOT NULL DEFAULT 0,
+            ticker_msgs    integer     NOT NULL DEFAULT 0,
+            trades         integer     NOT NULL DEFAULT 0,
+            contracts_e2   bigint      NOT NULL DEFAULT 0,
+            PRIMARY KEY (minute, family)
+        )
         """
     )
 

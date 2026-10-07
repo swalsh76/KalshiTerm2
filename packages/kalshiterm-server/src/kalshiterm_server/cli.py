@@ -102,8 +102,7 @@ def ingest_command(
                     "multivariate_market_lifecycle",
                 ):
                     await ws.subscribe(channel)
-                rest = KalshiRestClient(settings, signer=signer)
-                ingestor = StreamIngestor(ws.messages(), engine, rest=rest)
+                ingestor = StreamIngestor(ws.messages(), engine)
 
                 async def report() -> None:
                     while True:
