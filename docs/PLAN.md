@@ -196,7 +196,9 @@ One Docker image, three service roles: `kterm-server ingest`, `kterm-server anal
 
 - **PostgreSQL + TimescaleDB** (pinned official image).
 - Reference tables: `series`, `events`, `markets` (outcomes stored on the market row).
-- Hypertables: `tickers`, `trades`, `orderbook_snapshots`, `orderbook_deltas`.
+- Hypertables: `tickers`, `trades`, `orderbook_snapshots`, `orderbook_deltas`, plus
+  `trades_watchlist` (raw trades of every market that has ever been watched; no retention).
+  `watchlist_periods(market, added_at, removed_at)` records orderbook coverage windows.
 - Continuous aggregates: 1-minute and 1-hour candles.
 - Results: `analysis_results`, `alerts`.
 - Migrations via **Alembic**, applied automatically on API startup.
@@ -414,7 +416,7 @@ A larger host can raise it and scale compressed history accordingly.
 
 | Data | Raw retention | Then |
 |---|---|---|
-| Trades (30 days raw; watchlist markets: forever) | Compressed after 1 day | 1-min / 1-hour candles forever |
+| Trades (30 days raw; markets ever watched: forever, in `trades_watchlist`) | Compressed after 1 day | 1-min / 1-hour candles forever |
 | Tickers (ordinary markets) | 14 days, compressed after 1 day | 1-min / 1-hour aggregates kept forever |
 | Multivariate (combo) markets | One compact row per market (legs as an array, plus outcome), 30 days; raw combo tickers/trades 3 days | No candles for combo markets |
 | Orderbook deltas (watchlist only) | 14 days | Dropped |
@@ -478,7 +480,7 @@ container and run on the Linux CI job only (macOS/Windows runners have no Docker
 | 2.2 | Reference data: `series`, `events`, `markets` + discovery poller (≈121k open ordinary markets, full refresh ≈14 s; combo markets arrive via lifecycle events, not polling) |
 | 2.3 | Streaming core: batched `COPY` writer, `tickers` / `trades` / lifecycle tables, exchange + receipt timestamps, ingestion-lag metric, behaviour when the database is down |
 | 2.4 | Combo-market storage (decision 10) |
-| 2.5 | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API) |
+| 2.5 | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API). Semantics (decisions 12–13): **adding** a market subscribes it live (`add_markets`, fresh snapshot), copies its last 30 days of raw trades into `trades_watchlist`, and opens a `watchlist_periods` row; **while watched**, snapshots/deltas are stored and trades go to both trade tables; **removing** stops orderbook capture (`delete_markets`) and closes the period but deletes nothing — orderbook data ages out under normal retention, `trades_watchlist` is kept forever. Capture covers the union of all users' watchlists (reference-counted). Auto top-N entries stay ≥12 h once added; manual entries are never auto-removed. Needs a `kalshi-core` extension (live add/remove on `OrderBookFeed`) and a live probe of Kalshi's undocumented per-subscription market limit |
 | 2.6 | Gap handling: gap log; trade backfill via REST on a `reconnected` event (tickers cannot be backfilled, so those gaps are recorded) |
 | 2.7 | Compression, retention policies, continuous aggregates (1-minute, 1-hour) |
 | 2.8 | Storage governor + `kterm-server status` |
@@ -560,6 +562,8 @@ dev key.
 | — | Dev credentials | Read-only production Kalshi key (decided 2026-10-06), layered safeguards in §4; demo stays default | **Decided** |
 | 9 | Trade retention | 30 days raw (watchlist markets forever), 1-min/1-hour candles forever | **Decided** |
 | 10 | Combo-market storage | Compact: one row per market (legs as array + outcome), 30 days; raw combo tickers/trades 3 days; no candles | **Decided** |
+| 12 | Watchlist removal | A market that has ever been watched keeps its raw trades forever (`trades_watchlist`); removal stops orderbook capture but deletes nothing | **Decided** |
+| 13 | Auto top-N churn | 12-hour minimum dwell once added; manual entries never auto-removed | **Decided** |
 | 11 | Calibration host | MacBook with sleep disabled (before the Mac Studio is the host) | **Decided** |
 | — | Server host | Mac Studio M4, Docker on macOS (supersedes Pi/Windows ideas) | **Decided** |
 | — | TLS approach | Self-signed + TOFU pinning | **Decided** |
