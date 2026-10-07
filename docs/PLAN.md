@@ -205,6 +205,16 @@ One Docker image, three service roles: `kterm-server ingest`, `kterm-server anal
 - Results: `analysis_results`, `alerts`.
 - Migrations via **Alembic**, applied automatically on API startup.
 
+**Numeric convention (decision 14, 2026-10-06): one form, `bigint` fixed-point, everywhere.**
+No `numeric`, no `float`, no `int4` in the schema. Two scales, carried in column names:
+dollar amounts and strike levels in millionths (`*_e6`, e.g. `price_e6`, `floor_strike_e6`),
+contract counts in hundredths (`*_e2`, e.g. `size_e2`, `volume_e2`). One Python module
+(`kalshiterm_server.fixedpoint`) converts at the edge and **raises** on any value finer than
+the scale — never rounds silently. SQL views expose readable decimals. Measured (2 M synthetic
+ticker rows, compressed): `bigint` 10⁻⁴/10⁻² = 11.7 B/row, with 10⁻⁶ dollars = 16.1 B/row,
+`numeric` 33.5, `float8` 54.0; declared integer width does not matter after compression, but
+extra scale digits do (a universal 10⁻⁶ scale for counts was 25.2 B/row), hence two scales.
+
 ### 5.3 Analytics worker
 
 - **Plugin interface** via entry points (`kalshiterm.analyzers`) so third parties can add
@@ -425,7 +435,8 @@ A larger host can raise it and scale compressed history accordingly.
 | Orderbook snapshots (watchlist, every 60 s) | 90 days | 5-min downsample kept 1 year |
 | Markets / events (incl. outcomes) | Forever | — |
 
-TimescaleDB native compression expected to yield ~10–20× on aged chunks (unmeasured). Measured
+TimescaleDB native compression: plan on **4–9×** until the calibration run (synthetic ticker
+data measured 8.8× for integers, 3.5× for `numeric`; real data should compress better). Measured
 volumes (2026-10-06) put raw ingestion at roughly 10 GB/day (~0.5–1 GB/day compressed), which
 is why the original "trades forever" and "7-day uncompressed window" defaults were dropped.
 
@@ -565,6 +576,7 @@ dev key.
 | 9 | Trade retention | 30 days raw (watchlist markets forever), 1-min/1-hour candles forever | **Decided** |
 | 10 | Combo-market storage | Compact: one row per market (legs as array + outcome), 30 days; raw combo tickers/trades 3 days; no candles | **Decided** |
 | 12 | Watchlist removal | A market that has ever been watched keeps its raw trades forever (`trades_watchlist`); removal stops orderbook capture but deletes nothing | **Decided** |
+| 14 | Numeric representation | `bigint` fixed-point only: dollars/strikes at 10⁻⁶ (`*_e6`), counts at 10⁻² (`*_e2`); loud failure on finer precision | **Decided** |
 | 13 | Auto top-N churn | 12-hour minimum dwell once added; manual entries never auto-removed | **Decided** |
 | 11 | Calibration host | MacBook with sleep disabled (before the Mac Studio is the host) | **Decided** |
 | — | Server host | Mac Studio M4, Docker on macOS (supersedes Pi/Windows ideas) | **Decided** |
