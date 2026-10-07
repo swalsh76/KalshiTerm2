@@ -177,6 +177,25 @@ KalshiTerm2/
   Bug found by the replay round-trip test: SNAPSHOT events must carry a *copy* of the book
   (the tracker mutates its book in place), so they do; DELTA events reference the live book
   and must be consumed immediately.
+- **Watchlist controller (slice 2.5c, verified live 2026-10-07):** `kterm-server ingest
+  --watchlist FILE` (TOML, re-read every cycle, default 300 s): `[watchlist] markets = [...]`
+  (manual), `auto_top_n` and `auto_window_minutes` (default 60). "Top" = most contracts traded
+  in the window, from our own `trades` table (ordinary markets only; combos and settled markets
+  excluded), so a fresh database has no auto picks until a few minutes of trades exist.
+  Manual markets leave the moment they are dropped from the file; auto markets stay >= 12 h
+  once added, so the watched set can briefly exceed `auto_top_n`. `--watch` still works as extra
+  manual tickers. Adding a market = feed `add_markets`, then the ingestor opens a
+  `watchlist_periods` row and copies the market's raw trades into `trades_watchlist` **inside
+  its next write transaction**, and from that same batch on writes its trades to both tables
+  (no gap, no duplicate; a re-added market is filled in from `trades`, exact duplicates
+  skipped). Verified live: 11,403 trades copied, 0 duplicates, all matching `trades`. On
+  startup, periods left open by a previous run are closed (they did not cover the downtime) and
+  re-opened as the list is applied. `watchlist_periods.source` is how a period was opened.
+  Two bugs found on the way: an empty initial market list would have subscribed to *every*
+  market (the client omits an empty `market_tickers`), so the feed now subscribes only when it
+  has markets; and when a new subscription's first messages overtook the `begin_subscription`
+  call, the tracker reset its sequence position and reported a false gap, so a late declaration
+  now keeps what the early messages established.
 - Client-side rate limiter mirroring Kalshi's **token-bucket** model (docs, Oct 2026):
   Basic tier = 200 read / 100 write tokens per second, most requests cost 10 tokens,
   buckets hold one second of budget, read and write are independent, and overage is a bare
@@ -541,7 +560,7 @@ container and run on the Linux CI job only (macOS/Windows runners have no Docker
 | 2.2 | Reference data: `series`, `events`, `markets` + discovery poller (≈121k open ordinary markets, full refresh ≈14 s; combo markets arrive via lifecycle events, not polling) |
 | 2.3 | Streaming core: batched `COPY` writer, `tickers` / `trades` / lifecycle tables, exchange + receipt timestamps, ingestion-lag metric, behaviour when the database is down |
 | 2.4 | Combo-market storage (decision 10) |
-| 2.5 (a: live add/remove on the feed — done; b: orderbook storage — done; c: watchlist controller) | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API). Semantics (decisions 12–13): **adding** a market subscribes it live (`add_markets`, fresh snapshot), copies its last 30 days of raw trades into `trades_watchlist`, and opens a `watchlist_periods` row; **while watched**, snapshots/deltas are stored and trades go to both trade tables; **removing** stops orderbook capture (`delete_markets`) and closes the period but deletes nothing — orderbook data ages out under normal retention, `trades_watchlist` is kept forever. Capture covers the union of all users' watchlists (reference-counted). Auto top-N entries stay ≥12 h once added; manual entries are never auto-removed. Needs a `kalshi-core` extension (live add/remove on `OrderBookFeed`) and a live probe of Kalshi's undocumented per-subscription market limit |
+| 2.5 (a: live add/remove on the feed — done; b: orderbook storage — done; c: watchlist controller — done) | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API). Semantics (decisions 12–13): **adding** a market subscribes it live (`add_markets`, fresh snapshot), copies its last 30 days of raw trades into `trades_watchlist`, and opens a `watchlist_periods` row; **while watched**, snapshots/deltas are stored and trades go to both trade tables; **removing** stops orderbook capture (`delete_markets`) and closes the period but deletes nothing — orderbook data ages out under normal retention, `trades_watchlist` is kept forever. Capture covers the union of all users' watchlists (reference-counted). Auto top-N entries stay ≥12 h once added; manual entries are never auto-removed. Needs a `kalshi-core` extension (live add/remove on `OrderBookFeed`) and a live probe of Kalshi's undocumented per-subscription market limit |
 | 2.6 | Gap handling: gap log; trade backfill via REST on a `reconnected` event (tickers cannot be backfilled, so those gaps are recorded) |
 | 2.7 | Compression, retention policies, continuous aggregates (1-minute, 1-hour) |
 | 2.8 | Storage governor + `kterm-server status` |

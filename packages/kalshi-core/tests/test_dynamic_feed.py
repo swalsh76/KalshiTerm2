@@ -322,6 +322,20 @@ async def test_removing_the_last_market_unsubscribes_instead_of_sending_an_empty
     assert events[0].kind == SNAPSHOT and events[0].ticker == "D"
 
 
+async def test_a_feed_started_with_no_markets_subscribes_to_nothing_until_one_is_added() -> None:
+    server = FakeBookServer()
+    async with running(server) as url, asyncio.timeout(15):
+        ws, feed = make(url, [])
+        async with ws, feed:
+            await asyncio.sleep(0.1)
+            assert server.commands == []  # an empty list would mean "every market" to Kalshi
+            await feed.add_markets(["A"])
+            events = await collect(feed, 1)
+    assert [c["cmd"] for c in server.commands] == ["subscribe"]
+    assert server.commands[0]["params"]["market_tickers"] == ["A"]
+    assert events[0].kind == SNAPSHOT and events[0].ticker == "A"
+
+
 async def test_a_reconnect_resubscribes_to_the_updated_market_set() -> None:
     server = FakeBookServer()
     async with running(server) as url, asyncio.timeout(15):

@@ -5,6 +5,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator
 from datetime import timedelta
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -18,6 +19,7 @@ from kalshiterm_server import db
 from kalshiterm_server.config import ServerSettings
 from kalshiterm_server.ingest.discovery import discover
 from kalshiterm_server.ingest.stream import StreamIngestor
+from kalshiterm_server.ingest.watchlist import WatchlistConfig, WatchlistController, load_config
 
 app = typer.Typer(no_args_is_help=True, help="KalshiTerm server operations.")
 db_app = typer.Typer(no_args_is_help=True, help="Database migrations.")
@@ -95,10 +97,27 @@ def ingest_command(
     snapshot_interval: float = typer.Option(
         300, help="Seconds between full orderbook snapshots of each watched market."
     ),
+    watchlist: Annotated[
+        Path | None,
+        typer.Option(
+            "--watchlist",
+            exists=True,
+            dir_okay=False,
+            help="TOML file with [watchlist] markets / auto_top_n; re-read every cycle.",
+        ),
+    ] = None,
+    watchlist_every: float = typer.Option(
+        300, help="Seconds between watchlist updates (file re-read, top-N refresh)."
+    ),
 ) -> None:
     """Stream tickers, trades and market lifecycle events (and watched orderbooks) to the DB."""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    if watchlist is not None:
+        try:
+            load_config(watchlist)  # fail fast on a bad file; later edits are re-read live
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--watchlist") from exc
 
     async def run() -> None:
         settings = KalshiSettings()
@@ -115,24 +134,46 @@ def ingest_command(
                 ):
                     await ws.subscribe(channel)
                 source: AsyncIterator[Any] = ws.messages()
-                if watch:
+                feed: OrderBookFeed | None = None
+                if watch or watchlist:
                     rest = await stack.enter_async_context(
                         KalshiRestClient(settings, signer=signer)
                     )
+                    # Starts empty: the controller adds the markets (an empty subscription is
+                    # never sent, so it cannot mean "every market").
                     feed = await stack.enter_async_context(
-                        OrderBookFeed(
-                            ws, rest, list(watch), periodic_snapshot_interval=snapshot_interval
-                        )
+                        OrderBookFeed(ws, rest, [], periodic_snapshot_interval=snapshot_interval)
                     )
                     source = feed.events()  # orderbook events plus everything else, in order
                 ingestor = StreamIngestor(source, engine)
+                tasks: list[asyncio.Task[None]] = []
+                if feed is not None:
+                    controller = WatchlistController(
+                        engine,
+                        feed,
+                        ingestor,
+                        (lambda: load_config(watchlist)) if watchlist else WatchlistConfig,
+                        extra_manual=frozenset(watch or ()),
+                        interval=watchlist_every,
+                    )
+
+                    async def keep_watchlist() -> None:
+                        try:
+                            await controller.start()
+                        except Exception:  # the periodic cycle retries
+                            logging.getLogger("kalshiterm_server").exception(
+                                "watchlist start failed"
+                            )
+                        await controller.run()
+
+                    tasks.append(asyncio.create_task(keep_watchlist()))
 
                 async def report() -> None:
                     while True:
                         await asyncio.sleep(stats_every)
                         typer.echo(f"stats: {ingestor.stats()} ws: {ws.stats()}")
 
-                reporter = asyncio.create_task(report())
+                tasks.append(asyncio.create_task(report()))
                 try:
                     if seconds > 0:
                         async with asyncio.timeout(seconds):
@@ -142,7 +183,8 @@ def ingest_command(
                 except TimeoutError:
                     pass
                 finally:
-                    reporter.cancel()
+                    for task in tasks:
+                        task.cancel()
                 typer.echo(f"final stats: {ingestor.stats()}")
         finally:
             await engine.dispose()

@@ -147,9 +147,19 @@ class BookTracker:
         self._removed: set[str] = set()  # markets dropped live; their late messages are ignored
 
     def begin_subscription(self, sid: int, tickers: list[str]) -> None:
-        """Declare a new subscription: no books yet, and its first message must be seq 1."""
-        self._subs[sid] = _SubState(1, set(tickers))
-        self.stale.update(tickers)
+        """Declare a new subscription: no books yet, and its first message must be seq 1.
+
+        Messages can overtake this call (the feed's pump runs while ``subscribe`` is still
+        returning): then the subscription is already known, and what those messages
+        established (sequence position, books) is kept instead of being reset.
+        """
+        known = self._subs.get(sid)
+        if known is not None:
+            known.tickers.update(tickers)
+            self.stale.update(t for t in tickers if t not in self.books)
+        else:
+            self._subs[sid] = _SubState(1, set(tickers))
+            self.stale.update(tickers)
         self._removed.difference_update(tickers)
 
     def end_subscription(self, sid: int) -> None:
@@ -284,8 +294,11 @@ class OrderBookFeed:
         await self.close()
 
     async def start(self) -> None:
-        self._sid = await self._ws.subscribe(CHANNEL, market_tickers=self._tickers)
-        self.tracker.begin_subscription(self._sid, self._tickers)
+        # Never subscribe with no markets: the client omits an empty list, which Kalshi reads
+        # as "every market". The first add_markets() creates the subscription instead.
+        if self._tickers:
+            self._sid = await self._ws.subscribe(CHANNEL, market_tickers=self._tickers)
+            self.tracker.begin_subscription(self._sid, self._tickers)
         self._pump = asyncio.create_task(self._run_pump())
         if self._periodic_interval:
             self._periodic = asyncio.create_task(self._periodic_snapshots(self._periodic_interval))
@@ -421,7 +434,7 @@ class OrderBookFeed:
         if restored:
             self._sid = restored[0]["sid"]
             self.tracker.begin_subscription(restored[0]["sid"], self._tickers)
-        else:
+        elif self._tickers:
             self._sid = None
             detail = "orderbook subscription was not restored"
             self._out.put_nowait(

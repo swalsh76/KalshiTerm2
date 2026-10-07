@@ -208,3 +208,17 @@ def test_a_rest_snapshot_event_is_also_a_copy() -> None:
     event = t.apply_rest_snapshot("M", rest)
     t.books["M"].yes[D("0.99")] = D("1.00")
     assert event.book is not None and D("0.99") not in event.book.yes
+
+
+def test_messages_that_arrive_before_the_subscription_is_declared_are_not_a_gap() -> None:
+    t = BookTracker()
+    early = [snap(7, 1, "A", yes=[("0.4000", "10.00")]), snap(7, 2, "B", yes=[("0.3000", "4.00")])]
+    events = [e for m in early for e in t.process(m)]
+    assert kinds(events) == [SNAPSHOT, SNAPSHOT]
+
+    t.begin_subscription(7, ["A", "B", "C"])  # the declaration lost the race
+    assert t.stale == {"C"}  # A and B already have books; C has not been seen
+
+    later = t.process(delta(7, 3, "A", "yes", "0.4000", "1.00"))
+    assert kinds(later) == [DELTA]  # in step: no GAP
+    assert t.books["A"].yes == {D("0.4000"): D("11.00")}
