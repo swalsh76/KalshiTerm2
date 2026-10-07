@@ -403,7 +403,7 @@ Docker cannot cap a Postgres volume, so the server governs its own footprint.
 | Postgres overhead (WAL, temp, compression rewrites) + free-space headroom | 15 GB |
 | Backups | 0 GB (stored on the NAS, §9.5) |
 | Reference data, analytics results, continuous aggregates | 8 GB |
-| Hot uncompressed chunks (last 7 days) | 10 GB |
+| Hot uncompressed chunks (last 1–2 days) | 10 GB |
 | Compressed history | ~67 GB |
 | **Total** | **100 GB** |
 
@@ -414,17 +414,21 @@ A larger host can raise it and scale compressed history accordingly.
 
 | Data | Raw retention | Then |
 |---|---|---|
-| Trades | Forever (compressed after 7 days) | — |
-| Tickers | 14 days | 1-min / 1-hour aggregates kept forever |
+| Trades (30 days raw; watchlist markets: forever) | Compressed after 1 day | 1-min / 1-hour candles forever |
+| Tickers (ordinary markets) | 14 days, compressed after 1 day | 1-min / 1-hour aggregates kept forever |
+| Multivariate (combo) markets | One compact row per market (legs as an array, plus outcome), 30 days; raw combo tickers/trades 3 days | No candles for combo markets |
 | Orderbook deltas (watchlist only) | 14 days | Dropped |
 | Orderbook snapshots (watchlist, every 60 s) | 90 days | 5-min downsample kept 1 year |
 | Markets / events (incl. outcomes) | Forever | — |
 
-TimescaleDB native compression expected to yield ~10–20× on aged chunks.
+TimescaleDB native compression expected to yield ~10–20× on aged chunks (unmeasured). Measured
+volumes (2026-10-06) put raw ingestion at roughly 10 GB/day (~0.5–1 GB/day compressed), which
+is why the original "trades forever" and "7-day uncompressed window" defaults were dropped.
 
 ### 9.3 Storage governor
 
-- Runs inside the analytics worker; budget set by `KTERM_STORAGE_BUDGET_GB=100`.
+- Runs inside the analytics worker (in Phase 2, before that worker exists, inside the ingestor
+  process; same code); budget set by `KTERM_STORAGE_BUDGET_GB=100`.
 - Tracks per-table size, daily growth rate, and **projected days to full**; exposed on
   `/status`, `kterm server status`, and the UI.
 - **80% of budget:** alert + tighten raw retention windows.
@@ -454,7 +458,7 @@ Each phase ends with passing tests and CI green.
 |---|---|
 | **0. Scaffolding** | uv workspace, three package skeletons, ruff/mypy/pytest, pre-commit, CI matrix, server image build, docs skeleton, MIT license & repo hygiene files |
 | **1. kalshi-core** | Signing (Ed25519), REST client & models, WS client with reconnect/resubscribe/seq-gap recovery, rate limiter, **multivariate market support** (`/events/multivariate`, MVE market fields `mve_collection_ticker` / `mve_selected_legs`, WS `multivariate_market_lifecycle` channel); integration-tested read-only (production data key; demo where applicable) |
-| **2. Server storage & ingestion** | Schema + Alembic, Timescale hypertables, compression/retention policies, continuous aggregates, ingestor, Compose stack, `kterm-server init`, storage governor, **48-h calibration run** |
+| **2. Server storage & ingestion** | Schema + Alembic, Timescale hypertables, compression/retention policies, continuous aggregates, ingestor, Compose stack, `kterm-server init`, storage governor, **48-h calibration run** — broken into slices 2.1–2.10 in §10.1 |
 | **3. Server API** | REST + WS push with catch-up, token auth, TLS, health/status endpoints |
 | **3b. LAN features** | zeroconf discovery, client profiles, TOFU cert pinning, `cert rotate`, `kterm server status`, backup/restore |
 | **4. Analytics** | Plugin framework + built-in analyzers + alerts |
@@ -462,6 +466,27 @@ Each phase ends with passing tests and CI green.
 | **6. Client trading** | Risk layer first, order management, private WS channels; **demo-only until sign-off**; test proving trading works with server offline |
 | **7. Terminal UI** | Bloomberg-style UI per §7 decision (local backend, panels, grids, charts, command bar, order entry) |
 | **8. Packaging** | Frontend build bundled into client wheel, install docs, tagged v0.1.0 |
+
+### 10.1 Phase 2 slices
+
+Each slice is its own branch, merged when CI is green. Database tests use a real TimescaleDB
+container and run on the Linux CI job only (macOS/Windows runners have no Docker).
+
+| # | Slice |
+|---|---|
+| 2.1 | Dev database stack: Compose + pinned TimescaleDB, Alembic scaffold, DB test harness |
+| 2.2 | Reference data: `series`, `events`, `markets` + discovery poller (≈121k open ordinary markets, full refresh ≈14 s; combo markets arrive via lifecycle events, not polling) |
+| 2.3 | Streaming core: batched `COPY` writer, `tickers` / `trades` / lifecycle tables, exchange + receipt timestamps, ingestion-lag metric, behaviour when the database is down |
+| 2.4 | Combo-market storage (decision 10) |
+| 2.5 | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API) |
+| 2.6 | Gap handling: gap log; trade backfill via REST on a `reconnected` event (tickers cannot be backfilled, so those gaps are recorded) |
+| 2.7 | Compression, retention policies, continuous aggregates (1-minute, 1-hour) |
+| 2.8 | Storage governor + `kterm-server status` |
+| 2.9 | `kterm-server init`, production Compose, health checks, Mac Studio deployment (TLS certificate generation moves to Phase 3 with the API) |
+| 2.10 | 48-hour calibration run (decision 11), then retune retention defaults |
+
+The server uses its own read-only Kalshi key (created at deployment time), separate from the
+dev key.
 
 ## 11. Risks & Notes
 
@@ -533,6 +558,9 @@ Each phase ends with passing tests and CI green.
 | 8 | Key types | Ed25519 only; RSA-PSS not supported | **Decided** |
 | 7 | Multivariate (combo) markets | Keep: ingest and store them (decided 2026-10-06; they dominate the live trade stream) | **Decided** |
 | — | Dev credentials | Read-only production Kalshi key (decided 2026-10-06), layered safeguards in §4; demo stays default | **Decided** |
+| 9 | Trade retention | 30 days raw (watchlist markets forever), 1-min/1-hour candles forever | **Decided** |
+| 10 | Combo-market storage | Compact: one row per market (legs as array + outcome), 30 days; raw combo tickers/trades 3 days; no candles | **Decided** |
+| 11 | Calibration host | MacBook with sleep disabled (before the Mac Studio is the host) | **Decided** |
 | — | Server host | Mac Studio M4, Docker on macOS (supersedes Pi/Windows ideas) | **Decided** |
 | — | TLS approach | Self-signed + TOFU pinning | **Decided** |
 | — | Server location | Remote host on same LAN | **Decided** |
