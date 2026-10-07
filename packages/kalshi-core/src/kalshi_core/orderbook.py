@@ -199,11 +199,15 @@ class OrderBookFeed:
         tickers: list[str],
         *,
         snapshot_timeout: float = 5.0,
+        out_limit: int = 1_000,
     ) -> None:
         self._ws = ws
         self._rest = rest
         self._tickers = list(tickers)
         self._snapshot_timeout = snapshot_timeout
+        self._out_limit = out_limit
+        self._space = asyncio.Event()  # set whenever the consumer has taken an event
+        self._space.set()
         self.tracker = BookTracker()
         self._sid: int | None = None
         self._out: asyncio.Queue[BookEvent | Exception | None] = asyncio.Queue()
@@ -240,9 +244,14 @@ class OrderBookFeed:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
 
+    def stats(self) -> dict[str, int]:
+        """WebSocket queue stats plus this feed's own output backlog."""
+        return {**self._ws.stats(), "feed_depth": self._out.qsize()}
+
     async def events(self) -> AsyncIterator[BookEvent]:
         while True:
             item = await self._out.get()
+            self._space.set()
             if item is None:
                 return
             if isinstance(item, Exception):
@@ -252,6 +261,11 @@ class OrderBookFeed:
     async def _run_pump(self) -> None:
         try:
             async for message in self._ws.messages():
+                # Backpressure: leave the backlog in the WebSocket client's bounded queue
+                # instead of piling it up here.
+                while self._out.qsize() >= self._out_limit:
+                    self._space.clear()
+                    await self._space.wait()
                 self._handle(message)
         except KalshiWSError as exc:
             self._out.put_nowait(exc)

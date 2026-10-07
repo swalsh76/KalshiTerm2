@@ -48,6 +48,7 @@ class KalshiWebSocket:
         reconnect_base: float = 0.5,
         reconnect_max: float = 30.0,
         max_reconnect_attempts: int | None = None,
+        max_queue_messages: int = 500_000,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._url = url or settings.ws_url
@@ -59,6 +60,7 @@ class KalshiWebSocket:
         self._reconnect_base = reconnect_base
         self._reconnect_max = reconnect_max
         self._max_attempts = max_reconnect_attempts
+        self._max_queue = max_queue_messages
         self._sleep = sleep
         self._conn: Any = None
         self._supervisor: asyncio.Task[None] | None = None
@@ -71,6 +73,13 @@ class KalshiWebSocket:
         self._reconnecting = False
         self._closing = False
         self._lost: str | None = None
+        self._overflowed = False
+        self._overflows = 0
+        self._dropped = 0
+        self._dropped_run = 0  # drops since the last ``reconnected`` event
+        self._high_water = 0
+        self._reason = "connection_lost"
+        self._background: set[asyncio.Task[None]] = set()
         if settings.is_production:
             log.warning("Kalshi WebSocket using PRODUCTION environment (read-only)")
 
@@ -124,6 +133,7 @@ class KalshiWebSocket:
                 first = False
                 await reader
                 self._connected = False
+                self._reason = "overflow" if self._overflowed else "connection_lost"
                 self._fail_pending()
                 if self._closing or not self._auto_reconnect:
                     break
@@ -139,6 +149,14 @@ class KalshiWebSocket:
         """Reconnect with backoff. False if closing or attempts are exhausted."""
         self._reconnecting = True
         try:
+            if self._reason == "overflow":
+                # Reconnecting into a still-full queue would just overflow again and hammer
+                # Kalshi with connects: wait until the consumer has drained to half the limit.
+                log.warning("waiting for the consumer to drain before reconnecting")
+                while self._queue.qsize() > self._max_queue // 2:
+                    if self._closing:
+                        return False
+                    await self._sleep(0.05)
             attempt = 0
             while True:
                 if self._closing:
@@ -155,6 +173,7 @@ class KalshiWebSocket:
                 except (OSError, WebSocketException, TimeoutError) as exc:
                     log.warning("Kalshi WebSocket reconnect attempt %d failed: %s", attempt, exc)
                     continue
+                self._overflowed = False  # a fresh connection starts with room to spare
                 self._connected = True
                 return True
         finally:
@@ -191,7 +210,13 @@ class KalshiWebSocket:
                 failed.append({"channel": channel, "old_sid": old_sid, "error": str(exc)})
             else:
                 resubscribed.append({"channel": channel, "sid": sid, "old_sid": old_sid})
-        event = {"resubscribed": resubscribed, "failed": failed}
+        event = {
+            "resubscribed": resubscribed,
+            "failed": failed,
+            "reason": self._reason,
+            "dropped": self._dropped_run,
+        }
+        self._dropped_run = 0
         self._queue.put_nowait(WsMessage(type=RECONNECTED, msg=event))
         return True
 
@@ -206,6 +231,11 @@ class KalshiWebSocket:
                 self._dispatch(message)
         except ConnectionClosed:
             pass
+        finally:
+            # Fail commands the moment the link is gone, not when the supervisor notices:
+            # a command sent while resubscribing would otherwise wait out its full timeout.
+            self._connected = False
+            self._fail_pending()
 
     def _fail_pending(self) -> None:
         for fut in self._pending.values():
@@ -227,7 +257,50 @@ class KalshiWebSocket:
         elif self._held is not None:
             self._held.append(message)
         else:
-            self._queue.put_nowait(message)
+            self._enqueue(message)
+
+    def _enqueue(self, message: WsMessage) -> None:
+        if self._overflowed:  # the connection is being torn down; the backfill covers this
+            self._dropped += 1
+            self._dropped_run += 1
+            return
+        depth = self._queue.qsize()
+        if depth >= self._max_queue:
+            self._on_overflow()
+            return
+        self._queue.put_nowait(message)
+        self._high_water = max(self._high_water, depth + 1)
+
+    def _on_overflow(self) -> None:
+        """The consumer fell too far behind: bound memory by reconnecting.
+
+        Queued messages are still delivered in order, followed by a ``reconnected`` event
+        (``reason="overflow"``, ``dropped=N``) so the consumer knows to backfill.
+        """
+        self._overflowed = True
+        self._overflows += 1
+        self._dropped += 1
+        self._dropped_run += 1
+        log.error(
+            "WebSocket receive queue full (%d messages); dropping the connection to "
+            "reconnect, consumer must backfill",
+            self._max_queue,
+        )
+        if not self._auto_reconnect:
+            self._lost = "receive queue overflow"
+        task = asyncio.get_running_loop().create_task(self._conn.close())
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    def stats(self) -> dict[str, int]:
+        """Queue health for monitoring (e.g. a server ``/status`` endpoint)."""
+        return {
+            "queue_depth": self._queue.qsize(),
+            "queue_limit": self._max_queue,
+            "high_water": self._high_water,
+            "overflows": self._overflows,
+            "dropped": self._dropped,
+        }
 
     async def _command(self, cmd: str, params: dict[str, Any]) -> WsMessage:
         if self._conn is None or not self._connected:
