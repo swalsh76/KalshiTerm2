@@ -49,6 +49,8 @@ async def test_streaming_tables_are_hypertables_with_the_planned_chunk_sizes(
         "join timescaledb_information.dimensions d using (hypertable_name) order by 1",
     )
     assert dict(rows) == {  # type: ignore[arg-type]
+        "combo_tickers": "1 day",
+        "combo_trades": "1 day",
         "market_lifecycle": "7 days",
         "tickers": "1 day",
         "trades": "1 day",

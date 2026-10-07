@@ -95,9 +95,15 @@ def ingest_command(
         engine = db.make_engine(_url())
         try:
             async with KalshiWebSocket(settings, signer) as ws:
-                for channel in ("ticker", "trade", "market_lifecycle_v2"):
+                for channel in (
+                    "ticker",
+                    "trade",
+                    "market_lifecycle_v2",
+                    "multivariate_market_lifecycle",
+                ):
                     await ws.subscribe(channel)
-                ingestor = StreamIngestor(ws.messages(), engine)
+                rest = KalshiRestClient(settings, signer=signer)
+                ingestor = StreamIngestor(ws.messages(), engine, rest=rest)
 
                 async def report() -> None:
                     while True:
