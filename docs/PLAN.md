@@ -196,6 +196,20 @@ One Docker image, three service roles: `kterm-server ingest`, `kterm-server anal
   and `seq` restart on every reconnect (observed live: both came back as 1). The WS client
   yields a `reconnected` event ahead of any post-reconnect data; on it the ingestor backfills
   trades (and re-snapshots watched orderbooks) via REST for the outage window.
+- **Streaming writer (slice 2.3, measured 2026-10-07):** messages are timestamped when read off
+  the socket, filtered (combo `KXMVE…` tickers/trades are skipped and counted until slice 2.4),
+  buffered, and written in atomic batches via binary `COPY` every second or 5,000 rows. A failed
+  batch is retried with backoff, in order, with no partial data; buffered + in-flight rows are
+  capped so a stalled database pauses intake and the WebSocket client's bounded queue takes
+  over; the shutdown drain gives up after 3 attempts rather than hang. Markets seen by the
+  stream before discovery get a placeholder row (`status='unknown'`, same id kept) that every
+  discovery cycle resolves by direct `tickers=` lookup. Capacity ≈100k msgs/s against a live
+  mean of ~1.5k and peak ~3.3k. Live 90 s: 46k tickers + 7k trades written, 0 rejected, 0
+  retries, ~25 ms per ~500-row flush; exchange→received lag p50 ≈ 0.2 s / p95 ≈ 0.85 s (includes
+  the ~0.1–0.2 s local clock offset, so ~14 % of rows show a slightly negative lag), plus ≤1 s
+  of deliberate batching before the write. Uncompressed rows ≈160 B (ticker) and ≈132 B
+  (trade) including indexes → about 10 GB/day hot for ordinary markets, so compression after
+  1 day (slice 2.7) is required, not optional.
 - Batched writes to Postgres via `COPY` (asyncpg).
 - Each row stores both **exchange timestamp** and **receipt timestamp** (UTC) to measure
   ingestion lag.
