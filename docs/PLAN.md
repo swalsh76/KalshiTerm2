@@ -210,6 +210,14 @@ One Docker image, three service roles: `kterm-server ingest`, `kterm-server anal
   of deliberate batching before the write. Uncompressed rows ≈160 B (ticker) and ≈132 B
   (trade) including indexes → about 10 GB/day hot for ordinary markets, so compression after
   1 day (slice 2.7) is required, not optional.
+- **Combo markets (slice 2.4, measured 2026-10-07):** the ingestor counts every combo message per
+  minute and ticker family; a trade on a combo without a row is held while a separate resolver
+  looks the market up in batches (≤100 `tickers=` per request, ≈12 new traded combos/s), creates
+  the row (legs resolved to ordinary market ids, placeholders if unknown) and releases the held
+  trades. New combos are not always queryable for a few seconds, so a miss is retried after 2 s
+  and 10 s (without this 7 % of combo trades were lost; with it 0). Quote-only combos are
+  dropped (≈90 % of combo ticker messages). Lifecycle events update stored combos only. The write
+  path never touches the network; held trades are capped.
 - Batched writes to Postgres via `COPY` (asyncpg).
 - Each row stores both **exchange timestamp** and **receipt timestamp** (UTC) to measure
   ingestion lag.
@@ -452,7 +460,7 @@ A larger host can raise it and scale compressed history accordingly.
 |---|---|---|
 | Trades (30 days raw; markets ever watched: forever, in `trades_watchlist`) | Compressed after 1 day | 1-min / 1-hour candles forever |
 | Tickers (ordinary markets) | 14 days, compressed after 1 day | 1-min / 1-hour aggregates kept forever |
-| Multivariate (combo) markets | One compact row per market (legs as an array, plus outcome), 30 days; raw combo tickers/trades 3 days | No candles for combo markets |
+| Multivariate (combo) markets — decision 16 | A per-market row only for combos that have **traded** (≈0.9–1 M/day; legs as ids of ordinary markets + sides), kept 14 days after settlement; raw combo tickers/trades kept 3 days for stored combos; per-minute universe counters (`combo_stats_1m`) kept forever. **OPEN: measured 436 B/row ≈ 6 GB at 14 days — shorten to 7 days and/or slim the row.** | No candles for combo markets |
 | Orderbook deltas (watchlist only) | 14 days | Dropped |
 | Orderbook snapshots (watchlist, every 60 s) | 90 days | 5-min downsample kept 1 year |
 | Markets / events (incl. outcomes) — decision 15 | Age counts from `settlement_ts`; unsettled rows never expire. **0–30 days: full row. 30–90 days: slimmed to an outcome-only row** (rules text and sub-titles dropped; ticker, event, status, result, settlement, times and strikes kept). **After 90 days: deleted, except markets that are watched (ever, see decision 12) or pinned.** Events follow their markets; series are kept (≈15k rows). | — |
@@ -596,6 +604,7 @@ dev key.
 | 7 | Multivariate (combo) markets | Keep: ingest and store them (decided 2026-10-06; they dominate the live trade stream) | **Decided** |
 | — | Dev credentials | Read-only production Kalshi key (decided 2026-10-06), layered safeguards in §4; demo stays default | **Decided** |
 | 9 | Trade retention | 30 days raw (watchlist markets forever), 1-min/1-hour candles forever | **Decided** |
+| 16 | Combo storage (revises 10) | Measured 2026-10-07: ~6 M combos created/day, only ~12 % show any activity, ≥600k open at once. Rows only for combos that have traded, 14 days after settlement; raw tickers/trades 3 days; plus per-minute universe counters. Per-row cost measured at 436 B (see §9.2 OPEN) | **Decided** (size open) |
 | 10 | Combo-market storage | Compact: one row per market (legs as array + outcome), 30 days; raw combo tickers/trades 3 days; no candles | **Decided** |
 | 12 | Watchlist removal | A market that has ever been watched keeps its raw trades forever (`trades_watchlist`); removal stops orderbook capture but deletes nothing | **Decided** |
 | 15 | Settled-market retention | Full rows 30 days after settlement, then outcome-only rows to day 90, then deleted unless watched or pinned. Estimated steady state ≈4.6 GB of the 8 GB reference allocation (30 d × 85k/day × ~1 KB + 60 d × 85k/day × ~0.37 KB + ~0.2 GB unsettled). Implemented in slice 2.7; the `pins` table is added with it | **Decided** |
