@@ -93,6 +93,7 @@ class WsMessage(WsModel):
     seq: int | None = None
     sending_ts_ms: int | None = None
     msg: Any = None
+    received_at: float | None = None  # local epoch seconds, stamped when read off the socket
 
     def payload(
         self,
