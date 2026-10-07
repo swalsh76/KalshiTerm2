@@ -244,3 +244,27 @@ async def test_multivariate_lifecycle_stream_parses(
     )
     print(f"\n  {len(msgs)} lifecycle messages in 6s: {dict(kinds)}")
     assert len(msgs) > 20
+
+
+async def test_orderbook_feed_adds_and_removes_markets_live_without_false_gaps(
+    settings: KalshiSettings, signer: KalshiSigner
+) -> None:
+    async with asyncio.timeout(90), clients(settings, signer) as (rest, ws):
+        page = await rest.markets_page(limit=1000, status="open", mve_filter="exclude")
+        ranked = sorted(page.markets, key=lambda m: m.volume_24h_fp or 0, reverse=True)
+        busy = [m.ticker for m in ranked[:6]]
+        async with OrderBookFeed(ws, rest, busy[:3]) as feed, reading(feed.events()) as r:
+            events = await r.read_for(5)
+            await feed.add_markets(busy[3:5])
+            events += await r.read_for(6)
+            await feed.remove_markets([busy[0]])
+            events += await r.read_for(6)
+            books, stale, watched = set(feed.tracker.books), set(feed.tracker.stale), feed.tickers
+    gaps = [e for e in events if e.kind == GAP]
+    kinds = collections.Counter(e.kind for e in events)
+    print(f"\n  started with {busy[:3]}")
+    print(f"  added {busy[3:5]}; removed {busy[0]}")
+    print(f"  events: {dict(kinds)}; false gaps: {len(gaps)}")
+    print(f"  watching now: {len(watched)} markets; books held: {len(books)}; stale: {len(stale)}")
+    assert not gaps
+    assert set(watched) == set(busy[1:5]) and books == set(busy[1:5]) and not stale

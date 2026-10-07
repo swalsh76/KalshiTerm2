@@ -136,18 +136,56 @@ class BookTracker:
         self.books: dict[str, LocalOrderBook] = {}
         self.stale: set[str] = set()
         self._subs: dict[int, _SubState] = {}
+        self._removed: set[str] = set()  # markets dropped live; their late messages are ignored
 
     def begin_subscription(self, sid: int, tickers: list[str]) -> None:
         """Declare a new subscription: no books yet, and its first message must be seq 1."""
         self._subs[sid] = _SubState(1, set(tickers))
         self.stale.update(tickers)
+        self._removed.difference_update(tickers)
+
+    def end_subscription(self, sid: int) -> None:
+        self._subs.pop(sid, None)
+
+    def begin_markets(self, sid: int, tickers: list[str]) -> None:
+        """Markets added to a live subscription: no book until a snapshot arrives."""
+        if sid in self._subs:
+            self._subs[sid].tickers.update(tickers)
+        self.stale.update(tickers)
+        self._removed.difference_update(tickers)
+
+    def forget_markets(self, sid: int, tickers: list[str]) -> None:
+        """Markets removed from a live subscription: drop their books, ignore stragglers."""
+        if sid in self._subs:
+            self._subs[sid].tickers.difference_update(tickers)
+        for ticker in tickers:
+            self.books.pop(ticker, None)
+            self.stale.discard(ticker)
+        self._removed.update(tickers)
+
+    def _count_control(self, message: WsMessage) -> list[BookEvent]:
+        """A command reply consumed a sequence number: count it, flag a gap if it is out of step."""
+        sub = self._subs.get(message.sid or 0)
+        if sub is None or message.seq is None:
+            return []
+        events: list[BookEvent] = []
+        if message.seq != sub.expected:
+            affected = tuple(sorted(sub.tickers))
+            self.stale.update(affected)
+            reason = f"seq {message.seq}, expected {sub.expected}"
+            events.append(BookEvent(GAP, tickers=affected, detail=reason))
+        sub.expected = message.seq + 1
+        return events
 
     def process(self, message: WsMessage) -> list[BookEvent]:
         if message.type == RECONNECTED:
             self.books.clear()
             self.stale.clear()
             self._subs.clear()  # seq and sid restart on a new connection
+            self._removed.clear()
             return [BookEvent(RESET, message=message)]
+        if message.type == "control":
+            return self._count_control(message)
         if message.type not in ("orderbook_snapshot", "orderbook_delta"):
             return [BookEvent(MESSAGE, message=message)]
         payload = message.payload()
@@ -155,23 +193,27 @@ class BookTracker:
         ticker = payload.market_ticker
         events: list[BookEvent] = []
         sub = self._subs.setdefault(message.sid or 0, _SubState(message.seq or 1))
-        sub.tickers.add(ticker)
+        removed = ticker in self._removed
+        if not removed:
+            sub.tickers.add(ticker)
         if message.seq != sub.expected:
-            affected = tuple(sorted(sub.tickers | {ticker}))
+            affected = tuple(sorted(sub.tickers | ({ticker} - self._removed)))
             self.stale.update(affected)
             reason = f"seq {message.seq}, expected {sub.expected}"
             events.append(BookEvent(GAP, tickers=affected, detail=reason))
         if message.seq is not None:
             sub.expected = message.seq + 1
+        if removed:
+            return events  # a late message for a market we dropped: counted in sequence, ignored
         if isinstance(payload, OrderbookSnapshotMsg):
             book = LocalOrderBook.from_snapshot(payload)
             self.books[ticker] = book
             self.stale.discard(ticker)
-            events.append(BookEvent(SNAPSHOT, ticker, book))
+            events.append(BookEvent(SNAPSHOT, ticker, book, message=message))
         elif ticker not in self.stale and ticker in self.books:
             book = self.books[ticker]
             if book.apply_delta(payload):
-                events.append(BookEvent(DELTA, ticker, book))
+                events.append(BookEvent(DELTA, ticker, book, message=message))
             else:
                 self.stale.add(ticker)
                 events.append(BookEvent(GAP, tickers=(ticker,), detail="negative quantity"))
@@ -234,6 +276,50 @@ class OrderBookFeed:
         self._sid = await self._ws.subscribe(CHANNEL, market_tickers=self._tickers)
         self.tracker.begin_subscription(self._sid, self._tickers)
         self._pump = asyncio.create_task(self._run_pump())
+
+    @property
+    def tickers(self) -> list[str]:
+        """The markets currently subscribed."""
+        return list(self._tickers)
+
+    async def add_markets(self, tickers: list[str]) -> None:
+        """Start watching more markets on the live subscription.
+
+        Kalshi sends no snapshot for added markets, so one is requested for each; until it
+        arrives the market's book is stale and its deltas are ignored.
+        """
+        new = [t for t in dict.fromkeys(tickers) if t not in self._tickers]
+        if not new:
+            return
+        if self._sid is None:  # nothing subscribed (never started, or everything was removed)
+            self._tickers = [*self._tickers, *new]
+            self._sid = await self._ws.subscribe(CHANNEL, market_tickers=self._tickers)
+            self.tracker.begin_subscription(
+                self._sid, self._tickers
+            )  # snapshots arrive by themselves
+            return
+        current = await self._ws.update_subscription(self._sid, "add_markets", new)
+        self._tickers = current
+        self.tracker.begin_markets(self._sid, new)
+        self._start_resync(tuple(new))
+
+    async def remove_markets(self, tickers: list[str]) -> None:
+        """Stop watching markets; their books are dropped and late messages ignored."""
+        gone = [t for t in dict.fromkeys(tickers) if t in self._tickers]
+        if not gone or self._sid is None:
+            return
+        sid = self._sid
+        remaining = [t for t in self._tickers if t not in gone]
+        if not remaining:
+            # An empty market list could be read by Kalshi as "all markets": unsubscribe instead.
+            await self._ws.unsubscribe(sid)
+            self._sid = None
+            self.tracker.forget_markets(sid, gone)
+            self.tracker.end_subscription(sid)
+        else:
+            remaining = await self._ws.update_subscription(sid, "delete_markets", gone)
+            self.tracker.forget_markets(sid, gone)
+        self._tickers = remaining
 
     async def close(self) -> None:
         for task in [self._pump, *self._tasks]:
