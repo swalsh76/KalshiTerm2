@@ -2,10 +2,9 @@ import base64
 from pathlib import Path
 
 import pytest
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from kalshi_core.auth import (
     HEADER_KEY,
     HEADER_SIGNATURE,
@@ -20,7 +19,7 @@ PATH = "/trade-api/v2/portfolio/balance"
 TS = 1_700_000_000_000
 
 
-def pem(key: Ed25519PrivateKey | RSAPrivateKey | ec.EllipticCurvePrivateKey) -> bytes:
+def pem(key: Ed25519PrivateKey | rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey) -> bytes:
     return key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
@@ -28,25 +27,10 @@ def pem(key: Ed25519PrivateKey | RSAPrivateKey | ec.EllipticCurvePrivateKey) -> 
     )
 
 
-def verify_pss(key: RSAPrivateKey, signature: str, message: bytes) -> None:
-    key.public_key().verify(
-        base64.b64decode(signature),
-        message,
-        padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
-        hashes.SHA256(),
-    )
-
-
 def test_ed25519_signature_verifies() -> None:
     key = Ed25519PrivateKey.generate()
     sig = KalshiSigner("kid", key).sign(TS, "GET", PATH)
     key.public_key().verify(base64.b64decode(sig), f"{TS}GET{PATH}".encode())
-
-
-def test_rsa_pss_signature_verifies() -> None:
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    sig = KalshiSigner("kid", key).sign(TS, "GET", PATH)
-    verify_pss(key, sig, f"{TS}GET{PATH}".encode())
 
 
 def test_query_string_excluded_and_method_uppercased() -> None:
@@ -69,16 +53,18 @@ def test_headers_default_timestamp_is_ms() -> None:
     assert int(h[HEADER_TIMESTAMP]) > 1_600_000_000_000
 
 
-@pytest.mark.parametrize("kind", ["ed25519", "rsa"])
-def test_load_private_key(tmp_path: Path, kind: str) -> None:
-    key = (
-        Ed25519PrivateKey.generate()
-        if kind == "ed25519"
-        else rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    )
+def test_load_ed25519_private_key(tmp_path: Path) -> None:
+    key = Ed25519PrivateKey.generate()
     f = tmp_path / "k.pem"
     f.write_bytes(pem(key))
-    assert type(load_private_key(f)) is type(key)
+    assert isinstance(load_private_key(f), Ed25519PrivateKey)
+
+
+def test_rsa_keys_are_rejected_with_a_clear_message(tmp_path: Path) -> None:
+    f = tmp_path / "rsa.pem"
+    f.write_bytes(pem(rsa.generate_private_key(public_exponent=65537, key_size=2048)))
+    with pytest.raises(AuthError, match="only Ed25519 keys are supported"):
+        load_private_key(f)
 
 
 def test_load_rejects_unsupported_and_garbage(tmp_path: Path) -> None:
