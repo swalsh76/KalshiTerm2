@@ -182,6 +182,14 @@ One Docker image, three service roles: `kterm-server ingest`, `kterm-server anal
   Kalshi's `/portfolio/settlements` endpoint is account-scoped (your own positions), not
   market-wide. Markets older than the historical cutoff live under `/historical/*` (to
   evaluate for backfill in Phase 2).
+- **Discovery modes (measured 2026-10-06):** a *full* refresh (first run, then at most daily, or
+  `kterm-server discover --full`) reads ≈780k markets in 70–280 s at the rate limit; an
+  *incremental* cycle asks only for events/markets with `min_updated_ts` since the bookmark
+  (valid together with `mve_filter=exclude`; it covers new markets, status changes and
+  settlements) and takes ≈2.5 s. Bookmarks advance only after a cycle fully succeeds, with a
+  2-minute overlap. Rows are upserted only when a value changed, so refreshes leave no dead
+  tuples. A value too precise for its fixed-point scale rejects that one row (logged, counted),
+  never the cycle.
 - **Stream subscriber** (WS): `ticker`, `trade`, `market_lifecycle_v2` for all ingested
   markets; `orderbook_delta` for the **watchlist only**.
 - **Gap handling:** Kalshi does not replay messages missed during a disconnect, and `sid`
@@ -433,7 +441,7 @@ A larger host can raise it and scale compressed history accordingly.
 | Multivariate (combo) markets | One compact row per market (legs as an array, plus outcome), 30 days; raw combo tickers/trades 3 days | No candles for combo markets |
 | Orderbook deltas (watchlist only) | 14 days | Dropped |
 | Orderbook snapshots (watchlist, every 60 s) | 90 days | 5-min downsample kept 1 year |
-| Markets / events (incl. outcomes) | Forever | — |
+| Markets / events (incl. outcomes) | **OPEN — decide before slice 2.7.** "Forever" is infeasible: ≈85k ordinary markets settle per day at ≈1 KB per `markets` row (rules text ≈580 chars, almost all unique) ≈ 31 GB/year vs an 8 GB reference allocation | — |
 
 TimescaleDB native compression: plan on **4–9×** until the calibration run (synthetic ticker
 data measured 8.8× for integers, 3.5× for `numeric`; real data should compress better). Measured

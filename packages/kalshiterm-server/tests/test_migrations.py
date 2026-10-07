@@ -37,7 +37,7 @@ async def test_upgrade_enables_timescaledb_and_records_the_revision(fresh_db_url
     await db.upgrade_async(fresh_db_url)
     version = await extension_version(fresh_db_url)
     assert version is not None and version.startswith("2.")
-    assert await revision(fresh_db_url) == "0001"
+    assert await revision(fresh_db_url) == db.head_revision()
 
 
 async def test_upgrade_is_idempotent(fresh_db_url: str) -> None:
@@ -64,7 +64,7 @@ async def test_upgrade_is_a_safe_noop_when_the_template_already_has_the_extensio
         assert await extension_version(url) is not None
         await db.upgrade_async(url)
         assert await extension_version(url) is not None
-        assert await revision(url) == "0001"
+        assert await revision(url) == db.head_revision()
     finally:
         await admin(timescale_container, f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
 
@@ -77,7 +77,7 @@ def test_cli_upgrade_current_and_downgrade(
     assert "(no migrations applied)" in runner.invoke(app, ["db", "current"]).output
     result = runner.invoke(app, ["db", "upgrade"])
     assert result.exit_code == 0, result.output
-    assert runner.invoke(app, ["db", "current"]).output.strip() == "0001"
+    assert runner.invoke(app, ["db", "current"]).output.strip() == db.head_revision()
     result = runner.invoke(app, ["db", "downgrade", "base"])
     assert result.exit_code == 0, result.output
     assert "(no migrations applied)" in runner.invoke(app, ["db", "current"]).output

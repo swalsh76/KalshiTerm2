@@ -77,3 +77,12 @@ def compose_mount_target() -> str:
     match = re.search(r"-\s*kterm_pgdata:(\S+)", COMPOSE_FILE.read_text())
     assert match, f"no kterm_pgdata mount in {COMPOSE_FILE}"
     return match.group(1)
+
+
+@pytest.fixture
+def migrated_db_url(fresh_db_url: str) -> str:
+    """A fresh database with every migration applied."""
+    from kalshiterm_server import db
+
+    db.upgrade(fresh_db_url)
+    return fresh_db_url
