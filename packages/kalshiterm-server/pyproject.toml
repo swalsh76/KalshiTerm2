@@ -10,7 +10,17 @@ readme = "README.md"
 license = "MIT"
 license-files = ["../../LICENSE"]
 requires-python = ">=3.11"
-dependencies = ["kalshi-core"]
+dependencies = [
+    "kalshi-core",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "typer>=0.12",
+    "pydantic-settings>=2.4",
+]
+
+[project.scripts]
+kterm-server = "kalshiterm_server.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kalshiterm_server"]
