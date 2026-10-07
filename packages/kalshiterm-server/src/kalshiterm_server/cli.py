@@ -17,6 +17,7 @@ from kalshi_core.ws import KalshiWebSocket
 
 from kalshiterm_server import db
 from kalshiterm_server.config import ServerSettings
+from kalshiterm_server.ingest.backfill import GapBackfiller
 from kalshiterm_server.ingest.discovery import discover
 from kalshiterm_server.ingest.stream import StreamIngestor
 from kalshiterm_server.ingest.watchlist import WatchlistConfig, WatchlistController, load_config
@@ -109,6 +110,9 @@ def ingest_command(
     watchlist_every: float = typer.Option(
         300, help="Seconds between watchlist updates (file re-read, top-N refresh)."
     ),
+    max_backfill_hours: float = typer.Option(
+        6, help="Longest outage whose missed trades are fetched from REST (older is truncated)."
+    ),
 ) -> None:
     """Stream tickers, trades and market lifecycle events (and watched orderbooks) to the DB."""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -135,10 +139,8 @@ def ingest_command(
                     await ws.subscribe(channel)
                 source: AsyncIterator[Any] = ws.messages()
                 feed: OrderBookFeed | None = None
+                rest = await stack.enter_async_context(KalshiRestClient(settings, signer=signer))
                 if watch or watchlist:
-                    rest = await stack.enter_async_context(
-                        KalshiRestClient(settings, signer=signer)
-                    )
                     # Starts empty: the controller adds the markets (an empty subscription is
                     # never sent, so it cannot mean "every market").
                     feed = await stack.enter_async_context(
@@ -146,7 +148,11 @@ def ingest_command(
                     )
                     source = feed.events()  # orderbook events plus everything else, in order
                 ingestor = StreamIngestor(source, engine)
-                tasks: list[asyncio.Task[None]] = []
+                backfiller = GapBackfiller(
+                    rest, engine, ingestor, max_window=timedelta(hours=max_backfill_hours)
+                )
+                await backfiller.start()  # queues the gap since the last run stopped
+                tasks: list[asyncio.Task[None]] = [asyncio.create_task(backfiller.run())]
                 if feed is not None:
                     controller = WatchlistController(
                         engine,

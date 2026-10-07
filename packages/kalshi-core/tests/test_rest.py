@@ -230,3 +230,35 @@ def test_demo_logs_no_banner(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="kalshi_core"):
         KalshiRestClient(KalshiSettings())
     assert "PRODUCTION" not in caplog.text
+
+
+def trade(trade_id: str, ticker: str = "A") -> dict[str, object]:
+    return {
+        "trade_id": trade_id,
+        "ticker": ticker,
+        "yes_price_dollars": "0.5900",
+        "no_price_dollars": "0.4100",
+        "count_fp": "149.83",
+        "taker_side": "yes",
+        "taker_book_side": "bid",  # fields we do not model are ignored
+        "is_block_trade": False,
+        "created_time": "2026-10-07T21:22:01.978691Z",
+    }
+
+
+@respx.mock
+async def test_trades_follow_the_cursor_and_keep_exact_values() -> None:
+    route = respx.get(f"{BASE}/markets/trades").mock(
+        side_effect=[
+            httpx.Response(200, json={"trades": [trade("t1"), trade("t2")], "cursor": "c1"}),
+            httpx.Response(200, json={"trades": [trade("t3", "B")], "cursor": ""}),
+        ]
+    )
+    async with client() as c:
+        found = [t async for t in c.iter_trades(min_ts=100, max_ts=200, limit=2)]
+    assert [t.trade_id for t in found] == ["t1", "t2", "t3"]
+    assert found[0].count_fp == Decimal("149.83") and found[0].yes_price_dollars == Decimal("0.59")
+    assert found[0].created_time.microsecond == 978691  # microseconds survive
+    first, second = (call.request.url.params for call in route.calls)
+    assert first["min_ts"] == "100" and first["max_ts"] == "200" and "cursor" not in first
+    assert second["cursor"] == "c1" and second["min_ts"] == "100"

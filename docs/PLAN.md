@@ -238,6 +238,22 @@ One Docker image, three service roles: `kterm-server ingest`, `kterm-server anal
   and `seq` restart on every reconnect (observed live: both came back as 1). The WS client
   yields a `reconnected` event ahead of any post-reconnect data; on it the ingestor backfills
   trades (and re-snapshots watched orderbooks) via REST for the outage window.
+- **Gap log and backfill (slice 2.6, verified live 2026-10-07):** every outage — a reconnect, a
+  receive-queue overflow, or a restart (gap since the newest stored trade) — becomes an
+  `ingest_gaps` row (window, reason, dropped, status, trades found/added/duplicates, combo
+  counts, note). A background worker fetches the window from REST (`GET /markets/trades`,
+  all markets, ~1,000 trades per 0.08 s; padded 10 s each side, capped at 6 h, truncation
+  noted) and feeds each trade through the normal write path, so watched markets also reach
+  `trades_watchlist`. Duplicates are impossible by construction: each trade id is checked
+  against the database for the window and the ingestor's memory of the last 200k live ids, so
+  re-running a window is safe (that is also the retry strategy: 3 attempts, backoff, then
+  `failed`). Rows left `running` by a crashed run become `interrupted`. **Only trades are
+  recoverable**: tickers, lifecycle events and orderbook deltas are not replayed (the gap row
+  is the record), and combo trades go only to the large-trade log because their per-minute
+  counters cannot be de-duplicated (those counters undercount during a gap). Live check: after
+  ~100 s offline, the startup backfill left the database with exactly Kalshi's 11,348 ordinary
+  trades for the window (0 missing, 0 extra) plus 37 large combo trades. The reconnect path is
+  covered by tests with a faked socket; it was not provoked live.
 - **Streaming writer (slice 2.3, measured 2026-10-07):** messages are timestamped when read off
   the socket, filtered (combo `KXMVE…` tickers/trades are skipped and counted until slice 2.4),
   buffered, and written in atomic batches via binary `COPY` every second or 5,000 rows. A failed
@@ -561,7 +577,7 @@ container and run on the Linux CI job only (macOS/Windows runners have no Docker
 | 2.3 | Streaming core: batched `COPY` writer, `tickers` / `trades` / lifecycle tables, exchange + receipt timestamps, ingestion-lag metric, behaviour when the database is down |
 | 2.4 | Combo-market storage (decision 10) |
 | 2.5 (a: live add/remove on the feed — done; b: orderbook storage — done; c: watchlist controller — done) | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API). Semantics (decisions 12–13): **adding** a market subscribes it live (`add_markets`, fresh snapshot), copies its last 30 days of raw trades into `trades_watchlist`, and opens a `watchlist_periods` row; **while watched**, snapshots/deltas are stored and trades go to both trade tables; **removing** stops orderbook capture (`delete_markets`) and closes the period but deletes nothing — orderbook data ages out under normal retention, `trades_watchlist` is kept forever. Capture covers the union of all users' watchlists (reference-counted). Auto top-N entries stay ≥12 h once added; manual entries are never auto-removed. Needs a `kalshi-core` extension (live add/remove on `OrderBookFeed`) and a live probe of Kalshi's undocumented per-subscription market limit |
-| 2.6 | Gap handling: gap log; trade backfill via REST on a `reconnected` event (tickers cannot be backfilled, so those gaps are recorded) |
+| 2.6 — done | Gap handling: gap log; trade backfill via REST on a `reconnected` event and on startup (tickers cannot be backfilled, so those gaps are recorded) |
 | 2.7 | Compression, retention policies, continuous aggregates (1-minute, 1-hour) |
 | 2.8 | Storage governor + `kterm-server status` |
 | 2.9 | `kterm-server init`, production Compose, health checks, Mac Studio deployment (TLS certificate generation moves to Phase 3 with the API) |
