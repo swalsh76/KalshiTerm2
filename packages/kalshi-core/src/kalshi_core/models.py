@@ -29,6 +29,15 @@ class ExchangeStatus(KalshiModel):
     exchange_index_statuses: list[ExchangeIndexStatus] | None = None
 
 
+class MveSelectedLeg(KalshiModel):
+    """One leg of a multivariate (combo) market."""
+
+    event_ticker: str
+    market_ticker: str
+    side: str
+    yes_settlement_value_dollars: Decimal | None = None
+
+
 class Market(KalshiModel):
     ticker: str
     event_ticker: str
@@ -59,6 +68,15 @@ class Market(KalshiModel):
     strike_type: str | None = None
     floor_strike: float | None = None
     cap_strike: float | None = None
+    # Multivariate (combo) markets only:
+    mve_collection_ticker: str | None = None
+    mve_selected_legs: list[MveSelectedLeg] | None = None
+    is_provisional: bool | None = None
+    exchange_index: int | None = None
+
+    @property
+    def is_multivariate(self) -> bool:
+        return self.mve_collection_ticker is not None
 
 
 class Event(KalshiModel):
