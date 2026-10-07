@@ -261,6 +261,26 @@ class KalshiWebSocket:
             body["market_tickers"] = market_tickers
         return await self._subscribe(channel, body)
 
+    async def request_snapshot(self, sid: int, ticker: str) -> int:
+        """Ask for a fresh in-stream orderbook snapshot of one market; returns the command id.
+
+        Kalshi has no separate acknowledgement: the reply is an ``orderbook_snapshot``
+        message (echoing the id) carrying the subscription's next ``seq``. A rejected
+        command arrives as an ``error`` message with the same id.
+        """
+        if self._conn is None or not self._connected:
+            raise KalshiWSError("not connected")
+        command_id = self._next_id
+        self._next_id += 1
+        params = {"sid": sid, "market_tickers": [ticker], "action": "get_snapshot"}
+        try:
+            await self._conn.send(
+                json.dumps({"id": command_id, "cmd": "update_subscription", "params": params})
+            )
+        except ConnectionClosed:
+            raise KalshiWSError("connection closed") from None
+        return command_id
+
     async def unsubscribe(self, sid: int) -> None:
         await self._command("unsubscribe", {"sids": [sid]})
         self._subs.pop(sid, None)
