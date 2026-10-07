@@ -15,6 +15,7 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "respx>=0.21",
+    "testcontainers[postgres]>=4.8",
     "ruff>=0.6",
 ]
 
@@ -48,5 +49,8 @@ explicit_package_bases = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-markers = ["integration: hits the real Kalshi API (opt-in via KALSHI_INTEGRATION=1)"]
+markers = [
+    "integration: hits the real Kalshi API (opt-in via KALSHI_INTEGRATION=1)",
+    "db: needs Docker for a real TimescaleDB container (skipped if Docker is unavailable)",
+]
 testpaths = ["packages"]

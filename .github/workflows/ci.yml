@@ -28,7 +28,16 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --frozen
-      - run: uv run pytest
+      - run: uv run pytest -m "not db"
+
+  db-tests:
+    # Real TimescaleDB container (testcontainers); Docker is only reliably available on Linux.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen
+      - run: uv run pytest -m db -v
 
   server-image:
     runs-on: ubuntu-24.04

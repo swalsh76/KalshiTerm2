@@ -45,6 +45,16 @@ KalshiTerm 1 died of feature creep and directional changes. Guard against it:
 - Park deferred ideas in PLAN.md §13 (Parking lot), not in code or TODO comments.
 - Prefer the smallest thing that satisfies the phase's deliverable.
 
+## Dev commands
+
+- Tests: `uv run pytest` (all; DB tests need Docker and skip cleanly without it);
+  `uv run pytest -m "not db"` skips the database tests; `-m db` runs only them.
+- Dev database: `docker compose -f deploy/docker-compose.dev.yml up -d` (TimescaleDB, bound to
+  127.0.0.1:5433), then
+  `KTERM_DB_URL=postgresql+asyncpg://kterm:kterm_dev_only@127.0.0.1:5433/kterm uv run kterm-server db upgrade`.
+  Relative downgrades need `--`: `kterm-server db downgrade -- -1`.
+- The TimescaleDB image tag is pinned in `deploy/docker-compose.dev.yml` (tests read it from there).
+
 ## Conventions
 
 - uv workspace, three packages under `packages/` (`kalshi-core`, `kalshiterm-server`,
