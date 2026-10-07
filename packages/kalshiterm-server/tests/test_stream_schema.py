@@ -3,6 +3,8 @@ from kalshiterm_server import db
 from kalshiterm_server.ingest.combos import LARGE_TRADE_COLUMNS
 from kalshiterm_server.ingest.stream import (
     LIFECYCLE_COLUMNS,
+    OB_DELTA_COLUMNS,
+    OB_SNAPSHOT_COLUMNS,
     TICKER_COLUMNS,
     TRADE_COLUMNS,
 )
@@ -27,6 +29,8 @@ async def query(url: str, sql: str, **params: object) -> list[tuple[object, ...]
         ("trades", TRADE_COLUMNS),
         ("market_lifecycle", LIFECYCLE_COLUMNS),
         ("combo_large_trades", LARGE_TRADE_COLUMNS),
+        ("orderbook_snapshots", OB_SNAPSHOT_COLUMNS),
+        ("orderbook_deltas", OB_DELTA_COLUMNS),
     ],
 )
 async def test_copy_column_lists_match_the_migrated_tables(
@@ -53,6 +57,8 @@ async def test_streaming_tables_are_hypertables_with_the_planned_chunk_sizes(
     assert dict(rows) == {  # type: ignore[arg-type]
         "combo_large_trades": "7 days",
         "market_lifecycle": "7 days",
+        "orderbook_deltas": "1 day",
+        "orderbook_snapshots": "1 day",
         "tickers": "1 day",
         "trades": "1 day",
     }

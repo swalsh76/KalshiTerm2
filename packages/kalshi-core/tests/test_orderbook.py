@@ -187,3 +187,24 @@ def test_zero_quantity_levels_in_snapshot_are_dropped(side: str) -> None:
     levels = [("0.40", "0.00"), ("0.41", "2.00")]
     t.process(snap(1, 1, "A", **{side: levels}))
     assert list(getattr(t.books["A"], side)) == [D("0.41")]
+
+
+def test_a_snapshot_event_keeps_its_moment_while_later_deltas_change_the_live_book() -> None:
+    """Consumers read events later (through queues); the stored checkpoint must not drift."""
+    t = BookTracker()
+    t.begin_subscription(1, ["M"])
+    [event] = t.process(snap(1, 1, "M", yes=[("0.40", "10.00")]))
+    t.process(delta(1, 2, "M", "yes", "0.40", "5.00"))
+    t.process(delta(1, 3, "M", "yes", "0.41", "1.00"))
+    assert event.book is not None
+    assert event.book.yes == {D("0.40"): D("10.00")}  # as it was when the snapshot arrived
+    assert t.books["M"].yes == {D("0.40"): D("15.00"), D("0.41"): D("1.00")}  # the live book moved
+
+
+def test_a_rest_snapshot_event_is_also_a_copy() -> None:
+    t = BookTracker()
+    t.begin_subscription(1, ["M"])
+    rest = OrderBook(yes=[PriceLevel(price=D("0.40"), quantity=D("3.00"))], no=[])
+    event = t.apply_rest_snapshot("M", rest)
+    t.books["M"].yes[D("0.99")] = D("1.00")
+    assert event.book is not None and D("0.99") not in event.book.yes

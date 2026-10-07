@@ -164,6 +164,19 @@ KalshiTerm2/
   (duplicates are harmless). Removing the last market unsubscribes rather than sending an empty
   list, which Kalshi might read as "all markets"; late messages for removed markets are
   counted in sequence and ignored.
+- **Orderbook storage (slice 2.5b, measured 2026-10-07, 50 top-volume markets):**
+  `orderbook_snapshots` (full book as parallel arrays, best-first; `approximate` when it came
+  from the REST fallback) and `orderbook_deltas` (signed quantity change per level), both with
+  the stream's `seq`, 1-day chunks. A book is rebuilt by replaying deltas on the latest
+  snapshot, so snapshots are only checkpoints: the periodic snapshot interval is **300 s,
+  configurable** (`--snapshot-interval`; the earlier 60 s was a deviation we dropped).
+  Measured uncompressed: snapshot ≈ 950 B/row (≈31 levels), delta ≈ 135 B/row; deltas ran
+  ≈ 150/s in total, dominated by a few weather markets (one at ~70/s), and deep crypto books
+  run ~10x higher. Live check: replayed book equals Kalshi's REST book for 44/50 markets; the
+  6 differing ones were the busiest, consistent with a few seconds' gap between the two reads.
+  Bug found by the replay round-trip test: SNAPSHOT events must carry a *copy* of the book
+  (the tracker mutates its book in place), so they do; DELTA events reference the live book
+  and must be consumed immediately.
 - Client-side rate limiter mirroring Kalshi's **token-bucket** model (docs, Oct 2026):
   Basic tier = 200 read / 100 write tokens per second, most requests cost 10 tokens,
   buckets hold one second of budget, read and write are independent, and overage is a bare
@@ -467,7 +480,7 @@ A larger host can raise it and scale compressed history accordingly.
 | Tickers (ordinary markets) | 14 days, compressed after 1 day | 1-min / 1-hour aggregates kept forever |
 | Multivariate (combo) markets — decision 17 | **No per-combo rows.** Per-minute universe counters (`combo_stats_1m`: creations, determinations, settlements, tickers, trades, contracts, taker dollars; kept forever, ~1 row per minute per family) and a log of individual combo trades with ≥ $500 taker dollars (`combo_large_trades`, ≈15 k rows/day, 365 days). | No candles for combo markets |
 | Orderbook deltas (watchlist only) | 14 days | Dropped |
-| Orderbook snapshots (watchlist, every 60 s) | 90 days | 5-min downsample kept 1 year |
+| Orderbook snapshots (watchlist, every 300 s by default) | 90 days | 5-min downsample kept 1 year |
 | Markets / events (incl. outcomes) — decision 15 | Age counts from `settlement_ts`; unsettled rows never expire. **0–30 days: full row. 30–90 days: slimmed to an outcome-only row** (rules text and sub-titles dropped; ticker, event, status, result, settlement, times and strikes kept). **After 90 days: deleted, except markets that are watched (ever, see decision 12) or pinned.** Events follow their markets; series are kept (≈15k rows). | — |
 
 TimescaleDB native compression: plan on **4–9×** until the calibration run (synthetic ticker
@@ -528,7 +541,7 @@ container and run on the Linux CI job only (macOS/Windows runners have no Docker
 | 2.2 | Reference data: `series`, `events`, `markets` + discovery poller (≈121k open ordinary markets, full refresh ≈14 s; combo markets arrive via lifecycle events, not polling) |
 | 2.3 | Streaming core: batched `COPY` writer, `tickers` / `trades` / lifecycle tables, exchange + receipt timestamps, ingestion-lag metric, behaviour when the database is down |
 | 2.4 | Combo-market storage (decision 10) |
-| 2.5 (a: live add/remove on the feed — done; b: orderbook storage; c: watchlist controller) | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API). Semantics (decisions 12–13): **adding** a market subscribes it live (`add_markets`, fresh snapshot), copies its last 30 days of raw trades into `trades_watchlist`, and opens a `watchlist_periods` row; **while watched**, snapshots/deltas are stored and trades go to both trade tables; **removing** stops orderbook capture (`delete_markets`) and closes the period but deletes nothing — orderbook data ages out under normal retention, `trades_watchlist` is kept forever. Capture covers the union of all users' watchlists (reference-counted). Auto top-N entries stay ≥12 h once added; manual entries are never auto-removed. Needs a `kalshi-core` extension (live add/remove on `OrderBookFeed`) and a live probe of Kalshi's undocumented per-subscription market limit |
+| 2.5 (a: live add/remove on the feed — done; b: orderbook storage — done; c: watchlist controller) | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API). Semantics (decisions 12–13): **adding** a market subscribes it live (`add_markets`, fresh snapshot), copies its last 30 days of raw trades into `trades_watchlist`, and opens a `watchlist_periods` row; **while watched**, snapshots/deltas are stored and trades go to both trade tables; **removing** stops orderbook capture (`delete_markets`) and closes the period but deletes nothing — orderbook data ages out under normal retention, `trades_watchlist` is kept forever. Capture covers the union of all users' watchlists (reference-counted). Auto top-N entries stay ≥12 h once added; manual entries are never auto-removed. Needs a `kalshi-core` extension (live add/remove on `OrderBookFeed`) and a live probe of Kalshi's undocumented per-subscription market limit |
 | 2.6 | Gap handling: gap log; trade backfill via REST on a `reconnected` event (tickers cannot be backfilled, so those gaps are recorded) |
 | 2.7 | Compression, retention policies, continuous aggregates (1-minute, 1-hour) |
 | 2.8 | Storage governor + `kterm-server status` |
