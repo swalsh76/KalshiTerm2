@@ -70,3 +70,10 @@ def fresh_db_url(timescale_container: PostgresContainer) -> Iterator[str]:
         yield db_url(timescale_container, name)
     finally:
         asyncio.run(admin(timescale_container, f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+
+
+def compose_mount_target() -> str:
+    """Container path the compose file mounts the named data volume at."""
+    match = re.search(r"-\s*kterm_pgdata:(\S+)", COMPOSE_FILE.read_text())
+    assert match, f"no kterm_pgdata mount in {COMPOSE_FILE}"
+    return match.group(1)
