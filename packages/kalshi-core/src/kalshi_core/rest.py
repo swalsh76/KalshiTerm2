@@ -118,31 +118,44 @@ class KalshiRestClient:
     async def exchange_status(self) -> ExchangeStatus:
         return ExchangeStatus.model_validate(await self._get("/exchange/status"))
 
+    async def _iter_items(
+        self, path: str, page_model: type[MarketsPage] | type[EventsPage], attr: str, params: Any
+    ) -> AsyncIterator[Any]:
+        """Follow Kalshi's cursor pagination until it returns an empty cursor."""
+        cursor: str | None = None
+        while True:
+            page = page_model.model_validate(await self._get(path, {**params, "cursor": cursor}))
+            for item in getattr(page, attr):
+                yield item
+            if not page.cursor:
+                return
+            cursor = page.cursor
+
     async def markets_page(self, **params: Any) -> MarketsPage:
+        """One page of markets. Unfiltered results include multivariate (combo) markets;
+        pass ``mve_filter="exclude"`` or ``"only"`` to split them."""
         return MarketsPage.model_validate(await self._get("/markets", params))
 
     async def iter_markets(self, **params: Any) -> AsyncIterator[Market]:
-        cursor: str | None = None
-        while True:
-            page = await self.markets_page(cursor=cursor, **params)
-            for market in page.markets:
-                yield market
-            if not page.cursor:
-                return
-            cursor = page.cursor
+        async for market in self._iter_items("/markets", MarketsPage, "markets", params):
+            yield market
 
     async def events_page(self, **params: Any) -> EventsPage:
+        """One page of ordinary events (Kalshi excludes multivariate events here)."""
         return EventsPage.model_validate(await self._get("/events", params))
 
     async def iter_events(self, **params: Any) -> AsyncIterator[Event]:
-        cursor: str | None = None
-        while True:
-            page = await self.events_page(cursor=cursor, **params)
-            for event in page.events:
-                yield event
-            if not page.cursor:
-                return
-            cursor = page.cursor
+        async for event in self._iter_items("/events", EventsPage, "events", params):
+            yield event
+
+    async def multivariate_events_page(self, **params: Any) -> EventsPage:
+        """One page of multivariate (combo) events; filter by ``series_ticker`` or
+        ``collection_ticker`` (not both)."""
+        return EventsPage.model_validate(await self._get("/events/multivariate", params))
+
+    async def iter_multivariate_events(self, **params: Any) -> AsyncIterator[Event]:
+        async for event in self._iter_items("/events/multivariate", EventsPage, "events", params):
+            yield event
 
     async def series_list(self, **params: Any) -> list[Series]:
         return SeriesList.model_validate(await self._get("/series", params)).series

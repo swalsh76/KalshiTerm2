@@ -48,6 +48,20 @@ class LifecycleMsg(WsModel):
     result: str | None = None
     settlement_value: str | None = None
     is_deactivated: bool | None = None
+    exchange_index: int | None = None
+    price_level_structure: str | None = None
+    additional_metadata: dict[str, Any] | None = None
+
+
+class EventLifecycleMsg(WsModel):
+    """An event was created (sent on both lifecycle channels)."""
+
+    event_ticker: str
+    series_ticker: str | None = None
+    title: str = ""
+    subtitle: str = ""
+    collateral_return_type: str = ""
+    exchange_index: int | None = None
 
 
 class OrderbookSnapshotMsg(WsModel):
@@ -82,14 +96,24 @@ class WsMessage(WsModel):
 
     def payload(
         self,
-    ) -> TickerMsg | TradeMsg | LifecycleMsg | OrderbookSnapshotMsg | OrderbookDeltaMsg | None:
+    ) -> (
+        TickerMsg
+        | TradeMsg
+        | LifecycleMsg
+        | EventLifecycleMsg
+        | OrderbookSnapshotMsg
+        | OrderbookDeltaMsg
+        | None
+    ):
         """Typed payload for known data channels, else ``None`` (use ``msg``)."""
         if self.type == "ticker":
             return TickerMsg.model_validate(self.msg)
         if self.type == "trade":
             return TradeMsg.model_validate(self.msg)
-        if self.type == "market_lifecycle_v2":
+        if self.type in ("market_lifecycle_v2", "multivariate_market_lifecycle"):
             return LifecycleMsg.model_validate(self.msg)
+        if self.type == "event_lifecycle":
+            return EventLifecycleMsg.model_validate(self.msg)
         if self.type == "orderbook_snapshot":
             return OrderbookSnapshotMsg.model_validate(self.msg)
         if self.type == "orderbook_delta":
