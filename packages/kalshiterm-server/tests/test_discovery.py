@@ -95,6 +95,10 @@ class FakeKalshi:
 
     def _markets(self, request: httpx.Request) -> httpx.Response:
         params = self._record(request)
+        if "tickers" in params:  # direct lookup by ticker
+            wanted = set(params["tickers"].split(","))
+            known = [m for group in self.markets.values() for m in group if m["ticker"] in wanted]
+            return self._page(known, "markets", params)
         if "status" not in params:
             return self._respond_incremental(self.updated_markets, "markets", params)
         return self._page(self.markets[params["status"]], "markets", params)
@@ -248,3 +252,53 @@ async def test_the_bookmark_does_not_advance_when_a_cycle_fails(migrated_db_url:
     finally:
         await engine.dispose()
     assert first is not None and after == first  # the next cycle re-reads the missed window
+
+
+@respx.mock
+async def test_placeholders_made_by_the_stream_are_resolved_by_direct_lookup(
+    migrated_db_url: str,
+) -> None:
+    kalshi = FakeKalshi()
+    kalshi.install(respx.mock)
+    engine = db.make_engine(migrated_db_url)
+    try:
+        async with rest_client() as rest:
+            await discover(rest, engine, now=lambda: T0)  # full refresh: bookmarks are set
+            async with (
+                engine.begin() as conn
+            ):  # the stream meets a market discovery has not described
+                await conn.execute(
+                    text("update markets set status = 'unknown' where ticker = 'KXA-E1-X'")
+                )
+                await conn.execute(
+                    text(
+                        "insert into markets (ticker, event_ticker, market_type, status) "
+                        "values ('KXGONE-E9-X', 'KXGONE-E9', 'binary', 'unknown')"
+                    )
+                )
+            before = await rows_by_ticker(migrated_db_url)
+            kalshi.requests.clear()
+            # Incremental cycle that does NOT return KXA-E1-X: only the direct lookup can fix it.
+            report = await discover(rest, engine, now=lambda: T0 + timedelta(minutes=5))
+            again = await discover(rest, engine, now=lambda: T0 + timedelta(minutes=10))
+    finally:
+        await engine.dispose()
+    after = await rows_by_ticker(migrated_db_url)
+    assert report.mode == "incremental"
+    assert after["KXA-E1-X"][0] == before["KXA-E1-X"][0]  # same id
+    assert after["KXA-E1-X"][1] == "active"  # described now
+    assert after["KXGONE-E9-X"][1] == "unknown"  # Kalshi has no such market
+    assert (report.resolved, report.unresolved) == (1, 1)
+    assert (again.resolved, again.unresolved) == (0, 1)  # only the unknown one is retried
+    lookups = [r for r in kalshi.requests if "tickers" in r]
+    assert lookups[0]["tickers"] == "KXA-E1-X,KXGONE-E9-X"
+
+
+async def rows_by_ticker(url: str) -> dict[str, tuple[Any, ...]]:
+    engine = db.make_engine(url)
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(text("select ticker, id, status from markets"))
+            return {row[0]: (row[1], row[2]) for row in result}
+    finally:
+        await engine.dispose()

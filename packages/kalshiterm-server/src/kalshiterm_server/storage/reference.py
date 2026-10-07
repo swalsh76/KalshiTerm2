@@ -120,6 +120,18 @@ async def upsert(
     return result
 
 
+async def unknown_tickers(engine: AsyncEngine, limit: int = 2_000) -> list[str]:
+    """Tickers the stream created as placeholders and discovery has not described yet."""
+    query = (
+        select(tables.markets.c.ticker)
+        .where(tables.markets.c.status == "unknown")
+        .order_by(tables.markets.c.id)
+        .limit(limit)
+    )
+    async with engine.connect() as conn:
+        return [ticker for (ticker,) in await conn.execute(query)]
+
+
 async def get_state(engine: AsyncEngine, key: str) -> str | None:
     query = select(tables.discovery_state.c.value).where(tables.discovery_state.c.key == key)
     async with engine.connect() as conn:

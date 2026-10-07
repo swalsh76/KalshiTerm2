@@ -8,10 +8,12 @@ import typer
 from kalshi_core.auth import KalshiSigner
 from kalshi_core.config import KalshiSettings
 from kalshi_core.rest import KalshiRestClient
+from kalshi_core.ws import KalshiWebSocket
 
 from kalshiterm_server import db
 from kalshiterm_server.config import ServerSettings
 from kalshiterm_server.ingest.discovery import discover
+from kalshiterm_server.ingest.stream import StreamIngestor
 
 app = typer.Typer(no_args_is_help=True, help="KalshiTerm server operations.")
 db_app = typer.Typer(no_args_is_help=True, help="Database migrations.")
@@ -74,5 +76,47 @@ def discover_command(
             await engine.dispose()
         for line in report.lines():
             typer.echo(line)
+
+    asyncio.run(run())
+
+
+@app.command("ingest")
+def ingest_command(
+    seconds: float = typer.Option(0, help="Stop after this many seconds (0 = run until stopped)."),
+    stats_every: float = typer.Option(30, help="Seconds between statistics lines."),
+) -> None:
+    """Stream tickers, trades and market lifecycle events into the database."""
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    async def run() -> None:
+        settings = KalshiSettings()
+        signer = KalshiSigner.from_settings(settings)
+        engine = db.make_engine(_url())
+        try:
+            async with KalshiWebSocket(settings, signer) as ws:
+                for channel in ("ticker", "trade", "market_lifecycle_v2"):
+                    await ws.subscribe(channel)
+                ingestor = StreamIngestor(ws.messages(), engine)
+
+                async def report() -> None:
+                    while True:
+                        await asyncio.sleep(stats_every)
+                        typer.echo(f"stats: {ingestor.stats()} ws: {ws.stats()}")
+
+                reporter = asyncio.create_task(report())
+                try:
+                    if seconds > 0:
+                        async with asyncio.timeout(seconds):
+                            await ingestor.run()
+                    else:
+                        await ingestor.run()
+                except TimeoutError:
+                    pass
+                finally:
+                    reporter.cancel()
+                typer.echo(f"final stats: {ingestor.stats()}")
+        finally:
+            await engine.dispose()
 
     asyncio.run(run())

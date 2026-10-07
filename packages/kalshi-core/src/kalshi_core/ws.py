@@ -11,6 +11,7 @@ import contextlib
 import json
 import logging
 import random
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from types import TracebackType
 from typing import Any, Self
@@ -225,6 +226,7 @@ class KalshiWebSocket:
             async for raw in conn:
                 try:
                     message = WsMessage.model_validate(json.loads(raw))
+                    message.received_at = time.time()
                 except ValueError:
                     log.warning("dropping unparseable WebSocket message: %.200s", raw)
                     continue

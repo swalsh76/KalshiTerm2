@@ -29,6 +29,7 @@ OPEN_STATUSES = ("unopened", "open", "closed")
 UPDATED_KEY = "updated_since"  # epoch seconds: re-read everything updated after this
 FULL_KEY = "last_full_at"  # epoch seconds of the last full refresh
 CHUNK = 1000
+LOOKUP_BATCH = 100  # tickers per direct lookup
 OVERLAP = timedelta(minutes=2)  # re-read a little to be safe against clock/ordering edges
 
 
@@ -38,6 +39,8 @@ class DiscoveryReport:
     series: reference.UpsertResult = field(default_factory=reference.UpsertResult)
     events: reference.UpsertResult = field(default_factory=reference.UpsertResult)
     markets: reference.UpsertResult = field(default_factory=reference.UpsertResult)
+    resolved: int = 0  # stream-created placeholders described by a direct ticker lookup
+    unresolved: int = 0  # placeholders Kalshi did not return (retried next cycle)
     seconds: float = 0.0
 
     def lines(self) -> list[str]:
@@ -49,7 +52,10 @@ class DiscoveryReport:
                 f"changed {r.updated:>8,}  unchanged {r.unchanged:>8,}  rejected {r.rejected:>4,}"
                 for name, r in rows
             ]
-            + [f"took {self.seconds:.1f}s"]
+            + [
+                f"placeholders: resolved {self.resolved}, still unknown {self.unresolved}",
+                f"took {self.seconds:.1f}s",
+            ]
         )
 
 
@@ -79,6 +85,27 @@ async def _stream(
 async def _int_state(engine: AsyncEngine, key: str) -> int | None:
     value = await reference.get_state(engine, key)
     return int(value) if value else None
+
+
+async def _resolve_placeholders(
+    rest: KalshiRestClient, engine: AsyncEngine, report: DiscoveryReport
+) -> None:
+    pending = await reference.unknown_tickers(engine)
+    resolved = 0
+    for start in range(0, len(pending), LOOKUP_BATCH):
+        wanted = pending[start : start + LOOKUP_BATCH]
+        page = await rest.markets_page(tickers=",".join(wanted), limit=LOOKUP_BATCH)
+        rows: list[dict[str, Any]] = []
+        for market in page.markets:
+            try:
+                rows.append(reference.market_row(market))
+            except PrecisionError as exc:
+                report.markets.rejected += 1
+                log.error("rejected markets row: %s", exc)
+        report.markets.add(await reference.upsert(engine, tables.markets, rows, "ticker"))
+        resolved += len(rows)
+    report.resolved = resolved
+    report.unresolved = len(pending) - resolved
 
 
 async def discover(
@@ -136,6 +163,10 @@ async def discover(
         await _stream(
             engine, tables.markets, "ticker", markets, reference.market_row, report.markets
         )
+
+    # Markets the stream saw before discovery did: look them up directly by ticker, so a
+    # placeholder never depends on falling inside the incremental window.
+    await _resolve_placeholders(rest, engine, report)
 
     # Only advance the bookmarks once everything above succeeded.
     await reference.set_state(engine, UPDATED_KEY, str(reference.epoch(cycle_start - OVERLAP)))

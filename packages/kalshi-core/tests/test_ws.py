@@ -207,3 +207,20 @@ async def test_client_answers_server_pings() -> None:
 
     async with fake_server(handler) as url, asyncio.timeout(5), make_ws(url):
         await asyncio.wait_for(ponged.wait(), 3)
+
+
+async def test_messages_are_stamped_with_their_receipt_time() -> None:
+    import time
+
+    async def handler(ws: ServerConnection) -> None:
+        cmd = json.loads(await ws.recv())
+        await ws.send(reply_subscribed(cmd, 1))
+        await ws.send(json.dumps({"type": "trade", "sid": 1, "seq": 1, "msg": {}}))
+        await ws.wait_closed()
+
+    async with fake_server(handler) as url, asyncio.timeout(5), make_ws(url) as ws:
+        before = time.time()
+        await ws.subscribe("trade")
+        message = await anext(ws.messages())
+        after = time.time()
+    assert message.received_at is not None and before <= message.received_at <= after
