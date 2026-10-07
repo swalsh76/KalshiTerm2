@@ -1,21 +1,18 @@
 import asyncio
-from collections.abc import Callable
-from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
-import httpx
 import pytest
-import respx
-from kalshi_core.config import KalshiSettings
-from kalshi_core.rest import KalshiRestClient
 from kalshi_core.ws_models import WsMessage
 from kalshiterm_server import db
+from kalshiterm_server.ingest.combos import notional_e6
 from kalshiterm_server.ingest.stream import StreamIngestor
 from test_stream import (
     RECEIVE_DELAY,
     T_MS,
     Gate,
     rows,
+    run,
     scalar,
     ticker_msg,
     trade_msg,
@@ -24,32 +21,10 @@ from test_stream import (
 
 pytestmark = pytest.mark.db
 
-BASE = "https://external-api.demo.kalshi.co/trade-api/v2"
-COMBO = "KXMVECROSSCATEGORY-S2026ABC-111"
-COLLECTION = "KXMVECROSSCATEGORY-R"
-LEGS = [
-    ("KXATP-26OCT07AB-A", "yes"),
-    ("KXNBA-26OCT07CD-C", "no"),
-    ("KXMLB-26OCT07EF-E", "yes"),
-]
-
-
-def combo_market(ticker: str = COMBO, **overrides: Any) -> dict[str, Any]:
-    market = {
-        "ticker": ticker,
-        "event_ticker": ticker.rsplit("-", 1)[0],
-        "market_type": "binary",
-        "status": "active",
-        "mve_collection_ticker": COLLECTION,
-        "mve_selected_legs": [
-            {"event_ticker": t.rsplit("-", 1)[0], "market_ticker": t, "side": side}
-            for t, side in LEGS
-        ],
-        "created_time": "2026-10-07T10:00:00Z",
-        "open_time": "2026-10-07T10:00:00Z",
-        "close_time": "2026-10-14T10:00:00Z",
-    }
-    return {**market, **overrides}
+FAMILY_A = "KXMVECROSSCATEGORY"
+FAMILY_B = "KXMVECROSSCATEGORY0"
+COMBO_A = f"{FAMILY_A}-S2026ABC-111"
+COMBO_B = f"{FAMILY_B}-S2026XYZ-222"
 
 
 def lifecycle(ticker: str, event_type: str, offset_ms: int = 0, **msg: Any) -> WsMessage:
@@ -62,313 +37,165 @@ def lifecycle(ticker: str, event_type: str, offset_ms: int = 0, **msg: Any) -> W
     )
 
 
-class FakeLookup:
-    """Answers GET /markets?tickers=... from a dict and records the requests."""
-
-    def __init__(self, known: list[dict[str, Any]] | None = None) -> None:
-        self.known = {m["ticker"]: m for m in (known if known is not None else [combo_market()])}
-        self.requests: list[str] = []
-        self.failures = 0  # respond 500 this many times first
-        self.hide_first = 0  # answer "not found" for this many lookups, then find it
-        self.gate: asyncio.Event | None = None  # if set, block until released
-
-    async def __call__(self, request: httpx.Request) -> httpx.Response:
-        wanted = request.url.params["tickers"].split(",")
-        self.requests.append(request.url.params["tickers"])
-        if self.gate is not None:
-            await self.gate.wait()
-        if self.failures > 0:
-            self.failures -= 1
-            return httpx.Response(500, text="boom")
-        if self.hide_first > 0:
-            self.hide_first -= 1
-            return httpx.Response(200, json={"markets": [], "cursor": ""})
-        found = [self.known[t] for t in wanted if t in self.known]
-        return httpx.Response(200, json={"markets": found, "cursor": ""})
+async def stats_rows(url: str) -> dict[str, list[Any]]:
+    result = await rows(
+        url,
+        "select family, created, determined, settled, close_updated, ticker_msgs, trades, "
+        "contracts_e2, notional_e6 from combo_stats_1m order by family",
+    )
+    return {family: list(rest) for family, *rest in result}
 
 
-@pytest.fixture
-def lookup() -> FakeLookup:
-    return FakeLookup()
+def test_notional_is_contracts_times_price_paid_rounded_to_a_millionth() -> None:
+    assert notional_e6(Decimal("2.50"), Decimal("0.56")) == 1_400_000
+    assert notional_e6(Decimal("1000"), Decimal("0.6")) == 600_000_000
+    # price with 6 decimals x count with 2 decimals has 8: rounded, not an error
+    assert notional_e6(Decimal("0.01"), Decimal("0.123456")) == 1235  # 1234.56 -> 1235
 
 
-@pytest.fixture(autouse=True)
-def _clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    monkeypatch.chdir(tmp_path)
-    for name in ("KALSHI_ENV", "KALSHI_KEY_ID", "KALSHI_PRIVATE_KEY_PATH"):
-        monkeypatch.delenv(name, raising=False)
-
-
-def flushed(harness: "Harness", count: int) -> Callable[[], bool]:
-    return lambda: harness.ingestor.flushes >= count
-
-
-async def fast_sleep(_: float) -> None:
-    await asyncio.sleep(0.01)
-
-
-class Harness:
-    """A running ingestor fed through a Gate, with a mocked Kalshi lookup behind it."""
-
-    def __init__(self, url: str, lookup: FakeLookup, **kwargs: Any) -> None:
-        respx.get(f"{BASE}/markets").mock(side_effect=lookup)
-        self.gate = Gate()
-        self.engine = db.make_engine(url)
-        self.rest = KalshiRestClient(KalshiSettings(), max_retries=0)
-        kwargs.setdefault("flush_interval", 0.05)
-        kwargs.setdefault("unresolved_delays", (0.05, 0.05))
-        kwargs.setdefault("sleep", fast_sleep)
-        self.ingestor = StreamIngestor(self.gate.__aiter__(), self.engine, rest=self.rest, **kwargs)
-        self.task: asyncio.Task[None] | None = None
-
-    async def __aenter__(self) -> "Harness":
-        self.task = asyncio.create_task(self.ingestor.run())
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        self.gate.close()
-        assert self.task is not None
-        await asyncio.wait_for(self.task, 10)
-        await self.rest.aclose()
-        await self.engine.dispose()
-
-
-@respx.mock
-async def test_a_combo_that_trades_gets_a_row_with_its_legs_and_its_data_is_stored(
-    migrated_db_url: str, lookup: FakeLookup
+async def test_counters_cover_every_combo_message_with_exact_dollar_value(
+    migrated_db_url: str,
 ) -> None:
-    async with Harness(migrated_db_url, lookup) as h:
-        h.gate.put(ticker_msg(COMBO, offset_ms=0))  # quote before any trade: not stored
-        h.gate.put(trade_msg(COMBO, offset_ms=1000))
-        await until(lambda: h.ingestor.written["combo_trades"] == 1)
-        h.gate.put(ticker_msg(COMBO, offset_ms=2000))  # now the combo has a row
-        await until(lambda: h.ingestor.written["combo_tickers"] == 1)
-    assert len(lookup.requests) == 1 and lookup.requests[0] == COMBO
-    [row] = await rows(
+    messages = [ticker_msg(COMBO_B, offset_ms=i) for i in range(5)]
+    messages += [
+        lifecycle(COMBO_B, "created", 10),
+        lifecycle(COMBO_B, "created", 11),
+        lifecycle(COMBO_B, "determined", 12, result="no", settlement_value="0.0000"),
+        lifecycle(COMBO_B, "settled", 13, settled_ts=1_791_000_100),
+        lifecycle(COMBO_B, "close_date_updated", 14, close_ts=1_791_000_200),
+        lifecycle(COMBO_B, "activated", 15),  # not counted
+        # yes taker pays the yes price; no taker pays the no price
+        trade_msg(COMBO_A, offset_ms=20, count_fp="2.50", taker_side="yes"),
+        trade_msg(COMBO_A, offset_ms=21, count_fp="1.00", taker_side="no"),
+    ]
+    ingestor = await run(migrated_db_url, messages)
+    stats = await stats_rows(migrated_db_url)
+    assert stats[FAMILY_B] == [2, 1, 1, 1, 5, 0, 0, 0]
+    # 2.50 x $0.56 + 1.00 x $0.44 = $1.84 ; 3.50 contracts
+    assert stats[FAMILY_A] == [0, 0, 0, 0, 0, 2, 350, 1_840_000]
+    assert ingestor.combo_counted == {"ticker": 5, "lifecycle": 5, "trade": 2}
+    assert await scalar(migrated_db_url, "select count(*) from combo_large_trades") == 0
+
+
+async def test_only_trades_at_or_above_the_dollar_threshold_are_logged_individually(
+    migrated_db_url: str,
+) -> None:
+    exactly = trade_msg(COMBO_A, offset_ms=1, count_fp="1000.00", yes_price_dollars="0.5000")
+    just_under = trade_msg(COMBO_A, offset_ms=2, count_fp="999.98", yes_price_dollars="0.5000")
+    big_no = trade_msg(
+        COMBO_B, offset_ms=3, count_fp="2000.00", taker_side="no", no_price_dollars="0.3000",
+        yes_price_dollars="0.7000",
+    )  # fmt: skip
+    small = trade_msg(COMBO_A, offset_ms=4, count_fp="3.00")
+    ingestor = await run(migrated_db_url, [exactly, just_under, big_no, small])
+    logged = await rows(
         migrated_db_url,
-        "select ticker, collection_ticker, event_ticker, status, first_trade_at, close_time, "
-        "leg_market_ids, leg_yes from combo_markets",
+        "select ticker, trade_id::text, yes_price_e6, count_e2, taker_side, notional_e6 "
+        "from combo_large_trades order by ts",
     )
-    assert row[:4] == (COMBO, COLLECTION, "KXMVECROSSCATEGORY-S2026ABC", "active")
-    assert row[4] == datetime.fromtimestamp((T_MS + 1000) / 1000, UTC)  # time of the first trade
-    assert row[5] == datetime(2026, 10, 14, 10, tzinfo=UTC)
-    assert row[7] == [True, False, True]  # yes, no, yes
-    leg_tickers = await rows(
-        migrated_db_url, f"select ticker, status from markets where id = any(array{row[6]})"
+    assert logged == [
+        (COMBO_A, exactly.msg["trade_id"], 500_000, 100_000, "yes", 500_000_000),
+        (COMBO_B, big_no.msg["trade_id"], 700_000, 200_000, "no", 600_000_000),
+    ]
+    assert ingestor.written["combo_large_trades"] == 2
+    assert (
+        await scalar(migrated_db_url, "select sum(trades) from combo_stats_1m") == 4
+    )  # all counted
+    view = await rows(
+        migrated_db_url, "select notional, count from combo_large_trades_v order by ts"
     )
-    assert sorted(t for t, _ in leg_tickers) == sorted(t for t, _ in LEGS)
-    combo_id = await scalar(
-        migrated_db_url, f"select id from combo_markets where ticker = '{COMBO}'"
-    )
-    assert await rows(migrated_db_url, "select market_id from combo_trades") == [(combo_id,)]
-    assert await rows(migrated_db_url, "select market_id from combo_tickers") == [(combo_id,)]
-    for ordinary_table in ("tickers", "trades"):
-        assert await scalar(migrated_db_url, f"select count(*) from {ordinary_table}") == 0
-    view = await rows(migrated_db_url, "select ticker, yes_price, count from combo_trades_v")
-    assert [(t, str(p), str(c)) for t, p, c in view] == [(COMBO, "0.560000", "3.00")]
+    assert [(str(n), str(c)) for n, c in view] == [("500.00", "1000.00"), ("600.00", "2000.00")]
 
 
-@respx.mock
-async def test_known_legs_are_reused_and_unknown_legs_become_placeholders(
-    migrated_db_url: str, lookup: FakeLookup
-) -> None:
+async def test_the_threshold_is_configurable(migrated_db_url: str) -> None:
+    messages = [trade_msg(COMBO_A, offset_ms=i, count_fp="10.00") for i in range(4)]  # $5.60 each
+    await run(migrated_db_url, messages, large_trade_e6=5_000_000)
+    assert await scalar(migrated_db_url, "select count(*) from combo_large_trades") == 4
+
+
+async def test_counters_are_exact_after_failed_writes_and_retries(migrated_db_url: str) -> None:
+    gate, failures = Gate(), [2]
     engine = db.make_engine(migrated_db_url)
-    async with engine.begin() as conn:
-        from sqlalchemy import text
 
-        await conn.execute(
-            text(
-                "insert into markets (ticker, event_ticker, market_type, status) "
-                "values ('KXATP-26OCT07AB-A', 'KXATP-26OCT07AB', 'binary', 'active')"
-            )
+    async def fast(_: float) -> None:
+        await asyncio.sleep(0.01)
+
+    try:
+        ingestor = StreamIngestor(
+            gate.__aiter__(), engine, flush_interval=0.05, sleep=fast, retry_base=0.01
         )
-    await engine.dispose()
-    known_id = await scalar(
-        migrated_db_url, "select id from markets where ticker = 'KXATP-26OCT07AB-A'"
-    )
-    async with Harness(migrated_db_url, lookup) as h:
-        h.gate.put(trade_msg(COMBO))
-        await until(lambda: h.ingestor.written["combo_trades"] == 1)
-    [(leg_ids,)] = await rows(migrated_db_url, "select leg_market_ids from combo_markets")
-    assert leg_ids[0] == known_id  # the existing ordinary market was reused, not duplicated
-    statuses = dict(await rows(migrated_db_url, "select ticker, status from markets"))
-    assert statuses["KXATP-26OCT07AB-A"] == "active"
-    assert statuses["KXNBA-26OCT07CD-C"] == "unknown" and statuses["KXMLB-26OCT07EF-E"] == "unknown"
+        real_write = ingestor._write
+
+        async def flaky(batch: Any, agg: Any) -> None:
+            if failures[0] > 0:
+                failures[0] -= 1
+                raise OSError("database unreachable")
+            await real_write(batch, agg)
+
+        ingestor._write = flaky  # type: ignore[method-assign]
+        task = asyncio.create_task(ingestor.run())
+        gate.put(*[ticker_msg(COMBO_A, offset_ms=i) for i in range(10)])
+        await asyncio.sleep(0.02)  # arrives while the first write is failing
+        gate.put(*[ticker_msg(COMBO_A, offset_ms=100 + i) for i in range(7)])
+        await until(lambda: ingestor.retries >= 2 and ingestor.stats()["buffered"] == 0)
+        gate.close()
+        await asyncio.wait_for(task, 10)
+    finally:
+        await engine.dispose()
+    assert await scalar(migrated_db_url, "select sum(ticker_msgs) from combo_stats_1m") == 17
 
 
-@respx.mock
-async def test_universe_counters_include_combos_that_never_get_a_row(
-    migrated_db_url: str, lookup: FakeLookup
-) -> None:
-    other = "KXMVECROSSCATEGORY0-S2026XYZ-222"  # a different family, never traded
-    async with Harness(migrated_db_url, lookup) as h:
-        for i in range(5):
-            h.gate.put(ticker_msg(other, offset_ms=i))
-        h.gate.put(
-            lifecycle(other, "created", 10),
-            lifecycle(other, "created", 11),
-            lifecycle(other, "determined", 12, result="no", settlement_value="0.0000"),
-            lifecycle(other, "settled", 13, settled_ts=1_791_000_100),
-            lifecycle(other, "close_date_updated", 14, close_ts=1_791_000_200),
-            lifecycle(other, "activated", 15),  # not counted
-            trade_msg(COMBO, offset_ms=20, count_fp="2.50"),
-            trade_msg(COMBO, offset_ms=21, count_fp="1.00"),
-        )
-        await until(lambda: h.ingestor.written["combo_trades"] == 2)
-    stats = {
-        family: row
-        for family, *row in await rows(
-            migrated_db_url,
-            "select family, created, determined, settled, close_updated, ticker_msgs, trades, "
-            "contracts_e2 from combo_stats_1m order by family",
-        )
-    }
-    assert stats["KXMVECROSSCATEGORY0"] == [2, 1, 1, 1, 5, 0, 0]
-    assert stats["KXMVECROSSCATEGORY"] == [0, 0, 0, 0, 0, 2, 350]  # 2.50 + 1.00 contracts
-    assert await scalar(migrated_db_url, "select count(*) from combo_markets") == 1  # only COMBO
-
-
-@respx.mock
-async def test_counters_accumulate_across_flushes_within_a_minute(
-    migrated_db_url: str, lookup: FakeLookup
-) -> None:
-    other = "KXMVECROSSCATEGORY-S2026XYZ-333"
-    async with Harness(migrated_db_url, lookup, flush_interval=0.02) as h:
-        for i in range(3):
-            h.gate.put(ticker_msg(other, offset_ms=i))
-            await until(flushed(h, i + 1))
-            await asyncio.sleep(0.05)
-    total = await scalar(migrated_db_url, "select sum(ticker_msgs) from combo_stats_1m")
-    assert total == 3
-    assert await scalar(migrated_db_url, "select count(*) from combo_stats_1m") == 1  # one minute
-
-
-@respx.mock
-async def test_lifecycle_events_update_stored_combos_and_ignore_unstored_ones(
-    migrated_db_url: str, lookup: FakeLookup
-) -> None:
-    stranger = "KXMVECROSSCATEGORY-S2026ZZZ-999"
-    settled_at = 1_791_000_100
-    async with Harness(migrated_db_url, lookup) as h:
-        h.gate.put(trade_msg(COMBO))
-        await until(lambda: h.ingestor.written["combo_trades"] == 1)
-        h.gate.put(
-            lifecycle(COMBO, "close_date_updated", 100, close_ts=1_791_000_050),
-            lifecycle(COMBO, "determined", 101, result="yes", settlement_value="1.0000"),
-            lifecycle(COMBO, "settled", 102, settled_ts=settled_at),
-            lifecycle(stranger, "determined", 103, result="no", settlement_value="0.0000"),
-        )
-        await until(lambda: h.ingestor.flushes >= 2 and h.ingestor.stats()["buffered"] == 0)
-        await asyncio.sleep(0.2)
-    [row] = await rows(
-        migrated_db_url,
-        "select status, result, settlement_value_e6, settled_at, close_time from combo_markets",
-    )
-    assert row == (
-        "finalized",
-        "yes",
-        1_000_000,
-        datetime.fromtimestamp(settled_at, UTC),
-        datetime.fromtimestamp(1_791_000_050, UTC),
-    )
-    assert await scalar(migrated_db_url, "select count(*) from combo_markets") == 1
-
-
-@respx.mock
-async def test_a_combo_kalshi_does_not_know_is_dropped_and_counted(
+async def test_batches_that_contain_only_counters_are_still_flushed(
     migrated_db_url: str,
 ) -> None:
-    lookup = FakeLookup(known=[])
-    async with Harness(migrated_db_url, lookup) as h:
-        h.gate.put(trade_msg(COMBO), trade_msg(COMBO, offset_ms=5))
-        await until(lambda: h.ingestor.combo["unresolved"] == 2)
-    assert await scalar(migrated_db_url, "select count(*) from combo_trades") == 0
-    assert h.ingestor.stats()["combo"]["held"] == 0
+    ingestor = await run(migrated_db_url, [lifecycle(COMBO_A, "created", i) for i in range(3)])
+    assert ingestor.flushes >= 1
+    assert (await stats_rows(migrated_db_url))[FAMILY_A][0] == 3
+    assert await scalar(migrated_db_url, "select count(*) from combo_large_trades") == 0
 
 
-@respx.mock
-async def test_lookup_errors_are_retried_and_the_trade_is_kept(
-    migrated_db_url: str, lookup: FakeLookup
-) -> None:
-    lookup.failures = 2
-    async with Harness(migrated_db_url, lookup) as h:
-        h.gate.put(trade_msg(COMBO))
-        await until(lambda: h.ingestor.written["combo_trades"] == 1)
-    assert h.ingestor.combo["lookup_errors"] == 2
-    assert len(lookup.requests) == 3
-
-
-@respx.mock
-async def test_repeated_lookup_failures_give_up_instead_of_holding_forever(
-    migrated_db_url: str, lookup: FakeLookup
-) -> None:
-    lookup.failures = 100
-    async with Harness(migrated_db_url, lookup) as h:
-        h.gate.put(trade_msg(COMBO))
-        await until(lambda: h.ingestor.combo["lookup_failed"] == 1)
-    assert h.ingestor.combo["lookup_errors"] == 5
-    assert await scalar(migrated_db_url, "select count(*) from combo_trades") == 0
-
-
-@respx.mock
-async def test_held_trades_are_capped(migrated_db_url: str) -> None:
-    tickers = [f"KXMVECROSSCATEGORY-S2026ABC-{i}" for i in range(10)]
-    lookup = FakeLookup(known=[combo_market(t) for t in tickers])
-    lookup.gate = asyncio.Event()  # the lookup hangs, so trades pile up
-    async with Harness(migrated_db_url, lookup, max_held=3) as h:
-        h.gate.put(*[trade_msg(t, offset_ms=i) for i, t in enumerate(tickers)])
-        await until(lambda: h.ingestor.combo["held_overflow"] == 7)
-        assert h.ingestor.stats()["combo"]["held"] == 3
-        lookup.gate.set()
-        await until(lambda: h.ingestor.written["combo_trades"] == 3)
-    assert await scalar(migrated_db_url, "select count(*) from combo_markets") == 3
-
-
-@respx.mock
-async def test_a_second_trade_on_a_known_combo_needs_no_lookup(
-    migrated_db_url: str, lookup: FakeLookup
-) -> None:
-    async with Harness(migrated_db_url, lookup) as h:
-        h.gate.put(trade_msg(COMBO))
-        await until(lambda: h.ingestor.written["combo_trades"] == 1)
-        h.gate.put(trade_msg(COMBO, offset_ms=500), trade_msg(COMBO, offset_ms=900))
-        await until(lambda: h.ingestor.written["combo_trades"] == 3)
-    assert len(lookup.requests) == 1
-    assert await scalar(migrated_db_url, "select count(*) from combo_markets") == 1
-
-
-@respx.mock
-async def test_ordinary_markets_are_unaffected_by_combo_handling(
-    migrated_db_url: str, lookup: FakeLookup
-) -> None:
-    async with Harness(migrated_db_url, lookup) as h:
-        h.gate.put(ticker_msg("KXA-E1-X"), trade_msg("KXA-E1-X"), trade_msg(COMBO, offset_ms=5))
-        await until(lambda: h.ingestor.written["combo_trades"] == 1)
-        await until(
-            lambda: h.ingestor.written["tickers"] == 1 and h.ingestor.written["trades"] == 1
-        )
-    assert await scalar(migrated_db_url, "select count(*) from combo_trades") == 1
-    assert h.ingestor.skipped_mve == 0
-
-
-@respx.mock
-async def test_a_combo_that_is_not_queryable_yet_is_retried_before_giving_up(
-    migrated_db_url: str, lookup: FakeLookup
-) -> None:
-    lookup.hide_first = 2  # a brand-new combo: the first two lookups find nothing
-    async with Harness(migrated_db_url, lookup) as h:
-        h.gate.put(trade_msg(COMBO))
-        await until(lambda: h.ingestor.written["combo_trades"] == 1)
-    assert len(lookup.requests) == 3
-    assert h.ingestor.combo["unresolved"] == 0
-
-
-@respx.mock
-async def test_a_combo_that_never_appears_is_retried_a_bounded_number_of_times(
+async def test_a_malformed_combo_trade_is_still_counted_without_breaking_anything(
     migrated_db_url: str,
 ) -> None:
-    lookup = FakeLookup(known=[])
-    async with Harness(migrated_db_url, lookup) as h:
-        h.gate.put(trade_msg(COMBO))
-        await until(lambda: h.ingestor.combo["unresolved"] == 1)
-    assert len(lookup.requests) == 3  # the first try plus two delayed retries
+    odd = trade_msg(COMBO_A, count_fp="1.234")  # three decimals: no exact count representation
+    ok = trade_msg(COMBO_A, offset_ms=1, count_fp="2.00")
+    ingestor = await run(migrated_db_url, [odd, ok])
+    stats = (await stats_rows(migrated_db_url))[FAMILY_A]
+    assert stats[5] == 2  # both counted as trades
+    assert stats[6] == 200  # only the representable contract count was added
+    assert ingestor.rejected == 0
+
+
+async def test_event_lifecycle_messages_and_unknown_types_are_ignored(
+    migrated_db_url: str,
+) -> None:
+    ignored = [
+        WsMessage(type="event_lifecycle", sid=5, msg={"event_ticker": "KXMVE-1", "title": "x"}),
+        WsMessage(type="orderbook_delta", sid=1, seq=1, msg={}),
+    ]
+    ingestor = await run(migrated_db_url, ignored)
+    assert (
+        not ingestor.seen
+        and await scalar(migrated_db_url, "select count(*) from combo_stats_1m") == 0
+    )
+
+
+async def test_migration_0005_drops_the_per_combo_tables_and_downgrade_restores_them(
+    fresh_db_url: str,
+) -> None:
+    async def tables() -> set[str]:
+        found = await rows(
+            fresh_db_url,
+            "select table_name from information_schema.tables where table_schema = 'public'",
+        )
+        return {name for (name,) in found}
+
+    await db.upgrade_async(fresh_db_url, "0004")
+    before = await tables()
+    assert {"combo_markets", "combo_tickers", "combo_trades"} <= before
+    await db.upgrade_async(fresh_db_url, "0005")
+    after = await tables()
+    assert not {"combo_markets", "combo_tickers", "combo_trades"} & after
+    assert {"combo_large_trades", "combo_stats_1m"} <= after
+    await db.downgrade_async(fresh_db_url, "0004")
+    assert await tables() >= {"combo_markets", "combo_tickers", "combo_trades"}

@@ -1,5 +1,6 @@
 import pytest
 from kalshiterm_server import db
+from kalshiterm_server.ingest.combos import LARGE_TRADE_COLUMNS
 from kalshiterm_server.ingest.stream import (
     LIFECYCLE_COLUMNS,
     TICKER_COLUMNS,
@@ -25,6 +26,7 @@ async def query(url: str, sql: str, **params: object) -> list[tuple[object, ...]
         ("tickers", TICKER_COLUMNS),
         ("trades", TRADE_COLUMNS),
         ("market_lifecycle", LIFECYCLE_COLUMNS),
+        ("combo_large_trades", LARGE_TRADE_COLUMNS),
     ],
 )
 async def test_copy_column_lists_match_the_migrated_tables(
@@ -49,8 +51,7 @@ async def test_streaming_tables_are_hypertables_with_the_planned_chunk_sizes(
         "join timescaledb_information.dimensions d using (hypertable_name) order by 1",
     )
     assert dict(rows) == {  # type: ignore[arg-type]
-        "combo_tickers": "1 day",
-        "combo_trades": "1 day",
+        "combo_large_trades": "7 days",
         "market_lifecycle": "7 days",
         "tickers": "1 day",
         "trades": "1 day",
