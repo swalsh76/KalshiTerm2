@@ -254,6 +254,20 @@ class KalshiWebSocket:
                 fut.set_exception(KalshiWSError(text, code))
             else:
                 fut.set_result(message)
+                if message.sid is not None and message.seq is not None:
+                    # The reply consumed a number of the subscription's sequence. Pass a marker
+                    # through the stream, in order, so gap detection can count it.
+                    marker = WsMessage(
+                        type="control",
+                        id=message.id,
+                        sid=message.sid,
+                        seq=message.seq,
+                        received_at=message.received_at,
+                    )
+                    if self._held is not None:
+                        self._held.append(marker)
+                    else:
+                        self._enqueue(marker)
         elif message.type in _RESPONSE_TYPES and message.type != "error":
             log.debug("unmatched control message: %s", message)
         elif self._held is not None:
@@ -355,6 +369,27 @@ class KalshiWebSocket:
         except ConnectionClosed:
             raise KalshiWSError("connection closed") from None
         return command_id
+
+    async def update_subscription(
+        self, sid: int, action: str, market_tickers: list[str]
+    ) -> list[str]:
+        """Add or remove markets on a live subscription; returns the resulting market set.
+
+        Kalshi replies with the *full* set after the change, which also replaces the stored
+        parameters, so a reconnect resubscribes to the updated set. ``action`` is
+        ``add_markets`` or ``delete_markets``.
+        """
+        reply = await self._command(
+            "update_subscription",
+            {"sid": sid, "market_tickers": market_tickers, "action": action},
+        )
+        current = reply.msg.get("market_tickers") if isinstance(reply.msg, dict) else None
+        if current is None:
+            raise KalshiWSError(f"{action} reply carried no market set")
+        if sid in self._subs:
+            channel, body = self._subs[sid]
+            self._subs[sid] = (channel, {**body, "market_tickers": list(current)})
+        return list(current)
 
     async def unsubscribe(self, sid: int) -> None:
         await self._command("unsubscribe", {"sids": [sid]})

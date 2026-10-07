@@ -154,6 +154,16 @@ KalshiTerm2/
   aligns exactly with the delta stream) with a REST snapshot as fallback (no `seq`, so the book
   is flagged `approximate`). Observed live: `seq` is one counter per subscription shared by all
   its markets, so a gap invalidates every book in it; deltas are signed quantity changes.
+- **Live add/remove of markets (slice 2.5a, probed 2026-10-07):** one orderbook subscription
+  accepted 3,000 markets without error. `update_subscription` `add_markets` / `delete_markets`
+  reply `ok` with the *full resulting market set* (used to keep the reconnect registry correct),
+  and **the reply consumes a number of the subscription's sequence** — so the WebSocket client
+  passes a `control` marker through the stream in order and the tracker counts it, otherwise
+  every live change would look like a gap. Added markets: quiet ones get no snapshot (so the
+  feed always requests one via `get_snapshot`), busy ones sometimes get one by themselves
+  (duplicates are harmless). Removing the last market unsubscribes rather than sending an empty
+  list, which Kalshi might read as "all markets"; late messages for removed markets are
+  counted in sequence and ignored.
 - Client-side rate limiter mirroring Kalshi's **token-bucket** model (docs, Oct 2026):
   Basic tier = 200 read / 100 write tokens per second, most requests cost 10 tokens,
   buckets hold one second of budget, read and write are independent, and overage is a bare
@@ -518,7 +528,7 @@ container and run on the Linux CI job only (macOS/Windows runners have no Docker
 | 2.2 | Reference data: `series`, `events`, `markets` + discovery poller (≈121k open ordinary markets, full refresh ≈14 s; combo markets arrive via lifecycle events, not polling) |
 | 2.3 | Streaming core: batched `COPY` writer, `tickers` / `trades` / lifecycle tables, exchange + receipt timestamps, ingestion-lag metric, behaviour when the database is down |
 | 2.4 | Combo-market storage (decision 10) |
-| 2.5 | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API). Semantics (decisions 12–13): **adding** a market subscribes it live (`add_markets`, fresh snapshot), copies its last 30 days of raw trades into `trades_watchlist`, and opens a `watchlist_periods` row; **while watched**, snapshots/deltas are stored and trades go to both trade tables; **removing** stops orderbook capture (`delete_markets`) and closes the period but deletes nothing — orderbook data ages out under normal retention, `trades_watchlist` is kept forever. Capture covers the union of all users' watchlists (reference-counted). Auto top-N entries stay ≥12 h once added; manual entries are never auto-removed. Needs a `kalshi-core` extension (live add/remove on `OrderBookFeed`) and a live probe of Kalshi's undocumented per-subscription market limit |
+| 2.5 (a: live add/remove on the feed — done; b: orderbook storage; c: watchlist controller) | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API). Semantics (decisions 12–13): **adding** a market subscribes it live (`add_markets`, fresh snapshot), copies its last 30 days of raw trades into `trades_watchlist`, and opens a `watchlist_periods` row; **while watched**, snapshots/deltas are stored and trades go to both trade tables; **removing** stops orderbook capture (`delete_markets`) and closes the period but deletes nothing — orderbook data ages out under normal retention, `trades_watchlist` is kept forever. Capture covers the union of all users' watchlists (reference-counted). Auto top-N entries stay ≥12 h once added; manual entries are never auto-removed. Needs a `kalshi-core` extension (live add/remove on `OrderBookFeed`) and a live probe of Kalshi's undocumented per-subscription market limit |
 | 2.6 | Gap handling: gap log; trade backfill via REST on a `reconnected` event (tickers cannot be backfilled, so those gaps are recorded) |
 | 2.7 | Compression, retention policies, continuous aggregates (1-minute, 1-hour) |
 | 2.8 | Storage governor + `kterm-server status` |
