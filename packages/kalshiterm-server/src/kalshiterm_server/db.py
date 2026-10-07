@@ -6,6 +6,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
@@ -20,6 +21,13 @@ def _config(url: str) -> Config:
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
     cfg.attributes["url"] = url  # not set_main_option: configparser would mangle '%' in URLs
     return cfg
+
+
+def head_revision() -> str:
+    """The newest migration revision shipped in this package."""
+    head = ScriptDirectory(str(MIGRATIONS_DIR)).get_current_head()
+    assert head is not None
+    return head
 
 
 def upgrade(url: str, revision: str = "head") -> None:
