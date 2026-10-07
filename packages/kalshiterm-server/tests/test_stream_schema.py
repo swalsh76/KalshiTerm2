@@ -31,6 +31,7 @@ async def query(url: str, sql: str, **params: object) -> list[tuple[object, ...]
         ("combo_large_trades", LARGE_TRADE_COLUMNS),
         ("orderbook_snapshots", OB_SNAPSHOT_COLUMNS),
         ("orderbook_deltas", OB_DELTA_COLUMNS),
+        ("trades_watchlist", TRADE_COLUMNS),
     ],
 )
 async def test_copy_column_lists_match_the_migrated_tables(
@@ -61,6 +62,7 @@ async def test_streaming_tables_are_hypertables_with_the_planned_chunk_sizes(
         "orderbook_snapshots": "1 day",
         "tickers": "1 day",
         "trades": "1 day",
+        "trades_watchlist": "7 days",
     }
 
 

@@ -9,6 +9,11 @@ pauses, the WebSocket client's bounded queue fills, and its overflow-reconnect p
 Combo (multivariate, ``KXMVE…``) markets are only *counted* per minute and ticker family
 (``combo_stats_1m``), plus individual trades above a dollar threshold are logged
 (``combo_large_trades``); there are no per-combo rows (PLAN decision 17).
+
+Watched markets (PLAN decisions 12-13): ``watch()`` / ``unwatch()`` are applied inside the next
+flush transaction, in order with the data. On *watch* the market's recent raw trades are copied
+from ``trades`` to ``trades_watchlist`` and its coverage period is opened; from that same batch
+on, its trades are written to both tables, so there is neither a gap nor a duplicate.
 """
 
 import asyncio
@@ -189,8 +194,36 @@ TABLES: dict[str, tuple[str, list[str], Callable[[Item, int], tuple[Any, ...]]]]
     "combo_large": ("combo_large_trades", LARGE_TRADE_COLUMNS, combo_large_row),
     "ob_snapshot": ("orderbook_snapshots", OB_SNAPSHOT_COLUMNS, ob_snapshot_row),
     "ob_delta": ("orderbook_deltas", OB_DELTA_COLUMNS, ob_delta_row),
+    # Not an intake kind: a watched market's trades are written here as well as to ``trades``.
+    "trade_watched": ("trades_watchlist", TRADE_COLUMNS, trade_row),
 }
 ORDINARY_KINDS = ("ticker", "trade", "market_lifecycle_v2", "ob_snapshot", "ob_delta")
+
+OPEN_PERIOD = """
+INSERT INTO watchlist_periods (market_id, source) VALUES ($1, $2)
+ON CONFLICT (market_id) WHERE removed_at IS NULL DO NOTHING
+"""
+CLOSE_PERIOD = (
+    "UPDATE watchlist_periods SET removed_at = now() WHERE market_id = $1 AND removed_at IS NULL"
+)
+# Everything already in trades that trades_watchlist lacks (>= the newest copy, minus exact
+# duplicates, so a re-added market is filled in without repeating or missing a trade).
+COPY_HISTORY = """
+INSERT INTO trades_watchlist ({columns})
+SELECT {selected} FROM trades t
+WHERE t.market_id = $1
+  AND t.ts >= COALESCE((SELECT max(w.ts) FROM trades_watchlist w WHERE w.market_id = $1),
+                       '-infinity'::timestamptz)
+  AND NOT EXISTS (SELECT 1 FROM trades_watchlist w
+                  WHERE w.market_id = t.market_id AND w.trade_id = t.trade_id AND w.ts = t.ts)
+""".format(columns=", ".join(TRADE_COLUMNS), selected=", ".join(f"t.{c}" for c in TRADE_COLUMNS))
+
+
+@dataclass(frozen=True, slots=True)
+class WatchOp:
+    ticker: str
+    watch: bool  # False = unwatch
+    source: str = "manual"
 
 
 class Samples:
@@ -242,6 +275,8 @@ class StreamIngestor:
         self._buffer: list[Item] = []
         self._agg = Aggregates()
         self._in_flight = 0
+        self._ops: list[WatchOp] = []  # watch/unwatch requests not yet applied
+        self._watched: set[str] = set()  # tickers whose trades also go to trades_watchlist
         self._wake = asyncio.Event()
         self._space = asyncio.Event()
         self._space.set()
@@ -256,6 +291,21 @@ class StreamIngestor:
         self.last_flush_seconds = 0.0
         self.lag_ms = Samples()  # received_at - exchange ts (network + server + clock skew)
         self.write_delay_ms = Samples()  # written - received_at (our own buffering)
+
+    # ------------------------------------------------------------------ watchlist
+    def watch(self, tickers: list[str], source: str = "manual") -> None:
+        """Start the permanent trade copy and coverage period for these markets."""
+        self._ops.extend(WatchOp(t, True, source) for t in tickers)
+        self._wake.set()
+
+    def unwatch(self, tickers: list[str]) -> None:
+        """Close the coverage period and stop the copy (what was copied is kept)."""
+        self._ops.extend(WatchOp(t, False) for t in tickers)
+        self._wake.set()
+
+    @property
+    def watched(self) -> frozenset[str]:
+        return frozenset(self._watched)
 
     # ------------------------------------------------------------------ intake
     async def run(self) -> None:
@@ -400,7 +450,7 @@ class StreamIngestor:
             log.error("dropping %d unwritten items at shutdown", len(self._buffer))
 
     async def _flush(self, *, retry_forever: bool) -> None:
-        if not self._buffer and not self._agg:
+        if not self._buffer and not self._agg and not self._ops:
             return
         batch, self._buffer = self._buffer, []
         agg, self._agg = self._agg, Aggregates()
@@ -444,14 +494,21 @@ class StreamIngestor:
             self.write_delay_ms.add((now - item.received).total_seconds() * 1000)
 
     async def _write(self, batch: list[Item], agg: Aggregates) -> None:
+        ops = list(self._ops)  # ops added while we write stay queued for the next batch
         ordinary = {i.ticker for i in batch if i.kind in ORDINARY_KINDS}
+        ordinary |= {op.ticker for op in ops}
         ids = await self._ids.resolve(ordinary) if ordinary else {}
+        watched = set(self._watched)
+        for op in ops:
+            (watched.add if op.watch else watched.discard)(op.ticker)
         rows: dict[str, list[tuple[Any, ...]]] = {kind: [] for kind in TABLES}
         rejected = 0
         for item in batch:
             market_id = ids[item.ticker] if item.kind in ORDINARY_KINDS else 0
             try:
                 rows[item.kind].append(TABLES[item.kind][2](item, market_id))
+                if item.kind == "trade" and item.ticker in watched:
+                    rows["trade_watched"].append(TABLES["trade_watched"][2](item, market_id))
             except (PrecisionError, ValueError) as exc:
                 rejected += 1
                 log.error("rejected %s row: %s", item.kind, exc)
@@ -461,6 +518,15 @@ class StreamIngestor:
             driver = raw.driver_connection
             assert driver is not None
             async with driver.transaction():
+                # Ops first: the history copy sees every earlier batch, and this batch's
+                # trades then go to both tables.
+                for op in ops:
+                    market_id = ids[op.ticker]
+                    if op.watch:
+                        await driver.execute(OPEN_PERIOD, market_id, op.source)
+                        await driver.execute(COPY_HISTORY, market_id)
+                    else:
+                        await driver.execute(CLOSE_PERIOD, market_id)
                 for kind, (table, columns, _) in TABLES.items():
                     if rows[kind]:
                         await driver.copy_records_to_table(
@@ -471,6 +537,8 @@ class StreamIngestor:
 
         # Mutate shared state only after the transaction committed, so a retry starts clean.
         self.rejected += rejected
+        del self._ops[: len(ops)]
+        self._watched = watched
         for kind, kind_rows in rows.items():
             self.written[TABLES[kind][0]] += len(kind_rows)
 
@@ -486,6 +554,7 @@ class StreamIngestor:
             "flushes": self.flushes,
             "retries": self.retries,
             "buffered": len(self._buffer) + self._in_flight,
+            "watched": len(self._watched),
             "last_flush_seconds": self.last_flush_seconds,
             "placeholders_created": self._ids.placeholders_created,
             "lag_ms": self.lag_ms.summary(),
