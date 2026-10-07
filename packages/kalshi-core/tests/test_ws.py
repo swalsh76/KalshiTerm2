@@ -35,7 +35,9 @@ def make_ws(
     url: str, key: Ed25519PrivateKey | None = None, command_timeout: float = 10.0
 ) -> KalshiWebSocket:
     signer = KalshiSigner("kid", key or Ed25519PrivateKey.generate())
-    return KalshiWebSocket(KalshiSettings(), signer, url=url, command_timeout=command_timeout)
+    return KalshiWebSocket(
+        KalshiSettings(), signer, url=url, command_timeout=command_timeout, auto_reconnect=False
+    )
 
 
 def reply_subscribed(command: dict[str, object], sid: int) -> str:
