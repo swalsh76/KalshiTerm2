@@ -518,7 +518,26 @@ A larger host can raise it and scale compressed history accordingly.
 | Orderbook snapshots (watchlist, every 300 s by default) | 90 days | 5-min downsample kept 1 year |
 | Markets / events (incl. outcomes) — decision 15 | Age counts from `settlement_ts`; unsettled rows never expire. **0–30 days: full row. 30–90 days: slimmed to an outcome-only row** (rules text and sub-titles dropped; ticker, event, status, result, settlement, times and strikes kept). **After 90 days: deleted, except markets that are watched (ever, see decision 12) or pinned.** Events follow their markets; series are kept (≈15k rows). | — |
 
-TimescaleDB native compression: plan on **4–9×** until the calibration run (synthetic ticker
+**Compression, measured (slice 2.7a, 2026-10-07, 8 minutes of real data, 62 watched markets):**
+layout = batches ordered by `market_id, ts DESC`, no `segmentby`, compressed after 1 day.
+Segmenting by market was worse on the ticker table (few dozen rows per market per batch).
+
+| Table | Raw B/row | Compressed B/row | Ratio |
+|---|---|---|---|
+| tickers | 159 | 23 | 6.8× (2.5× if segmented by market) |
+| trades | 130 | 31 | 4.1× |
+| trades_watchlist | 132 | 30 | 4.4× |
+| orderbook_deltas | 126 | 14 | 8.9× |
+| orderbook_snapshots | 2,325 | 1,218 | 1.9× (148 rows only) |
+
+Single-market queries stay under 1 ms on both layouts at this size. Sample is small: re-measure
+on a full day in the calibration run. **Delta volume depends on watchlist composition:** the
+top-50-by-volume list ran ~1,800 deltas/s, of which five crypto 15-minute books made 58% (one
+BTC book alone 615/s, 34%) — about 2 GB/day compressed, so 14 days of deltas could be ~30 GB.
+The governor (2.8) must cover this; the auto top-N could also exclude fast crypto books.
+`market_lifecycle` and `combo_large_trades` (168 kB for 540 rows) are not compressed.
+
+TimescaleDB native compression: earlier plan figure **4–9×** until the calibration run (synthetic ticker
 data measured 8.8× for integers, 3.5× for `numeric`; real data should compress better). Measured
 volumes (2026-10-06) put raw ingestion at roughly 10 GB/day (~0.5–1 GB/day compressed), which
 is why the original "trades forever" and "7-day uncompressed window" defaults were dropped.
@@ -578,7 +597,7 @@ container and run on the Linux CI job only (macOS/Windows runners have no Docker
 | 2.4 | Combo-market storage (decision 10) |
 | 2.5 (a: live add/remove on the feed — done; b: orderbook storage — done; c: watchlist controller — done) | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API). Semantics (decisions 12–13): **adding** a market subscribes it live (`add_markets`, fresh snapshot), copies its last 30 days of raw trades into `trades_watchlist`, and opens a `watchlist_periods` row; **while watched**, snapshots/deltas are stored and trades go to both trade tables; **removing** stops orderbook capture (`delete_markets`) and closes the period but deletes nothing — orderbook data ages out under normal retention, `trades_watchlist` is kept forever. Capture covers the union of all users' watchlists (reference-counted). Auto top-N entries stay ≥12 h once added; manual entries are never auto-removed. Needs a `kalshi-core` extension (live add/remove on `OrderBookFeed`) and a live probe of Kalshi's undocumented per-subscription market limit |
 | 2.6 — done | Gap handling: gap log; trade backfill via REST on a `reconnected` event and on startup (tickers cannot be backfilled, so those gaps are recorded) |
-| 2.7 | Compression, retention policies, continuous aggregates (1-minute, 1-hour) |
+| 2.7 (a: compression — done; b: candles + raw-data retention; c: settled-market slimming/deletion + `pins`) | Split because raw-data retention must not be switched on before the candles that replace it exist. **a:** columnar compression after 1 day. **b:** 1-minute and 1-hour continuous aggregates (trades OHLC/volume, ticker aggregates), then retention (trades 30 d, tickers 14 d, orderbook deltas 14 d, snapshots 90 d + 5-min downsample, `combo_large_trades` 365 d). **c:** decision 15 (full 30 d / slim to 90 d / delete unless watched or pinned) as a scheduled job, plus the `pins` table |
 | 2.8 | Storage governor + `kterm-server status` |
 | 2.9 | `kterm-server init`, production Compose, health checks, Mac Studio deployment (TLS certificate generation moves to Phase 3 with the API) |
 | 2.10 | 48-hour calibration run (decision 11), then retune retention defaults |
