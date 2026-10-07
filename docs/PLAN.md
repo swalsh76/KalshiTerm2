@@ -175,6 +175,10 @@ One Docker image, three service roles: `kterm-server ingest`, `kterm-server anal
   evaluate for backfill in Phase 2).
 - **Stream subscriber** (WS): `ticker`, `trade`, `market_lifecycle_v2` for all ingested
   markets; `orderbook_delta` for the **watchlist only**.
+- **Gap handling:** Kalshi does not replay messages missed during a disconnect, and `sid`
+  and `seq` restart on every reconnect (observed live: both came back as 1). The WS client
+  yields a `reconnected` event ahead of any post-reconnect data; on it the ingestor backfills
+  trades (and re-snapshots watched orderbooks) via REST for the outage window.
 - Batched writes to Postgres via `COPY` (asyncpg).
 - Each row stores both **exchange timestamp** and **receipt timestamp** (UTC) to measure
   ingestion lag.
