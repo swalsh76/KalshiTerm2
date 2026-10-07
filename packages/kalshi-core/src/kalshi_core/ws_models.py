@@ -50,6 +50,26 @@ class LifecycleMsg(WsModel):
     is_deactivated: bool | None = None
 
 
+class OrderbookSnapshotMsg(WsModel):
+    """Full book for one market; levels are ``(price, contracts)``, best bid last."""
+
+    market_ticker: str
+    market_id: str | None = None
+    yes_dollars_fp: list[tuple[Decimal, Decimal]] = []
+    no_dollars_fp: list[tuple[Decimal, Decimal]] = []
+
+
+class OrderbookDeltaMsg(WsModel):
+    """Signed change in contracts at one price level on one side."""
+
+    market_ticker: str
+    price_dollars: Decimal
+    delta_fp: Decimal
+    side: str
+    ts_ms: int | None = None
+    client_order_id: str | None = None
+
+
 class WsMessage(WsModel):
     """Envelope for everything the server sends."""
 
@@ -60,7 +80,9 @@ class WsMessage(WsModel):
     sending_ts_ms: int | None = None
     msg: Any = None
 
-    def payload(self) -> TickerMsg | TradeMsg | LifecycleMsg | None:
+    def payload(
+        self,
+    ) -> TickerMsg | TradeMsg | LifecycleMsg | OrderbookSnapshotMsg | OrderbookDeltaMsg | None:
         """Typed payload for known data channels, else ``None`` (use ``msg``)."""
         if self.type == "ticker":
             return TickerMsg.model_validate(self.msg)
@@ -68,4 +90,8 @@ class WsMessage(WsModel):
             return TradeMsg.model_validate(self.msg)
         if self.type == "market_lifecycle_v2":
             return LifecycleMsg.model_validate(self.msg)
+        if self.type == "orderbook_snapshot":
+            return OrderbookSnapshotMsg.model_validate(self.msg)
+        if self.type == "orderbook_delta":
+            return OrderbookDeltaMsg.model_validate(self.msg)
         return None

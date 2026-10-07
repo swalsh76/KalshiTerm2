@@ -148,7 +148,11 @@ KalshiTerm2/
 
 - Async REST client with typed request/response models and pagination helpers.
 - WS client: auto-reconnect with backoff, automatic resubscription,
-  **sequence-gap detection on `orderbook_delta` → automatic REST re-snapshot**.
+  **sequence-gap detection on `orderbook_delta` → automatic recovery**:
+  an in-stream `get_snapshot` (primary: its reply carries the subscription's next `seq`, so it
+  aligns exactly with the delta stream) with a REST snapshot as fallback (no `seq`, so the book
+  is flagged `approximate`). Observed live: `seq` is one counter per subscription shared by all
+  its markets, so a gap invalidates every book in it; deltas are signed quantity changes.
 - Client-side rate limiter mirroring Kalshi's **token-bucket** model (docs, Oct 2026):
   Basic tier = 200 read / 100 write tokens per second, most requests cost 10 tokens,
   buckets hold one second of budget, read and write are independent, and overage is a bare
