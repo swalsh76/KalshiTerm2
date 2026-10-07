@@ -194,7 +194,9 @@ One Docker image, three service roles: `kterm-server ingest`, `kterm-server anal
 
 ### 5.2 Storage
 
-- **PostgreSQL + TimescaleDB** (pinned official image).
+- **PostgreSQL 18 + TimescaleDB** (pinned official image; decided 2026-10-06 over 17: five
+  years of support from the start, data checksums on by default, smoother future upgrades).
+  The 18 image's volume is `/var/lib/postgresql` (PGDATA is versioned inside it).
 - Reference tables: `series`, `events`, `markets` (outcomes stored on the market row).
 - Hypertables: `tickers`, `trades`, `orderbook_snapshots`, `orderbook_deltas`, plus
   `trades_watchlist` (raw trades of every market that has ever been watched; no retention).

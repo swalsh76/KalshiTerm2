@@ -7,7 +7,7 @@ name: kalshiterm-dev
 
 services:
   timescaledb:
-    image: timescale/timescaledb:2.30.2-pg17
+    image: timescale/timescaledb:2.30.2-pg18
     environment:
       POSTGRES_USER: ${KTERM_DB_USER:-kterm}
       POSTGRES_PASSWORD: ${KTERM_DB_PASSWORD:-kterm_dev_only} # dev only; never reuse
@@ -15,7 +15,9 @@ services:
     ports:
       - "127.0.0.1:${KTERM_DB_PORT:-5433}:5432" # loopback only
     volumes:
-      - kterm_pgdata:/var/lib/postgresql/data
+      # PostgreSQL 18 images keep PGDATA in a versioned subdirectory of /var/lib/postgresql
+      # (older majors used /var/lib/postgresql/data). Mount the parent or data is NOT persisted.
+      - kterm_pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
