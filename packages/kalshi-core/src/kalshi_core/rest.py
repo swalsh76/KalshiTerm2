@@ -7,6 +7,7 @@ rejects any non-GET request. Phase 6 must remove that guard deliberately.
 import asyncio
 import logging
 import random
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from types import TracebackType
 from typing import Any, Self
@@ -15,6 +16,14 @@ from urllib.parse import urlparse
 import httpx
 
 from kalshi_core.auth import KalshiSigner
+from kalshi_core.clock import (
+    DEFAULT_THRESHOLD,
+    ClockCheckError,
+    ClockSample,
+    ClockSkew,
+    estimate_skew,
+    parse_http_date,
+)
 from kalshi_core.config import KalshiSettings
 from kalshi_core.models import (
     Event,
@@ -60,6 +69,7 @@ class KalshiRestClient:
         bucket: TokenBucket | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        wall_clock: Callable[[], float] = time.time,
         max_retries: int = 5,
         timeout: float = 30.0,
     ) -> None:
@@ -68,6 +78,7 @@ class KalshiRestClient:
         self._signer = signer
         self._bucket = bucket or read_bucket(settings)
         self._sleep = sleep
+        self._wall_clock = wall_clock
         self._max_retries = max_retries
         self._http = httpx.AsyncClient(
             transport=transport,
@@ -92,6 +103,12 @@ class KalshiRestClient:
         await self._http.aclose()
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = (await self._get_response(path, params)).json()
+        return payload
+
+    async def _get_response(
+        self, path: str, params: dict[str, Any] | None = None
+    ) -> httpx.Response:
         clean = {k: v for k, v in (params or {}).items() if v is not None}
         for attempt in range(self._max_retries + 1):
             await self._bucket.acquire()
@@ -103,8 +120,7 @@ class KalshiRestClient:
                     raise
             else:
                 if resp.status_code == 200:
-                    payload: dict[str, Any] = resp.json()
-                    return payload
+                    return resp
                 if resp.status_code not in _RETRY_STATUSES or attempt == self._max_retries:
                     raise KalshiAPIError(resp.status_code, resp.text)
             await self._sleep(self._backoff(attempt))
@@ -114,6 +130,25 @@ class KalshiRestClient:
     def _backoff(attempt: int) -> float:
         delay = min(_BACKOFF_MAX, _BACKOFF_BASE * (2.0**attempt))
         return delay * random.uniform(0.5, 1.0)  # noqa: S311 - jitter, not security
+
+    async def clock_skew(
+        self, *, samples: int = 5, spacing: float = 0.25, threshold: float = DEFAULT_THRESHOLD
+    ) -> ClockSkew:
+        """Estimate how far the local clock is from Kalshi's (see ``kalshi_core.clock``)."""
+        taken: list[ClockSample] = []
+        for index in range(samples):
+            if index:
+                await self._sleep(spacing)
+            sent = self._wall_clock()
+            response = await self._get_response("/exchange/status")
+            received = self._wall_clock()
+            date = response.headers.get("date")
+            if date is None:
+                raise ClockCheckError("response had no Date header")
+            age = response.headers.get("age", "0")
+            server = parse_http_date(date) + (int(age) if age.isdigit() else 0)
+            taken.append(ClockSample(sent, received, server))
+        return estimate_skew(taken, threshold)
 
     async def exchange_status(self) -> ExchangeStatus:
         return ExchangeStatus.model_validate(await self._get("/exchange/status"))

@@ -163,7 +163,11 @@ KalshiTerm2/
 - **Demo environment is the default everywhere**; production requires explicit opt-in
   (`KALSHI_ENV=production`).
 - **Read-only until Phase 6** (see safeguards below).
-- `kterm doctor`-style clock-skew check (signed requests fail on skewed clocks).
+- `kterm doctor`-style clock-skew check (signed requests fail on skewed clocks). Kalshi has no
+  time endpoint and documents no timestamp tolerance, so `KalshiRestClient.clock_skew()` infers
+  the offset from the HTTP `Date` header (1 s resolution): each sample gives an interval,
+  several spaced samples are intersected, and the result reports its uncertainty. The 2 s
+  pass/fail threshold is our own, configurable choice, not Kalshi's.
 
 ## 5. kalshiterm-server
 
