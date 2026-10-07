@@ -473,6 +473,16 @@ Each phase ends with passing tests and CI green.
   unbounded receive queue:** with a slow consumer each queued message costs ~1.8 KB, so at
   ~700 msgs/s a stalled database writer grows memory ~1.3 MB/s (~4.7 GB/h) with no warning.
   Phase 2 needs a bounded queue with an explicit overflow policy (open decision).
+- **Live soak (`packages/kalshi-core/bench/soak.py`, 10 min, Tue 2026-10-06 ~21:30 ET, read-only):**
+  all trades + all tickers + both lifecycle channels + orderbooks for the 50 busiest ordinary
+  markets: 931k messages, mean 1,552/s, p95 2,022/s, peak 3,322/s; **zero** sequence gaps,
+  reconnects or parse failures; memory flat at ~71 MB; event-loop lag max 13.5 ms. By channel
+  (mean/s, avg payload): `ticker` 755 (433 B) — the largest by far —, multivariate lifecycle
+  396 (246 B), `trade` 233 (305 B), orderbook deltas 108 for 50 markets, `event_lifecycle` 57,
+  ordinary lifecycle 2.6. Extrapolated to a day (one sample; peaks vary): ~65 M ticker rows,
+  ~34 M MVE lifecycle, ~20 M trades, ~5 M event lifecycle. Raw payload JSON is ~0.5 MB/s
+  (~45 GB/day verbatim; ticker alone ~65%), so ticker retention and storage format are the
+  main storage levers for the 100 GB budget — to be settled by the Phase 2 calibration run.
 - **Multivariate volume (measured 2026-10-06, Tuesday evening, ~10–45 s samples):** the
   `multivariate_market_lifecycle` channel delivers ~400–500 messages/s (~100 market creations/s,
   plus ~100/s each of `determined` and `settled`), versus ~2/s for ordinary markets. Unfiltered
