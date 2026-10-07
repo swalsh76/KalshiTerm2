@@ -301,7 +301,8 @@ async def test_drop_during_resubscribe_discards_held_data_and_retries() -> None:
         elif mine == 2:
             await reply_subscribed(ws, json.loads(await ws.recv()), 5)
             await ws.send(trade(5, 1))  # data from a half-restored connection
-            await ws.close()  # drops before the second resubscribe
+            await ws.recv()  # the second resubscribe is now in flight, unanswered...
+            await ws.close()  # ...when the connection drops
         else:
             for sid in (7, 8):
                 await reply_subscribed(ws, json.loads(await ws.recv()), sid)

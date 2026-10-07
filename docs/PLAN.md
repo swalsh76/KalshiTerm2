@@ -472,7 +472,15 @@ Each phase ends with passing tests and CI green.
   50× the live peak seen so far, so parsing is not the bottleneck. **The real risk is the
   unbounded receive queue:** with a slow consumer each queued message costs ~1.8 KB, so at
   ~700 msgs/s a stalled database writer grows memory ~1.3 MB/s (~4.7 GB/h) with no warning.
-  Phase 2 needs a bounded queue with an explicit overflow policy (open decision).
+  **Resolved (slice 10, decided 2026-10-06):** the receive queue is bounded
+  (`max_queue_messages`, default 500,000 ≈ 0.9 GB ≈ 5 min of stall at the mean rate). On
+  overflow the client stops accepting data, drops the connection and reconnects; queued
+  messages are still delivered in order, followed by a `reconnected` event with
+  `reason="overflow"` and `dropped=N`, on which the ingestor backfills. The reconnect waits
+  until the consumer has drained to half the limit, so a stalled consumer causes no reconnect
+  storm (a dead one just leaves us disconnected with bounded memory). The orderbook feed
+  applies backpressure so the backlog stays in the bounded queue; `stats()` exposes depth,
+  limit, high-water mark, overflows and drops for the server's `/status`.
 - **Live soak (`packages/kalshi-core/bench/soak.py`, 10 min, Tue 2026-10-06 ~21:30 ET, read-only):**
   all trades + all tickers + both lifecycle channels + orderbooks for the 50 busiest ordinary
   markets: 931k messages, mean 1,552/s, p95 2,022/s, peak 3,322/s; **zero** sequence gaps,
