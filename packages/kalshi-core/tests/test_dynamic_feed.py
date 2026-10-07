@@ -338,3 +338,47 @@ async def test_a_reconnect_resubscribes_to_the_updated_market_set() -> None:
             )  # snapshot(C) + delta backlog, reset, 2 snaps
     assert server.resubscribed_with == [["B", "C"]]
     assert any(e.kind == "reset" for e in events)
+
+
+async def test_periodic_snapshots_are_spread_round_robin_and_stop_with_the_feed() -> None:
+    server = FakeBookServer()
+    async with running(server) as url, asyncio.timeout(15):
+        signer = KalshiSigner("kid", Ed25519PrivateKey.generate())
+        ws = KalshiWebSocket(KalshiSettings(), signer, url=url, reconnect_base=0.01)
+        feed = OrderBookFeed(
+            ws, KalshiRestClient(KalshiSettings()), ["A", "B"], periodic_snapshot_interval=0.4
+        )
+        async with ws, feed:
+            await collect(feed, 2)  # the two initial snapshots
+            events = await collect(feed, 4, seconds=5)  # periodic ones, one every 0.2 s
+            requested = [
+                c["params"]["market_tickers"][0]
+                for c in server.commands
+                if c["cmd"] == "update_subscription"
+            ]
+        count_at_close = len(server.commands)
+        await asyncio.sleep(0.5)
+    assert [e.kind for e in events] == [SNAPSHOT] * 4
+    assert requested[:4] == ["A", "B", "A", "B"]  # evenly alternating, not a burst
+    assert len(server.commands) == count_at_close  # nothing is sent after the feed closed
+
+
+async def test_periodic_snapshots_follow_the_watch_set_as_it_changes() -> None:
+    server = FakeBookServer()
+    async with running(server) as url, asyncio.timeout(15):
+        signer = KalshiSigner("kid", Ed25519PrivateKey.generate())
+        ws = KalshiWebSocket(KalshiSettings(), signer, url=url, reconnect_base=0.01)
+        feed = OrderBookFeed(
+            ws, KalshiRestClient(KalshiSettings()), ["A", "B"], periodic_snapshot_interval=0.3
+        )
+        async with ws, feed:
+            await collect(feed, 2)
+            await feed.remove_markets(["B"])
+            server.commands.clear()
+            await asyncio.sleep(0.8)
+            requested = {
+                c["params"]["market_tickers"][0]
+                for c in server.commands
+                if c["cmd"] == "update_subscription"
+            }
+    assert requested == {"A"}  # B is no longer snapshotted once removed

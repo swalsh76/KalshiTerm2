@@ -115,6 +115,14 @@ class LocalOrderBook:
 
 @dataclass(slots=True)
 class BookEvent:
+    """One thing that happened to the books.
+
+    ``book`` on a SNAPSHOT event is an immutable-by-convention *copy* taken when the snapshot
+    was applied, so a consumer reading it later still sees that moment. On a DELTA event it is
+    the *live* book, which may already include later deltas; use the event's ``message`` for
+    the change itself.
+    """
+
     kind: str
     ticker: str | None = None
     book: LocalOrderBook | None = None
@@ -209,7 +217,7 @@ class BookTracker:
             book = LocalOrderBook.from_snapshot(payload)
             self.books[ticker] = book
             self.stale.discard(ticker)
-            events.append(BookEvent(SNAPSHOT, ticker, book, message=message))
+            events.append(BookEvent(SNAPSHOT, ticker, book.copy(), message=message))
         elif ticker not in self.stale and ticker in self.books:
             book = self.books[ticker]
             if book.apply_delta(payload):
@@ -224,7 +232,7 @@ class BookTracker:
         book = LocalOrderBook.from_rest(ticker, rest_book)
         self.books[ticker] = book
         self.stale.discard(ticker)
-        return BookEvent(SNAPSHOT, ticker, book, detail="rest")
+        return BookEvent(SNAPSHOT, ticker, book.copy(), detail="rest")
 
 
 class OrderBookFeed:
@@ -242,12 +250,15 @@ class OrderBookFeed:
         *,
         snapshot_timeout: float = 5.0,
         out_limit: int = 1_000,
+        periodic_snapshot_interval: float | None = None,
     ) -> None:
         self._ws = ws
         self._rest = rest
         self._tickers = list(tickers)
         self._snapshot_timeout = snapshot_timeout
         self._out_limit = out_limit
+        self._periodic_interval = periodic_snapshot_interval
+        self._periodic: asyncio.Task[None] | None = None
         self._space = asyncio.Event()  # set whenever the consumer has taken an event
         self._space.set()
         self.tracker = BookTracker()
@@ -276,6 +287,8 @@ class OrderBookFeed:
         self._sid = await self._ws.subscribe(CHANNEL, market_tickers=self._tickers)
         self.tracker.begin_subscription(self._sid, self._tickers)
         self._pump = asyncio.create_task(self._run_pump())
+        if self._periodic_interval:
+            self._periodic = asyncio.create_task(self._periodic_snapshots(self._periodic_interval))
 
     @property
     def tickers(self) -> list[str]:
@@ -321,11 +334,32 @@ class OrderBookFeed:
             self.tracker.forget_markets(sid, gone)
         self._tickers = remaining
 
+    async def _periodic_snapshots(self, interval: float) -> None:
+        """Ask for an authoritative snapshot of every market once per ``interval``.
+
+        Requests are spread evenly (not sent in a burst) and round-robin over the markets
+        currently watched. These snapshots are the checkpoints deltas are replayed from.
+        """
+        index = 0
+        while True:
+            watched = self._tickers
+            if not watched or self._sid is None:
+                await asyncio.sleep(1.0)
+                continue
+            await asyncio.sleep(max(0.01, interval / len(watched)))
+            watched = self._tickers
+            if not watched or self._sid is None:
+                continue
+            ticker = watched[index % len(watched)]
+            index += 1
+            with contextlib.suppress(KalshiWSError):
+                await self._ws.request_snapshot(self._sid, ticker)
+
     async def close(self) -> None:
-        for task in [self._pump, *self._tasks]:
+        for task in [self._pump, self._periodic, *self._tasks]:
             if task is not None:
                 task.cancel()
-        for task in [self._pump, *self._tasks]:
+        for task in [self._pump, self._periodic, *self._tasks]:
             if task is not None:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task

@@ -23,8 +23,24 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from kalshi_core.orderbook import (
+    DELTA,
+    GAP,
+    MESSAGE,
+    RESET,
+    RESUBSCRIBE_FAILED,
+    RESYNC_FAILED,
+    SNAPSHOT,
+    BookEvent,
+)
 from kalshi_core.ws import RECONNECTED
-from kalshi_core.ws_models import LifecycleMsg, TickerMsg, TradeMsg, WsMessage
+from kalshi_core.ws_models import (
+    LifecycleMsg,
+    OrderbookDeltaMsg,
+    TickerMsg,
+    TradeMsg,
+    WsMessage,
+)
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -61,6 +77,13 @@ TRADE_COLUMNS = [
     "ts", "received_at", "market_id", "trade_id", "yes_price_e6", "count_e2", "taker_side",
     "is_block_trade",
 ]  # fmt: skip
+OB_SNAPSHOT_COLUMNS = [
+    "ts", "received_at", "market_id", "seq", "approximate", "yes_prices_e6", "yes_sizes_e2",
+    "no_prices_e6", "no_sizes_e2",
+]  # fmt: skip
+OB_DELTA_COLUMNS = [
+    "ts", "received_at", "market_id", "seq", "is_yes", "price_e6", "delta_e2",
+]  # fmt: skip
 LIFECYCLE_COLUMNS = [
     "ts", "received_at", "market_id", "event_type", "open_ts", "close_ts", "determination_ts",
     "settled_ts", "result", "settlement_value_e6", "is_deactivated",
@@ -86,17 +109,21 @@ def price_paid(trade: TradeMsg) -> Decimal:
 
 @dataclass(slots=True)
 class Item:
-    kind: str  # "ticker" | "trade" | "market_lifecycle_v2" | "combo_large"
-    payload: TickerMsg | TradeMsg | LifecycleMsg
+    # "ticker" | "trade" | "market_lifecycle_v2" | "combo_large" | "ob_snapshot" | "ob_delta"
+    kind: str
+    payload: TickerMsg | TradeMsg | LifecycleMsg | None
     ts: datetime  # exchange time
     received: datetime  # when this process read it off the socket
     notional: int = 0  # combo_large only: taker dollars in millionths
+    symbol: str | None = None  # orderbook items carry their ticker and row parts directly
+    extra: tuple[Any, ...] = ()  # orderbook items: values prebuilt at intake (books are mutable)
 
     @property
     def ticker(self) -> str:
-        ticker = self.payload.market_ticker
-        assert ticker is not None
-        return ticker
+        if self.symbol is not None:
+            return self.symbol
+        assert self.payload is not None and self.payload.market_ticker is not None
+        return self.payload.market_ticker
 
 
 def ticker_row(item: Item, market_id: int) -> tuple[Any, ...]:
@@ -146,14 +173,24 @@ def combo_large_row(item: Item, _: int) -> tuple[Any, ...]:
     )  # fmt: skip
 
 
+def ob_snapshot_row(item: Item, market_id: int) -> tuple[Any, ...]:
+    return (item.ts, item.received, market_id, *item.extra)
+
+
+def ob_delta_row(item: Item, market_id: int) -> tuple[Any, ...]:
+    return (item.ts, item.received, market_id, *item.extra)
+
+
 # kind -> (table, columns, row builder)
 TABLES: dict[str, tuple[str, list[str], Callable[[Item, int], tuple[Any, ...]]]] = {
     "ticker": ("tickers", TICKER_COLUMNS, ticker_row),
     "trade": ("trades", TRADE_COLUMNS, trade_row),
     "market_lifecycle_v2": ("market_lifecycle", LIFECYCLE_COLUMNS, lifecycle_row),
     "combo_large": ("combo_large_trades", LARGE_TRADE_COLUMNS, combo_large_row),
+    "ob_snapshot": ("orderbook_snapshots", OB_SNAPSHOT_COLUMNS, ob_snapshot_row),
+    "ob_delta": ("orderbook_deltas", OB_DELTA_COLUMNS, ob_delta_row),
 }
-ORDINARY_KINDS = ("ticker", "trade", "market_lifecycle_v2")
+ORDINARY_KINDS = ("ticker", "trade", "market_lifecycle_v2", "ob_snapshot", "ob_delta")
 
 
 class Samples:
@@ -179,7 +216,7 @@ class Samples:
 class StreamIngestor:
     def __init__(
         self,
-        messages: AsyncIterator[WsMessage],
+        messages: AsyncIterator[WsMessage | BookEvent],
         engine: AsyncEngine,
         *,
         batch_size: int = 5_000,
@@ -212,6 +249,7 @@ class StreamIngestor:
         self.written: Counter[str] = Counter()
         self.combo_counted: Counter[str] = Counter()  # combo messages counted, by kind
         self.rejected = 0
+        self.book_problems: Counter[str] = Counter()  # gaps / resync and resubscribe failures
         self.reconnects = 0
         self.flushes = 0
         self.retries = 0
@@ -223,13 +261,69 @@ class StreamIngestor:
     async def run(self) -> None:
         flusher = asyncio.create_task(self._flush_loop())
         try:
-            async for message in self._messages:
-                await self._admit(message)
+            async for item in self._messages:
+                if isinstance(item, BookEvent):
+                    await self._admit_book(item)
+                else:
+                    await self._admit(item)
         finally:
             flusher.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await flusher
             await self._drain()
+
+    async def _admit_book(self, event: BookEvent) -> None:
+        """Orderbook feed events: snapshots and deltas are stored; the rest are accounted."""
+        if event.kind in (MESSAGE, RESET):
+            if event.message is not None:
+                await self._admit(event.message)  # passthrough messages and the reconnect signal
+            return
+        if event.kind in (GAP, RESUBSCRIBE_FAILED, RESYNC_FAILED):
+            self.book_problems[event.kind] += 1
+            log.warning(
+                "orderbook %s: %s %s", event.kind, event.tickers or event.ticker, event.detail
+            )
+            return
+        if event.kind not in (SNAPSHOT, DELTA) or event.ticker is None:
+            return
+        message = event.message
+        received = from_epoch((message.received_at if message else None) or self._clock())
+        sending = message.sending_ts_ms if message else None
+        try:
+            if event.kind == SNAPSHOT:
+                assert event.book is not None
+                yes, no = event.book.bids("yes"), event.book.bids("no")
+                kind, ts = "ob_snapshot", from_ms(sending) if sending else received
+                extra: tuple[Any, ...] = (
+                    message.seq if message else None,
+                    event.book.approximate,
+                    [to_e6(p) for p, _ in yes], [to_e2(q) for _, q in yes],
+                    [to_e6(p) for p, _ in no], [to_e2(q) for _, q in no],
+                )  # fmt: skip
+            else:
+                assert message is not None
+                payload = message.payload()
+                assert isinstance(payload, OrderbookDeltaMsg)
+                kind = "ob_delta"
+                exchange_ms = payload.ts_ms or sending
+                ts = from_ms(exchange_ms) if exchange_ms else received
+                extra = (
+                    message.seq, payload.side == "yes", to_e6(payload.price_dollars),
+                    to_e2(payload.delta_fp),
+                )  # fmt: skip
+        except PrecisionError as exc:
+            self.rejected += 1
+            log.error("rejected orderbook %s: %s", event.kind, exc)
+            return
+        await self._buffer_item(Item(kind, None, ts, received, symbol=event.ticker, extra=extra))
+
+    async def _buffer_item(self, item: Item) -> None:
+        while len(self._buffer) + self._in_flight >= self._max_buffered:
+            self._space.clear()  # backpressure: leave the backlog in the bounded WS queue
+            await self._space.wait()
+        self._buffer.append(item)
+        if len(self._buffer) >= self._batch_size:
+            self._wake.set()
 
     async def _admit(self, message: WsMessage) -> None:
         if message.type == RECONNECTED:
@@ -263,12 +357,7 @@ class StreamIngestor:
             kind, notional = "combo_large", keep
         elif kind not in ORDINARY_KINDS:
             return
-        while len(self._buffer) + self._in_flight >= self._max_buffered:
-            self._space.clear()  # backpressure: leave the backlog in the bounded WS queue
-            await self._space.wait()
-        self._buffer.append(Item(kind, payload, ts, received, notional))
-        if len(self._buffer) >= self._batch_size:
-            self._wake.set()
+        await self._buffer_item(Item(kind, payload, ts, received, notional))
 
     def _count_combo(
         self, payload: TickerMsg | TradeMsg | LifecycleMsg, ts: datetime
@@ -392,6 +481,7 @@ class StreamIngestor:
             "written": dict(self.written),
             "combo_counted": dict(self.combo_counted),
             "rejected": self.rejected,
+            "book_problems": dict(self.book_problems),
             "reconnects": self.reconnects,
             "flushes": self.flushes,
             "retries": self.retries,

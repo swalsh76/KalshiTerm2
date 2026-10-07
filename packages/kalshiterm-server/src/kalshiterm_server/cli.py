@@ -1,12 +1,16 @@
 """``kterm-server`` operations CLI (grows with later slices)."""
 
 import asyncio
+import contextlib
 import logging
+from collections.abc import AsyncIterator
 from datetime import timedelta
+from typing import Annotated, Any
 
 import typer
 from kalshi_core.auth import KalshiSigner
 from kalshi_core.config import KalshiSettings
+from kalshi_core.orderbook import OrderBookFeed
 from kalshi_core.rest import KalshiRestClient
 from kalshi_core.ws import KalshiWebSocket
 
@@ -84,8 +88,15 @@ def discover_command(
 def ingest_command(
     seconds: float = typer.Option(0, help="Stop after this many seconds (0 = run until stopped)."),
     stats_every: float = typer.Option(30, help="Seconds between statistics lines."),
+    watch: Annotated[
+        list[str] | None,
+        typer.Option("--watch", help="Market ticker whose orderbook to store (repeatable)."),
+    ] = None,
+    snapshot_interval: float = typer.Option(
+        300, help="Seconds between full orderbook snapshots of each watched market."
+    ),
 ) -> None:
-    """Stream tickers, trades and market lifecycle events into the database."""
+    """Stream tickers, trades and market lifecycle events (and watched orderbooks) to the DB."""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -94,7 +105,8 @@ def ingest_command(
         signer = KalshiSigner.from_settings(settings)
         engine = db.make_engine(_url())
         try:
-            async with KalshiWebSocket(settings, signer) as ws:
+            async with contextlib.AsyncExitStack() as stack:
+                ws = await stack.enter_async_context(KalshiWebSocket(settings, signer))
                 for channel in (
                     "ticker",
                     "trade",
@@ -102,7 +114,18 @@ def ingest_command(
                     "multivariate_market_lifecycle",
                 ):
                     await ws.subscribe(channel)
-                ingestor = StreamIngestor(ws.messages(), engine)
+                source: AsyncIterator[Any] = ws.messages()
+                if watch:
+                    rest = await stack.enter_async_context(
+                        KalshiRestClient(settings, signer=signer)
+                    )
+                    feed = await stack.enter_async_context(
+                        OrderBookFeed(
+                            ws, rest, list(watch), periodic_snapshot_interval=snapshot_interval
+                        )
+                    )
+                    source = feed.events()  # orderbook events plus everything else, in order
+                ingestor = StreamIngestor(source, engine)
 
                 async def report() -> None:
                     while True:
