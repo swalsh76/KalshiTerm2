@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from kalshiterm_server import db
 from kalshiterm_server.cli import app
-from kalshiterm_server.status import collect_status, render, unhealthy_jobs
+from kalshiterm_server.status import collect_status, quick_health, render, unhealthy_jobs
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from typer.testing import CliRunner
@@ -169,3 +169,55 @@ def test_the_database_is_configured_not_to_send_telemetry() -> None:
     from conftest import COMPOSE_FILE
 
     assert "timescaledb.telemetry_level=off" in COMPOSE_FILE.read_text()
+
+
+async def test_the_quick_health_check_is_ok_when_data_is_flowing(engine: AsyncEngine) -> None:
+    await healthy(engine)
+    assert await quick_health(engine) == []
+
+
+async def test_the_quick_health_check_names_what_is_wrong(engine: AsyncEngine) -> None:
+    empty = await quick_health(engine)
+    assert "no tickers stored in the last 5 minutes" in empty
+    assert "no trades stored in the last 5 minutes" in empty
+    await healthy(engine)
+    async with engine.begin() as conn:
+        await conn.execute(text("update trades set ts = now() - interval '20 minutes'"))
+        await conn.execute(text("update alembic_version set version_num = '0001'"))
+    problems = await quick_health(engine)
+    assert any("revision 0001" in p for p in problems)
+    assert any("no trades" in p for p in problems) and not any("tickers" in p for p in problems)
+
+
+async def test_an_unreachable_database_is_unhealthy_not_an_exception() -> None:
+    engine = db.make_engine("postgresql+asyncpg://nobody:x@127.0.0.1:9/none")
+    try:
+        problems = await quick_health(engine)
+    finally:
+        await engine.dispose()
+    assert problems and problems[0].startswith("database unreachable")
+
+
+async def test_status_includes_the_host_drive_report_when_configured(
+    engine: AsyncEngine, tmp_path: Path
+) -> None:
+    await healthy(engine)
+    state = tmp_path / "host.json"
+    state.write_text(
+        json.dumps(
+            {
+                "checked_at": int(datetime.now(UTC).timestamp()),
+                "path": "/Volumes/KalshiData",
+                "mounted": False,
+                "writable": False,
+                "free_pct": None,
+                "error": "/Volumes/KalshiData does not exist",
+            }
+        )
+    )
+    report = await collect_status(engine, 100, str(tmp_path), host_state_file=str(state))
+    assert any("NOT MOUNTED" in p for p in report["problems"])
+    assert report["host"]["reported"] is True
+    assert "Host drive (/Volumes/KalshiData): NOT MOUNTED" in render(report)
+    unconfigured = await collect_status(engine, 100, str(tmp_path))
+    assert unconfigured["host"] is None and unconfigured["problems"] == []

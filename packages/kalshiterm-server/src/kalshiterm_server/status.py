@@ -5,7 +5,9 @@ gathered in ``problems`` and shown first, so a healthy server prints one reassur
 Every query on a hypertable is bounded by time so the report stays fast on a large database.
 """
 
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
@@ -30,10 +32,15 @@ STREAMS = {
 STALE_STREAM = timedelta(minutes=2)  # trades and tickers arrive many times a second
 STALE_SAMPLE = timedelta(minutes=30)  # the governor samples every 10 minutes by default
 STALE_DISCOVERY = timedelta(days=2)
+STALE_HOST_CHECK = timedelta(minutes=5)  # the host script runs every minute
 
 
 async def collect_status(
-    engine: AsyncEngine, budget_gb: float, disk_path: str, now: datetime | None = None
+    engine: AsyncEngine,
+    budget_gb: float,
+    disk_path: str,
+    now: datetime | None = None,
+    host_state_file: str | None = None,
 ) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     problems: list[str] = []
@@ -45,12 +52,59 @@ async def collect_status(
         problems.append(f"database is at revision {revision}, code expects {db.head_revision()}")
 
     report["storage"] = await _storage(engine, budget_gb, disk_path, now, problems)
+    report["host"] = host_check(host_state_file, now, problems)
     report["streams"] = await _streams(engine, now, problems)
     report["gaps"] = await _gaps(engine, problems)
     report["jobs"] = await _jobs(engine, problems)
     report["discovery"] = await _discovery(engine, now, problems)
     report["watchlist"] = await _watchlist(engine)
     return report
+
+
+def host_check(path: str | None, now: datetime, problems: list[str]) -> dict[str, Any] | None:
+    """Read the file the host-side script writes about the external data drive.
+
+    The container cannot see whether the host mounted the SSD, so a missing, stale or
+    negative report is a problem. ``None`` means this deployment does not use the check.
+    """
+    if not path:
+        return None
+    try:
+        state = json.loads(Path(path).read_text())
+        checked = datetime.fromtimestamp(int(state["checked_at"]), UTC)
+    except (OSError, ValueError, KeyError, TypeError):
+        problems.append(f"host drive check has never reported (no usable {path})")
+        return {"reported": False}
+    age = now - checked
+    if age > STALE_HOST_CHECK:
+        problems.append(f"host drive check last ran {_age(age)} ago (is its launchd job running?)")
+    if not state.get("mounted"):
+        problems.append(f"data drive is NOT MOUNTED on the host ({state.get('path', '?')})")
+    elif not state.get("writable"):
+        problems.append(f"data drive on the host is not writable: {state.get('error', '')}")
+    free = state.get("free_pct")
+    if isinstance(free, int | float) and free < Thresholds().drive_free_min * 100:
+        problems.append(f"data drive has only {free}% free on the host")
+    return {"reported": True, "age_seconds": age.total_seconds(), **state}
+
+
+async def quick_health(engine: AsyncEngine, now: datetime | None = None) -> list[str]:
+    """Cheap liveness check for the container health check: no size measurements."""
+    now = now or datetime.now(UTC)
+    problems: list[str] = []
+    try:
+        revision = await _query_one(engine, "SELECT version_num FROM alembic_version")
+    except Exception as exc:
+        return [f"database unreachable: {type(exc).__name__}"]
+    if revision != db.head_revision():
+        problems.append(f"database is at revision {revision}, expected {db.head_revision()}")
+    for table in ("tickers", "trades"):
+        newest = await _query_one(
+            engine, f"SELECT max(ts) FROM {table} WHERE ts > :since", since=now - timedelta(hours=1)
+        )
+        if newest is None or now - newest > timedelta(minutes=5):
+            problems.append(f"no {table} stored in the last 5 minutes")
+    return problems
 
 
 async def _query_one(engine: AsyncEngine, sql: str, **params: Any) -> Any:
@@ -288,6 +342,20 @@ def render(report: dict[str, Any]) -> str:
     lines.append(f"    {'(catalog, internals)':<26}{_size(s['other_bytes']):>10}")
     for event in s["recent_events"]:
         lines.append(f"  governor {event['ts']:%Y-%m-%d %H:%M}  {event['kind']}  {event['detail']}")
+
+    host = report.get("host")
+    if host:
+        if host.get("reported"):
+            free = host.get("free_pct")
+            mounted = "mounted" if host.get("mounted") else "NOT MOUNTED"
+            writable = "writable" if host.get("writable") else "NOT WRITABLE"
+            lines.append(
+                f"\nHost drive ({host.get('path')}): {mounted}, {writable}, "
+                f"{'?' if free is None else free}% free, checked "
+                f"{_age(timedelta(seconds=host['age_seconds']))} ago"
+            )
+        else:
+            lines.append("\nHost drive: no report from the host-side check")
 
     lines.append("\nStreams (newest row, rows/s over 5 min)")
     for label, info in report["streams"].items():

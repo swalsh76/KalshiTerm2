@@ -19,3 +19,6 @@ class ServerSettings(BaseSettings):
     # Where to measure free space and prove the disk is writable: inside the server container
     # this is the Docker VM's disk, i.e. the same disk Postgres lives on.
     disk_check_path: str = Field(default_factory=tempfile.gettempdir)
+    # JSON file written by the host-side drive check (deploy/host/check-data-drive.sh); the
+    # container cannot see whether the host mounted the external SSD, so it reads this instead.
+    host_state_file: str | None = None

@@ -7,8 +7,9 @@ architecture, packaging, deployment, and build order. Update it when decisions c
 
 ## Status
 
-Phases 0 (scaffolding) and 1 (`kalshi-core`) are complete and merged to `main`; next is
-Phase 2 (server storage and ingestion). Decisions made: web UI + Typer CLI, manual trading
+Phases 0 (scaffolding) and 1 (`kalshi-core`) are complete and merged to `main`. Phase 2
+(server storage and ingestion) is built through slice 2.9 (deployment rehearsed on the
+MacBook); remaining: 2.10, the 48-hour calibration run on the Mac Studio once its SSD arrives. Decisions made: web UI + Typer CLI, manual trading
 first, multi-user server, MIT license, private project (no PyPI), multivariate markets kept,
 read-only production key for dev. No **[OPEN]** items remain in PLAN.md §12.
 

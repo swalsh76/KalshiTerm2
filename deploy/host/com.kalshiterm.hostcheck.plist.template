@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Runs the data-drive check every minute, from boot, as a LaunchDaemon (no login needed).
+  Install on the Mac Studio (replace the two placeholders, then):
+    sed -e 's|__DEPLOY_DIR__|/path/to/KalshiTerm2/deploy|' -e 's|__DRIVE_PATH__|/Volumes/KalshiData|' \
+        host/com.kalshiterm.hostcheck.plist.template | sudo tee /Library/LaunchDaemons/com.kalshiterm.hostcheck.plist
+    sudo chown root:wheel /Library/LaunchDaemons/com.kalshiterm.hostcheck.plist
+    sudo launchctl bootstrap system /Library/LaunchDaemons/com.kalshiterm.hostcheck.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kalshiterm.hostcheck</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__DEPLOY_DIR__/host/check-data-drive.sh</string>
+    <string>__DRIVE_PATH__</string>
+    <string>__DEPLOY_DIR__/state/host.json</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>

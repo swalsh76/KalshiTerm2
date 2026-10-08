@@ -8,6 +8,7 @@ settlements, and costs seconds instead of a minute. Multivariate (combo) markets
 they arrive through lifecycle events and are handled separately.
 """
 
+import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
@@ -106,6 +107,29 @@ async def _resolve_placeholders(
         resolved += len(rows)
     report.resolved = resolved
     report.unresolved = len(pending) - resolved
+
+
+async def discovery_loop(
+    rest: KalshiRestClient,
+    engine: AsyncEngine,
+    interval: float,
+    *,
+    run: Callable[..., Any] | None = None,
+    sleep: Callable[[float], Any] = asyncio.sleep,
+) -> None:
+    """Run a discovery cycle every ``interval`` seconds, for as long as the process lives.
+
+    A failed cycle is logged and retried next time: bookmarks only advance on success, so
+    nothing is skipped. (A full refresh happens on the first run and then at most daily.)
+    """
+    cycle = run or discover
+    while True:
+        try:
+            report = await cycle(rest, engine)
+            log.info("discovery: %s", "; ".join(report.lines()[:1] + report.lines()[-1:]))
+        except Exception:
+            log.exception("discovery cycle failed; retrying in %.0f s", interval)
+        await sleep(interval)
 
 
 async def discover(
