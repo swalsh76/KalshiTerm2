@@ -2,6 +2,7 @@ import pytest
 from kalshiterm_server import db
 from kalshiterm_server.storage import tables
 from sqlalchemy import text
+from timescale_jobs import quiet_database
 
 pytestmark = pytest.mark.db
 
@@ -53,6 +54,7 @@ async def test_views_present_readable_decimals(migrated_db_url: str) -> None:
 
 
 async def test_downgrade_removes_the_reference_tables(migrated_db_url: str) -> None:
+    await quiet_database(migrated_db_url)
     await db.downgrade_async(migrated_db_url, "0001")
     for name in ("series", "events", "markets", "discovery_state"):
         assert await column_names(migrated_db_url, name) == set()

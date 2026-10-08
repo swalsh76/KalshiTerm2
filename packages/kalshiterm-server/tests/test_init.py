@@ -78,7 +78,10 @@ def test_the_written_env_configures_both_the_server_and_the_kalshi_client(
     kalshi = KalshiSettings(_env_file=env)  # type: ignore[call-arg]
     assert kalshi.env is Environment.PRODUCTION  # a server deployment reads real data
     assert kalshi.key_id == KEY_ID
-    assert str(kalshi.private_key_path) == "/run/secrets/kalshi_key.pem"
+    assert kalshi.private_key_path is not None
+    assert (
+        kalshi.private_key_path.as_posix() == "/run/secrets/kalshi_key.pem"
+    )  # a path in the container
 
 
 def test_init_never_prints_a_secret(deploy: Path, key_file: Path) -> None:

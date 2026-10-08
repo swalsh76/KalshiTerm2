@@ -44,3 +44,18 @@ async def run_job_named(engine: AsyncEngine, proc_name: str) -> None:
     async with engine.connect() as conn:
         auto = await conn.execution_options(isolation_level="AUTOCOMMIT")
         await auto.execute(text(f"CALL run_job({job})"))
+
+
+async def quiet_database(url: str) -> None:
+    """``quiet_background_jobs`` for a database given by URL, before a migration downgrade.
+
+    A downgrade drops tables the policy jobs are using; a job running at that moment deadlocks
+    with it (seen on CI). Production downgrades should stop the ingest service first.
+    """
+    from kalshiterm_server import db
+
+    engine = db.make_engine(url)
+    try:
+        await quiet_background_jobs(engine)
+    finally:
+        await engine.dispose()
