@@ -290,6 +290,10 @@ class StreamIngestor:
         self._agg = Aggregates()
         self._in_flight = 0
         self.on_gap: Callable[[GapInfo], None] | None = None
+        # Set by the storage governor at 90% of budget: orderbook deltas are dropped at intake
+        # (snapshots, trades and tickers are never shed).
+        self.shed_orderbook_deltas = False
+        self.shed: Counter[str] = Counter()
         self._last_heard: datetime | None = None
         self._seen_ids: OrderedDict[str, None] = OrderedDict()
         self._ops: list[WatchOp] = []  # watch/unwatch requests not yet applied
@@ -395,6 +399,9 @@ class StreamIngestor:
             )
             return
         if event.kind not in (SNAPSHOT, DELTA) or event.ticker is None:
+            return
+        if event.kind == DELTA and self.shed_orderbook_deltas:
+            self.shed["ob_delta"] += 1
             return
         message = event.message
         received = from_epoch((message.received_at if message else None) or self._clock())
@@ -629,6 +636,7 @@ class StreamIngestor:
             "retries": self.retries,
             "buffered": len(self._buffer) + self._in_flight,
             "watched": len(self._watched),
+            "shed": dict(self.shed),
             "last_flush_seconds": self.last_flush_seconds,
             "placeholders_created": self._ids.placeholders_created,
             "lag_ms": self.lag_ms.summary(),
