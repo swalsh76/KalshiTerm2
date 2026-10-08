@@ -14,7 +14,7 @@
 6. [kalshiterm-client](#6-kalshiterm-client)
 7. [Client Interface (Bloomberg-style)](#7-client-interface-bloomberg-style)
 8. [Remote LAN Deployment](#8-remote-lan-deployment)
-9. [Storage Budget & Retention (100 GB)](#9-storage-budget--retention-100-gb)
+9. [Storage Budget & Retention (500 GB)](#9-storage-budget--retention-500-gb)
 10. [Build Phases](#10-build-phases)
 11. [Risks & Notes](#11-risks--notes)
 12. [Open Decisions](#12-open-decisions)
@@ -397,14 +397,31 @@ charts (candles, depth), integrated order entry.
 
 ### 8.1 Host requirements
 
-**Target host: Mac Studio (M4, arm64) running Docker on macOS**, 100 GB data budget.
+**Target host: Mac Studio (M4, arm64) running Docker on macOS**, data on a dedicated **1 TB
+external Thunderbolt 4 SSD**, 500 GB data budget (decided 2026-10-08; was 100 GB on the
+internal disk).
 (Any Linux/Windows-WSL2 host also works; the image builds on the host for any arch.)
 
 - Always-on: disable sleep, enable "start up automatically after a power failure".
   Docker Desktop starts at login, not boot, and FileVault disables auto-login — so either
   accept auto-login or use a launchd-managed runtime (OrbStack/Colima).
 - Postgres uses a **named Docker volume**, not a bind mount. Set the Docker VM disk cap
-  to ~100 GB plus margin for images; it does not shrink on its own.
+  to ~700 GB (budget plus headroom and images); it does not shrink on its own.
+- **External data drive (Thunderbolt 4, 1 TB, dedicated):**
+  - Put Docker Desktop's *disk image* on the drive (Settings -> Resources -> Disk image
+    location; verify on the host). Never bind-mount the Postgres data directory from macOS:
+    it goes through VirtioFS, which is slow and unsuitable for fsync-heavy databases. The VM
+    keeps a normal Linux filesystem and the named volume stays as is.
+  - Thunderbolt 4 is 40 Gb/s, about 3 GB/s usable for NVMe; our write load is a few MB/s, so
+    bandwidth is irrelevant. What matters is fsync latency and durability (measured in 2.10).
+  - Consumer enclosures have no power-loss protection: put the Mac Studio and the drive on a
+    UPS, use the supplied certified cable, never unplug while Docker runs, and disable disk
+    sleep (`pmset`). Data checksums and crash-recovery tests already cover a hard stop.
+  - The drive must be mounted before Docker starts and must not be shared with other uses
+    (the budget assumes it is dedicated). Check the model's endurance rating: expected writes
+    are 20-30 TB a year (estimate), so choose a drive rated well above that.
+  - If the drive disappears, Postgres stops and the ingestor retries; on return the gap log
+    and trade backfill recover trades (not tickers or orderbooks). `status` reports it.
 - mDNS cannot be advertised from inside the container through the Docker VM: use a
   manual host/IP or run the zeroconf advertiser on the host.
 
@@ -489,7 +506,7 @@ the laptop match production.
 - Dev and production use distinct `.env` files and Compose project names so config and
   volumes never mix.
 
-## 9. Storage Budget & Retention (100 GB)
+## 9. Storage Budget & Retention (500 GB)
 
 Docker cannot cap a Postgres volume, so the server governs its own footprint.
 
@@ -497,15 +514,20 @@ Docker cannot cap a Postgres volume, so the server governs its own footprint.
 
 | Use | Allocation |
 |---|---|
-| Postgres overhead (WAL, temp, compression rewrites) + free-space headroom | 15 GB |
+| Postgres overhead (WAL, temp, compression rewrites) + free-space headroom | 100 GB |
 | Backups | 0 GB (stored on the NAS, §9.5) |
-| Reference data, analytics results, continuous aggregates | 8 GB |
-| Hot uncompressed chunks (last 1–2 days) | 10 GB |
-| Compressed history | ~67 GB |
-| **Total** | **100 GB** |
+| Reference data, analytics results, continuous aggregates (tombstones add ~7 GB/yr, §11) | 40 GB |
+| Hot uncompressed chunks (last 1–2 days) | 20 GB |
+| Compressed history | ~340 GB |
+| **Total** | **500 GB** |
 
-The budget is per host (`KTERM_STORAGE_BUDGET_GB`); the Mac Studio target is 100 GB.
-A larger host can raise it and scale compressed history accordingly.
+The budget is per host (`KTERM_STORAGE_BUDGET_GB`); the Mac Studio target is 500 GB of a
+1 TB external SSD (decided 2026-10-08). The other ~430 GB is deliberate: the Docker VM disk
+image does not shrink, compression and `VACUUM FULL` need scratch space, and SSDs slow down
+when nearly full. **Retention defaults (§9.2) were not enlarged**: they were sized from
+measurements and, at current rates, are expected to use well under this budget (a rough
+estimate: ~100 GB). The surplus is headroom until the calibration run (2.10) says which
+windows are worth lengthening; raising any of them is a plan change.
 
 ### 9.2 Retention defaults (all configurable)
 
@@ -579,12 +601,14 @@ is why the original "trades forever" and "7-day uncompressed window" defaults we
 ### 9.3 Storage governor
 
 - Runs inside the analytics worker (in Phase 2, before that worker exists, inside the ingestor
-  process; same code); budget set by `KTERM_STORAGE_BUDGET_GB=100`.
+  process; same code); budget set by `KTERM_STORAGE_BUDGET_GB=500`.
 - Tracks per-table size, daily growth rate, and **projected days to full**; exposed on
   `/status`, `kterm server status`, and the UI.
 - **80% of budget:** alert + tighten raw retention windows.
 - **90% of budget:** stop orderbook-delta capture (snapshots only). Trades and tickers are
   never shed.
+- **The drive itself** is watched separately from the budget: alert when free space on the
+  data drive falls below 15%, and `status` shows loudly if the drive is missing or unwritable.
 
 ### 9.4 Calibration
 
@@ -632,9 +656,9 @@ container and run on the Linux CI job only (macOS/Windows runners have no Docker
 | 2.5 (a: live add/remove on the feed — done; b: orderbook storage — done; c: watchlist controller — done) | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API). Semantics (decisions 12–13): **adding** a market subscribes it live (`add_markets`, fresh snapshot), copies its last 30 days of raw trades into `trades_watchlist`, and opens a `watchlist_periods` row; **while watched**, snapshots/deltas are stored and trades go to both trade tables; **removing** stops orderbook capture (`delete_markets`) and closes the period but deletes nothing — orderbook data ages out under normal retention, `trades_watchlist` is kept forever. Capture covers the union of all users' watchlists (reference-counted). Auto top-N entries stay ≥12 h once added; manual entries are never auto-removed. Needs a `kalshi-core` extension (live add/remove on `OrderBookFeed`) and a live probe of Kalshi's undocumented per-subscription market limit |
 | 2.6 — done | Gap handling: gap log; trade backfill via REST on a `reconnected` event and on startup (tickers cannot be backfilled, so those gaps are recorded) |
 | 2.7 (a: compression — done; b: candles + raw-data retention — done; c: settled-market slimming/tombstoning + `pins` — done) | Split because raw-data retention must not be switched on before the candles that replace it exist. **a:** columnar compression after 1 day. **b:** 1-minute and 1-hour continuous aggregates (trades OHLC/volume, ticker aggregates), then retention (trades 30 d, tickers 14 d, orderbook deltas 14 d, snapshots 90 d + 5-min downsample, `combo_large_trades` 365 d). **c:** decision 15 (full 30 d / slim to 90 d / delete unless watched or pinned) as a scheduled job, plus the `pins` table |
-| 2.8 | Storage governor + `kterm-server status` |
+| 2.8 | Storage governor + `kterm-server status` (includes the data-drive checks: free space, missing/unwritable drive) |
 | 2.9 | `kterm-server init`, production Compose, health checks, Mac Studio deployment (TLS certificate generation moves to Phase 3 with the API) |
-| 2.10 | 48-hour calibration run (decision 11), then retune retention defaults |
+| 2.10 | 48-hour calibration run (decision 11), then retune retention defaults. Also a disk test on the real host with the data on the external SSD (`pg_test_fsync` and a write-heavy `pgbench` in the container) to measure fsync latency, and a pull-the-cable recovery test on the Mac Studio before it becomes the production host |
 
 The server uses its own read-only Kalshi key (created at deployment time), separate from the
 dev key.
@@ -666,7 +690,7 @@ dev key.
   ordinary lifecycle 2.6. Extrapolated to a day (one sample; peaks vary): ~65 M ticker rows,
   ~34 M MVE lifecycle, ~20 M trades, ~5 M event lifecycle. Raw payload JSON is ~0.5 MB/s
   (~45 GB/day verbatim; ticker alone ~65%), so ticker retention and storage format are the
-  main storage levers for the 100 GB budget — to be settled by the Phase 2 calibration run.
+  main storage levers for the storage budget — to be settled by the Phase 2 calibration run.
 - **Multivariate volume (measured 2026-10-06, Tuesday evening, ~10–45 s samples):** the
   `multivariate_market_lifecycle` channel delivers ~400–500 messages/s (~100 market creations/s,
   plus ~100/s each of `determined` and `settled`), versus ~2/s for ordinary markets. Unfiltered
@@ -705,7 +729,7 @@ dev key.
 | 5b | Package names | Names as in §3 | **Decided** — keep as-is; private, no PyPI |
 | 6 | Distribution | — | **Decided** — private git repo, no PyPI; client native on Windows/macOS, server in Docker |
 | — | Server host runs Docker | Required | **Decided** |
-| — | Server disk budget | 100 GB (Mac Studio host); backups on NAS | **Decided** |
+| — | Server disk budget | **500 GB** on a dedicated 1 TB external Thunderbolt 4 SSD attached to the Mac Studio (decided 2026-10-08; was 100 GB internal); backups on NAS | **Decided** |
 | 8 | Key types | Ed25519 only; RSA-PSS not supported | **Decided** |
 | 7 | Multivariate (combo) markets | Keep: ingest and store them (decided 2026-10-06; they dominate the live trade stream) | **Decided** |
 | — | Dev credentials | Read-only production Kalshi key (decided 2026-10-06), layered safeguards in §4; demo stays default | **Decided** |
