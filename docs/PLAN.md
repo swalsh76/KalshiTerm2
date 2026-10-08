@@ -433,21 +433,32 @@ internal disk).
 
 ### 8.2 Bootstrap
 
-Phase 2 deploys **database + ingest only** (no API yet, so nothing is published to the LAN at
-all). Two compose files in `deploy/`: `docker-compose.setup.yml` (the one-off `init`, with no
-network) and `docker-compose.yml` (the stack; refuses to load until `.env` exists).
+The stack is **database + ingest + api**; only the `api` service (HTTPS, port 8700) is published
+to the LAN. Two compose files in `deploy/`: `docker-compose.setup.yml` (the one-off `init` and
+`cert` commands, with no network) and `docker-compose.yml` (the stack; refuses to load until
+`.env` exists). Use `run --build` for the setup commands after any `git pull`: `docker compose
+run` does not rebuild a stale image.
 
 ```bash
 git clone https://github.com/swalsh76/KalshiTerm2 && cd KalshiTerm2/deploy
 # 1. the server's OWN read-only Kalshi key (separate from the dev key); init validates it is
 #    an unencrypted Ed25519 PEM, copies it to secrets/ (mode 600) and prints nothing secret
-KEY_FILE=~/.kalshiterm/server_key.pem \
-  docker compose -f docker-compose.setup.yml run --rm init --key-id <key id> [--budget-gb 500]
+#    --host/--ip are the names and address clients will use; the TLS certificate is valid for
+#    exactly those (plus <host>.local, localhost, loopback)
+KEY_FILE=~/.kalshiterm/server_key.pem docker compose -f docker-compose.setup.yml run --build --rm \
+  init --key-id <key id> --host <name> --ip <LAN address> [--budget-gb 500]
 # 2. start (migrations run first; discovery runs every 15 min inside ingest)
 docker compose up -d --build
-# 3. look
+# 3. look, then create the first admin and a reader
 docker compose exec ingest kterm-server status
+docker compose exec api kterm-server user add <name>
+docker compose exec api kterm-server token create --user <name> --role admin   # shown once
 ```
+
+Re-issuing the certificate (same names unless given; every client must then re-confirm the new
+fingerprint, never silently): `KEY_FILE=/dev/null docker compose -f docker-compose.setup.yml
+run --build --rm cert rotate` then `docker compose restart api`. `... cert show` prints the
+fingerprint, names and expiry (certificates last 365 days).
 
 `init` writes `.env` (generated database password, settings), `secrets/kalshi_key.pem`,
 `config/watchlist.toml` (starter: `auto_top_n = 20`; never overwritten) and `state/`. A second
@@ -462,8 +473,10 @@ server reads the file (`KTERM_HOST_STATE_FILE`); `status` raises a problem if th
 mounted or writable, is nearly full, or the report is more than 5 minutes old or missing.
 
 Design of `docker-compose.yml`: the database is on an `internal: true` network (no route to the
-internet); only `ingest` also joins the default network to reach Kalshi; no `ports:`
-anywhere; both services have health checks (`kterm-server health`: database reachable, at
+internet); `ingest` and `api` also join the default network (Kalshi, and the LAN); **only `api`
+has `ports:`**; **least privilege**: `api` mounts only the TLS files and has no `KALSHI_*`
+settings (it never holds the Kalshi key), `ingest` mounts only the Kalshi key (not the TLS
+key), tested; all three services have health checks (`kterm-server health`: database reachable, at
 head, fresh tickers and trades), `restart: unless-stopped`, rotated logs (20 MB x 5, so logs
 cannot fill the Docker VM disk), and clean-stop grace periods. Key and config are mounted
 read-only. The database image tag equals the dev compose file's (a test enforces it) and
@@ -482,8 +495,16 @@ orderbooks only appear ~5 minutes after a fresh start, because the first watchli
 before any trades exist to rank (the next cycle adds them).
 
 - Upgrades: `git pull && docker compose up -d --build` (migrations run on startup).
-- Phase 3 adds the `api` service (the only published port), users and tokens, TLS and the
-  user/token commands.
+
+**Rehearsed again with the API (slice 3.3, 2026-10-08, MacBook, real Docker):** init with
+`--host rehearsal --ip <this Mac's LAN address>`; all three services healthy in ~20 s; a client
+on the real LAN address with the certificate pinned got `{"user":"alice","role":"read",...}`;
+without the pin curl failed with exit 60; a name not in the certificate was refused ("no
+alternative certificate subject name matches"); plain HTTP got nothing; the fingerprint the
+server presented equalled the one `init` printed; after `cert rotate` + restart the old pin
+failed (exit 60) and the new one worked. Found on the way: `docker compose run` does not rebuild
+a stale image (hence `--build`), and passing `localhost` as a host added a pointless
+`localhost.local` name (fixed).
 
 ### 8.3 Network exposure & security (LAN treated as untrusted)
 
@@ -795,7 +816,7 @@ Decisions taken for Phase 3 (2026-10-08; revisit any of them by saying so):
 |---|---|
 | 3.1 — done | API skeleton: FastAPI app factory, `/healthz`, `/readyz` (distinguishes database unreachable from not migrated; reveals nothing else), `kterm-server api` (uvicorn; `check_bind` refuses plaintext on any non-loopback address, tested against the real server), settings `KTERM_API_HOST/PORT/DOCS`, graceful SIGTERM. Not yet in Compose. Known: Starlette's test client warns that it will want `httpx2`; harmless today |
 | 3.2 — done | Users and tokens: `users`, `api_tokens`, roles `read` / `admin`, `kterm-server user add/list/remove` and `token create/list/revoke` (the token goes alone to standard output, once), bearer-auth dependency, `/v1/me`, admin-only `/v1/status` (the `status` report), failed-auth throttling. Design: token = `kt_<id>_<256-bit secret>`; only the SHA-256 of the secret is stored; one row is fetched by id and compared in constant time; **every failure (missing, malformed, unknown, wrong, revoked, expired, removed user) returns the identical 401**; 10 failures in 60 s from one address locks it out with 429 + `Retry-After` (valid tokens included; in memory, bounded; configurable via `KTERM_AUTH_FAILURE_LIMIT/WINDOW_SECONDS`); `last_used_at` is written at most once a minute; tokens never appear in logs or `repr`s (tested). Found by the tests: Python's `\d` accepts non-ASCII digits, so token ids are now ASCII-only. Not yet built: token rotation, per-token scopes beyond the two roles, throttling by token (add if abuse appears) |
-| 3.3 | TLS and deployment: `init` generates the self-signed certificate (SANs for host, `<host>.local`, LAN IP), certificate fingerprint command, `api` service in Compose (the only published port, 8700), tested with a real TLS handshake and a pinned fingerprint; rehearsed on the MacBook |
+| 3.3 — done | TLS and deployment: `init --host/--ip` generates the self-signed certificate (ECDSA P-256, 365 days, not a CA, server-auth only; names = given hosts + `<host>.local` + localhost/loopback), `cert show` / `cert rotate`, `api` service in Compose (the only published port, 8700; least-privilege secret mounts), tested with a real TLS handshake: untrusted by default, trusted when pinned, hostname mismatch refused, TLS 1.1 refused, old pin fails after rotation; rehearsed on the MacBook over the LAN address |
 | 3.4 | Reference and candle endpoints: markets (filter, search, keyset pages), a market, an event, candles from `candles_*` / `ticker_*` |
 | 3.5 | Raw-data endpoints: trades, ticker history, orderbook at a time (latest snapshot plus replayed deltas), gaps log |
 | 3.6 | Per-user watchlists: `user_watchlists`, `/v1/watchlist` CRUD; the ingest controller watches the **union** of the config file, auto top-N and every user's list (a market leaves only when no one wants it) |
