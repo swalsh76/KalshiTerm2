@@ -14,6 +14,8 @@ from pathlib import Path
 
 from kalshi_core.auth import load_private_key
 
+from kalshiterm_server import tls
+
 CONTAINER_KEY_PATH = "/run/secrets/kalshi_key.pem"
 HOST_STATE_PATH = "/hoststate/host.json"
 
@@ -40,6 +42,7 @@ class InitError(Exception):
 class InitResult:
     written: list[Path] = field(default_factory=list)
     kept: list[Path] = field(default_factory=list)
+    certificate: tls.CertInfo | None = None
 
 
 def _write_private(path: Path, content: bytes) -> None:
@@ -60,6 +63,8 @@ def run_init(
     *,
     key_id: str,
     key_file: Path,
+    hosts: list[str] | None = None,
+    ips: list[str] | None = None,
     budget_gb: float = 500.0,
     force: bool = False,
 ) -> InitResult:
@@ -69,6 +74,15 @@ def run_init(
         raise InitError("the Kalshi key id must not be empty")
     if budget_gb <= 0:
         raise InitError("the storage budget must be positive")
+    if not hosts and not ips:
+        raise InitError(
+            "give --host and/or --ip: the TLS certificate is only valid for the names clients "
+            "will use to reach this server (e.g. --host mac-studio --ip 192.168.1.20)"
+        )
+    try:
+        tls.normalise_names(hosts or [], ips or [])  # fail on a bad name before writing anything
+    except tls.TlsError as exc:
+        raise InitError(str(exc)) from exc
     env_path = out / ".env"
     if env_path.exists() and not force:
         raise InitError(
@@ -99,6 +113,8 @@ KALSHI_PRIVATE_KEY_PATH={CONTAINER_KEY_PATH}
     key_path = secrets_dir / "kalshi_key.pem"
     _write_private(key_path, key_file.expanduser().read_bytes())
     result.written.append(key_path)
+    result.certificate = tls.write_certificate(secrets_dir, hosts or [], ips or [])
+    result.written += [secrets_dir / tls.CERT_FILE, secrets_dir / tls.KEY_FILE]
     _write_private(env_path, env.encode())
     result.written.append(env_path)
 

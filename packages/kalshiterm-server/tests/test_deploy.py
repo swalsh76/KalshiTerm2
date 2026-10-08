@@ -32,11 +32,44 @@ def prod() -> dict[str, Any]:
 # ---------------------------------------------------------------- the production compose file
 
 
-@pytest.mark.parametrize("name", ["docker-compose.yml", "docker-compose.setup.yml"])
-def test_nothing_is_published_to_the_network(name: str) -> None:
-    for service_name, service in load(name)["services"].items():
-        assert "ports" not in service, f"{service_name} publishes a port"
-        assert service.get("network_mode") != "host", service_name
+def test_the_api_is_the_only_thing_published_and_only_on_its_one_port(prod: dict[str, Any]) -> None:
+    published = {n: s["ports"] for n, s in prod["services"].items() if "ports" in s}
+    assert published == {"api": ["${KTERM_API_PORT:-8700}:8700"]}
+    for name, service in prod["services"].items():
+        assert service.get("network_mode") != "host", name
+
+
+def test_the_setup_services_have_no_network_and_publish_nothing() -> None:
+    for name, service in load("docker-compose.setup.yml")["services"].items():
+        assert "ports" not in service and service["network_mode"] == "none", name
+
+
+def test_each_service_sees_only_the_secrets_it_needs(prod: dict[str, Any]) -> None:
+    services = prod["services"]
+    ingest_mounts = " ".join(services["ingest"]["volumes"])
+    api_mounts = " ".join(services["api"]["volumes"])
+    assert "kalshi_key.pem" in ingest_mounts and "tls_" not in ingest_mounts
+    assert "tls_key.pem" in api_mounts and "kalshi_key" not in api_mounts
+    assert "./secrets:" not in ingest_mounts + api_mounts  # never the whole directory
+    assert not any(k.startswith("KALSHI_") for k in services["api"]["environment"])
+    assert "db" not in {m.split(":")[0] for m in services["api"]["volumes"]}
+
+
+def test_the_api_serves_tls_on_all_interfaces_which_the_guard_allows_only_with_a_certificate(
+    prod: dict[str, Any],
+) -> None:
+    command = prod["services"]["api"]["command"]
+    assert command[:2] == ["kterm-server", "api"]
+    assert command[command.index("--host") + 1] == "0.0.0.0"
+    assert "--tls-cert" in command and "--tls-key" in command  # else the guard would refuse
+    assert prod["services"]["api"]["depends_on"]["db"]["condition"] == "service_healthy"
+    assert set(prod["services"]["api"]["networks"]) == {"internal", "default"}
+
+
+def test_the_api_has_a_health_check_that_uses_https(prod: dict[str, Any]) -> None:
+    health = prod["services"]["api"]["healthcheck"]
+    assert "https://" in " ".join(health["test"]) and "/readyz" in " ".join(health["test"])
+    assert prod["services"]["api"]["restart"] == "unless-stopped"
 
 
 def test_the_database_has_no_route_to_the_internet_and_ingest_reaches_both_sides(
@@ -64,7 +97,7 @@ def test_the_database_does_not_phone_home_and_keeps_data_in_a_named_volume(
 def test_both_services_have_health_checks_and_restart_and_ingest_waits_for_the_database(
     prod: dict[str, Any],
 ) -> None:
-    for name in ("db", "ingest"):
+    for name in ("db", "ingest", "api"):
         service = prod["services"][name]
         assert "healthcheck" in service and service["restart"] == "unless-stopped", name
     assert prod["services"]["ingest"]["depends_on"]["db"]["condition"] == "service_healthy"
@@ -72,7 +105,7 @@ def test_both_services_have_health_checks_and_restart_and_ingest_waits_for_the_d
 
 
 def test_logs_are_rotated_so_they_cannot_fill_the_data_disk(prod: dict[str, Any]) -> None:
-    for name in ("db", "ingest"):
+    for name in ("db", "ingest", "api"):
         logging = prod["services"][name]["logging"]
         assert logging["driver"] == "json-file"
         assert logging["options"]["max-size"] and logging["options"]["max-file"]
@@ -82,7 +115,7 @@ def test_ingest_gets_its_key_and_config_read_only_and_migrates_before_starting(
     prod: dict[str, Any],
 ) -> None:
     ingest = prod["services"]["ingest"]
-    assert "./secrets:/run/secrets:ro" in ingest["volumes"]
+    assert "./secrets/kalshi_key.pem:/run/secrets/kalshi_key.pem:ro" in ingest["volumes"]
     assert "./config:/config:ro" in ingest["volumes"]
     assert "./state:/hoststate:ro" in ingest["volumes"]
     command = " ".join(ingest["command"])
@@ -103,6 +136,9 @@ def test_setup_is_a_separate_file_with_no_network_so_the_main_file_can_stay_stri
     assert setup["entrypoint"][:2] == ["kterm-server", "init"]
     assert "--key-file" in setup["entrypoint"] and "command" not in setup  # args are appended
     assert setup["network_mode"] == "none"
+    cert = load("docker-compose.setup.yml")["services"]["cert"]
+    assert cert["entrypoint"] == ["kterm-server", "cert"]
+    assert cert["environment"]["KTERM_DEPLOY_DIR"] == "/out"  # `run ... cert rotate` keeps it
     assert "init" not in load("docker-compose.yml")["services"]
     assert any(v.endswith(":/input/key.pem:ro") for v in setup["volumes"])  # key mounted read-only
 

@@ -41,8 +41,10 @@ def deploy(tmp_path: Path) -> Path:
     return out
 
 
-def init(deploy: Path, key_file: Path, *extra: str) -> object:
+def init(deploy: Path, key_file: Path, *extra: str, names: bool = True) -> object:
     args = ["init", "--out", str(deploy), "--key-id", KEY_ID, "--key-file", str(key_file), *extra]
+    if names:
+        args += ["--host", "mac-studio", "--ip", "192.168.1.20"]
     return CliRunner().invoke(app, args)
 
 
@@ -154,3 +156,37 @@ def test_bad_arguments_are_reported_not_crashed(
         ).exit_code
         == 2
     )
+
+
+def test_init_needs_to_know_the_names_clients_will_use_and_writes_nothing_without_them(
+    deploy: Path, key_file: Path
+) -> None:
+    result = init(deploy, key_file, names=False)
+    assert result.exit_code == 1 and "--host" in result.output  # type: ignore[attr-defined]
+    assert list(deploy.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "extra", [["--host", "bad name"], ["--ip", "999.1.1.1"], ["--ip", "0.0.0.0"]]
+)
+def test_a_bad_certificate_name_stops_init_before_anything_is_written(
+    deploy: Path, key_file: Path, extra: list[str]
+) -> None:
+    result = init(deploy, key_file, *extra)
+    assert result.exit_code == 1 and "error:" in result.output  # type: ignore[attr-defined]
+    assert list(deploy.iterdir()) == []
+
+
+@posix_only
+def test_init_issues_a_certificate_for_those_names_and_prints_its_fingerprint(
+    deploy: Path, key_file: Path
+) -> None:
+    from kalshiterm_server import tls
+
+    result = init(deploy, key_file)
+    info = tls.describe((deploy / "secrets" / "tls_cert.pem").read_bytes())
+    assert f"fingerprint (SHA-256): {info.fingerprint}" in result.output  # type: ignore[attr-defined]
+    assert {"mac-studio", "mac-studio.local", "localhost"} <= set(info.dns_names)
+    assert {"192.168.1.20", "127.0.0.1"} <= set(info.ip_addresses)
+    assert mode(deploy / "secrets" / "tls_key.pem") == 0o600  # the key is private
+    assert mode(deploy / "secrets" / "tls_cert.pem") == 0o644  # the certificate is not secret

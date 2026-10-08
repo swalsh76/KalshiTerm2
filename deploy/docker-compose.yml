@@ -1,12 +1,15 @@
-# Production stack. Phase 2 = database + ingest; the API service is added in Phase 3.
-# Nothing here publishes a port: the database lives on an internal network with no route to
-# the internet, and only `ingest` can reach both it and Kalshi.
+# Production stack: database + ingest + api.
+# The `api` service (HTTPS, port 8700) is the ONLY thing published to the network. The database
+# lives on an internal network with no route to the internet; only `ingest` can reach both it
+# and Kalshi; only `api` holds the TLS key; only `ingest` holds the Kalshi key.
 #
 # First time (from this directory; see docs/PLAN.md §8.2):
-#   KEY_FILE=~/.kalshiterm/server_key.pem \
-#     docker compose -f docker-compose.setup.yml run --rm init --key-id <the server key's id>
+#   KEY_FILE=~/.kalshiterm/server_key.pem docker compose -f docker-compose.setup.yml run --build --rm \
+#     init --key-id <the server key's id> --host <name clients use> --ip <its LAN address>
 #   docker compose up -d --build
 #   docker compose exec ingest kterm-server status
+#   docker compose exec api kterm-server user add <name>
+#   docker compose exec api kterm-server token create --user <name> --role read
 # On Linux add  --user "$(id -u):$(id -g)"  to the init command so the files are yours.
 # Upgrades: git pull && docker compose up -d --build   (migrations run on startup)
 name: kalshiterm
@@ -63,7 +66,7 @@ services:
       KALSHI_KEY_ID: ${KALSHI_KEY_ID:?run kterm-server init first}
       KALSHI_PRIVATE_KEY_PATH: ${KALSHI_PRIVATE_KEY_PATH:-/run/secrets/kalshi_key.pem}
     volumes:
-      - ./secrets:/run/secrets:ro # the server's own read-only Kalshi key
+      - ./secrets/kalshi_key.pem:/run/secrets/kalshi_key.pem:ro # the server's own Kalshi key
       - ./config:/config:ro # watchlist.toml (edit freely; re-read every 5 minutes)
       - ./state:/hoststate:ro # written by the host-side drive check
     networks: [internal, default]
@@ -75,6 +78,55 @@ services:
       start_period: 180s
     restart: unless-stopped
     stop_grace_period: 30s # drain buffered rows before exiting
+    logging: *logging
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: kalshiterm-server:local
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - kterm-server
+      - api
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8700"
+      - --tls-cert
+      - /run/tls/cert.pem
+      - --tls-key
+      - /run/tls/key.pem
+    environment:
+      KTERM_DB_URL: ${KTERM_DB_URL:?run kterm-server init first}
+      KTERM_STORAGE_BUDGET_GB: ${KTERM_STORAGE_BUDGET_GB:-500}
+      KTERM_HOST_STATE_FILE: ${KTERM_HOST_STATE_FILE:-/hoststate/host.json}
+      # deliberately no KALSHI_* settings: the API never holds the Kalshi key
+    volumes:
+      - ./secrets/tls_cert.pem:/run/tls/cert.pem:ro
+      - ./secrets/tls_key.pem:/run/tls/key.pem:ro # the TLS key, and only that, is mounted here
+      - ./state:/hoststate:ro
+    ports:
+      - "${KTERM_API_PORT:-8700}:8700" # the only published port
+    networks: [internal, default]
+    healthcheck:
+      # The certificate is self-signed, so this check (inside the container) does not verify it.
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import ssl, sys, urllib.request;
+          c = ssl._create_unverified_context();
+          sys.exit(0 if urllib.request.urlopen('https://127.0.0.1:8700/readyz', context=c, timeout=5).status == 200 else 1)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+    stop_grace_period: 20s
     logging: *logging
 
 networks:

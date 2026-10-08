@@ -1,8 +1,11 @@
 # One-off first-time setup: writes .env, secrets/ and config/ next to this file.
 # Kept apart from docker-compose.yml because that file refuses to load until .env exists.
 #
-#   KEY_FILE=~/.kalshiterm/server_key.pem \
-#     docker compose -f docker-compose.setup.yml run --rm init --key-id <the server key's id>
+#   KEY_FILE=~/.kalshiterm/server_key.pem docker compose -f docker-compose.setup.yml run --build --rm \
+#     init --key-id <the server key's id> --host <name clients use> --ip <its LAN address>
+# Later, to re-issue the TLS certificate (same names; clients must re-confirm the fingerprint):
+#   KEY_FILE=/dev/null docker compose -f docker-compose.setup.yml run --build --rm cert rotate
+#   docker compose restart api
 # On Linux add  --user "$(id -u):$(id -g)"  so the files belong to you, not root.
 name: kalshiterm-setup
 
@@ -19,3 +22,16 @@ services:
       - ./:/out
       - ${KEY_FILE:?set KEY_FILE to the server key (PEM file)}:/input/key.pem:ro
     network_mode: none # setup needs no network at all
+
+  cert:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: kalshiterm-server:local
+    entrypoint: ["kterm-server", "cert"]
+    command: ["show"] # `docker compose run ... cert rotate` replaces this
+    environment:
+      KTERM_DEPLOY_DIR: /out # where `cert` finds secrets/ (the option reads this variable)
+    volumes:
+      - ./:/out
+    network_mode: none
