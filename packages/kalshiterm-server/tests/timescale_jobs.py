@@ -30,3 +30,17 @@ async def quiet_background_jobs(engine: AsyncEngine) -> None:
             if not running:
                 return
             await asyncio.sleep(0.05)
+
+
+async def run_job_named(engine: AsyncEngine, proc_name: str) -> None:
+    """Run a user-defined job (one with no hypertable) now."""
+    async with engine.connect() as conn:
+        job = (
+            await conn.execute(
+                text("select job_id from timescaledb_information.jobs where proc_name = :p"),
+                {"p": proc_name},
+            )
+        ).scalar_one()
+    async with engine.connect() as conn:
+        auto = await conn.execution_options(isolation_level="AUTOCOMMIT")
+        await auto.execute(text(f"CALL run_job({job})"))
