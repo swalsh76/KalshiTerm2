@@ -518,6 +518,26 @@ A larger host can raise it and scale compressed history accordingly.
 | Orderbook snapshots (watchlist, every 300 s by default) | **365 days** (at the default interval they already are the 5-minute downsample; a shorter interval would need a real downsample step) | Dropped |
 | Markets / events (incl. outcomes) — decision 15 | Age counts from `settlement_ts`; unsettled rows never expire. **0–30 days: full row. 30–90 days: slimmed to an outcome-only row** (rules text and sub-titles dropped; ticker, event, status, result, settlement, times and strikes kept). **After 90 days: deleted, except markets that are watched (ever, see decision 12) or pinned.** Events follow their markets; series are kept (≈15k rows). | — |
 
+**Settled-market lifecycle (slice 2.7c, 2026-10-08):** a daily Timescale job
+(`expire_markets`, windows in its config: 30 / 90 days) implements decision 15 with one
+change decided 2026-10-08: **at day 90 a market is reduced to a tombstone, not deleted** (id,
+ticker, event, type, status, result, settlement value and time are kept), because candles and
+aggregates refer to markets by id and are kept forever; deleting the row would orphan them
+and let a reappearing ticker get a second id. Events are deleted once every one of their
+markets is expired; unsettled markets never expire; watched (any period) and pinned markets
+are slimmed at 30 d but never tombstoned. The job is predicate-driven, so a row that discovery
+rewrites in full is simply reduced again. `pins(market_id, pinned_at, note)` exists; the way to
+pin arrives with the Phase 3 API. **Measured on Kalshi's real market list (829,072 markets,
+2026-10-08):** 585,141 markets settled in the last 7 days, i.e. **~84,000 a day**. Average row:
+full 824 B, slim 217 B, tombstone 148 B, plus ~85 B of index entries per row. The job
+processed 341k tombstones and 168k slim rows in ~7 s; the table shrank 781 MB -> 411 MB.
+**Consequence:** tombstones accumulate at ~84k/day x ~230 B = ~19 MB/day, **~7 GB a year**,
+which will overrun the 8 GB reference line in §9.1 within about a year. Likely mitigation, to
+decide with the calibration run (2.10), which will show what fraction of markets ever
+tick/trade: keep a tombstone only for markets that have candle/aggregate/lifecycle data, and
+delete the rest outright (as decision 15 originally read). The storage governor (2.8) must
+watch `markets` size.
+
 **Candles and retention (slice 2.7b, 2026-10-07):** continuous aggregates `candles_1m` /
 `candles_1h` (trades: open, high, low, close, volume, count; forever) and `ticker_1m` (30 days) /
 `ticker_1h` (forever) (price OHLC without null prices, last bid/ask, volume, open interest, tick
@@ -611,7 +631,7 @@ container and run on the Linux CI job only (macOS/Windows runners have no Docker
 | 2.4 | Combo-market storage (decision 10) |
 | 2.5 (a: live add/remove on the feed — done; b: orderbook storage — done; c: watchlist controller — done) | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API). Semantics (decisions 12–13): **adding** a market subscribes it live (`add_markets`, fresh snapshot), copies its last 30 days of raw trades into `trades_watchlist`, and opens a `watchlist_periods` row; **while watched**, snapshots/deltas are stored and trades go to both trade tables; **removing** stops orderbook capture (`delete_markets`) and closes the period but deletes nothing — orderbook data ages out under normal retention, `trades_watchlist` is kept forever. Capture covers the union of all users' watchlists (reference-counted). Auto top-N entries stay ≥12 h once added; manual entries are never auto-removed. Needs a `kalshi-core` extension (live add/remove on `OrderBookFeed`) and a live probe of Kalshi's undocumented per-subscription market limit |
 | 2.6 — done | Gap handling: gap log; trade backfill via REST on a `reconnected` event and on startup (tickers cannot be backfilled, so those gaps are recorded) |
-| 2.7 (a: compression — done; b: candles + raw-data retention — done; c: settled-market slimming/deletion + `pins`) | Split because raw-data retention must not be switched on before the candles that replace it exist. **a:** columnar compression after 1 day. **b:** 1-minute and 1-hour continuous aggregates (trades OHLC/volume, ticker aggregates), then retention (trades 30 d, tickers 14 d, orderbook deltas 14 d, snapshots 90 d + 5-min downsample, `combo_large_trades` 365 d). **c:** decision 15 (full 30 d / slim to 90 d / delete unless watched or pinned) as a scheduled job, plus the `pins` table |
+| 2.7 (a: compression — done; b: candles + raw-data retention — done; c: settled-market slimming/tombstoning + `pins` — done) | Split because raw-data retention must not be switched on before the candles that replace it exist. **a:** columnar compression after 1 day. **b:** 1-minute and 1-hour continuous aggregates (trades OHLC/volume, ticker aggregates), then retention (trades 30 d, tickers 14 d, orderbook deltas 14 d, snapshots 90 d + 5-min downsample, `combo_large_trades` 365 d). **c:** decision 15 (full 30 d / slim to 90 d / delete unless watched or pinned) as a scheduled job, plus the `pins` table |
 | 2.8 | Storage governor + `kterm-server status` |
 | 2.9 | `kterm-server init`, production Compose, health checks, Mac Studio deployment (TLS certificate generation moves to Phase 3 with the API) |
 | 2.10 | 48-hour calibration run (decision 11), then retune retention defaults |
@@ -707,4 +727,5 @@ dev key.
 Ideas raised but **not** in scope. Not to be built until promoted into a phase.
 
 - Automated trading strategies (decision #2: manual first; strategy interface later).
+- Tombstones only for markets that have data (candles, lifecycle events); delete the rest outright. Raised 2026-10-08 after measuring ~7 GB/year of tombstones; decide after the 2.10 calibration run.
 - Exclude the fast crypto 15-minute books from the auto top-N (they made 58% of orderbook deltas in the 2.7a sample). Raised 2026-10-07; deferred until the storage governor (2.8) shows whether it is needed.
