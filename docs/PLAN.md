@@ -537,7 +537,8 @@ the laptop match production.
   never hard-coded).
 - Dev uses a **read-only production data key** (decision 2026-10-06), under the safeguards
   in §4; the default environment in code remains demo. Production data is also used for
-  the Phase 2 48-hour calibration run, which runs on the Mac Studio.
+  the Phase 2 48-hour volume calibration (decision 11: on the MacBook, sleep disabled); only the
+  disk-speed and recovery tests need the Mac Studio's SSD (§10.2).
 - Dev storage budget is small (`KTERM_STORAGE_BUDGET_GB=10`–`20`) so the governor's
   thresholds are exercised; set the Docker VM disk cap to match.
 - Backups: `KTERM_BACKUP_TARGET` unset or a local folder; the NAS is production only.
@@ -682,6 +683,7 @@ production compose file written by `init` in 2.9 must do the same).
 
 Volume figures above are estimates. Phase 2 includes a **48-hour calibration run against
 production data** to measure rows/bytes per day; defaults will be tuned from measurements.
+It is tracked, with its protocol, in §10.2 and does not block later phases.
 
 ### 9.5 Backups
 
@@ -701,7 +703,7 @@ Each phase ends with passing tests and CI green.
 |---|---|
 | **0. Scaffolding** | uv workspace, three package skeletons, ruff/mypy/pytest, pre-commit, CI matrix, server image build, docs skeleton, MIT license & repo hygiene files |
 | **1. kalshi-core** | Signing (Ed25519), REST client & models, WS client with reconnect/resubscribe/seq-gap recovery, rate limiter, **multivariate market support** (`/events/multivariate`, MVE market fields `mve_collection_ticker` / `mve_selected_legs`, WS `multivariate_market_lifecycle` channel); integration-tested read-only (production data key; demo where applicable) |
-| **2. Server storage & ingestion** | Schema + Alembic, Timescale hypertables, compression/retention policies, continuous aggregates, ingestor, Compose stack, `kterm-server init`, storage governor, **48-h calibration run** — broken into slices 2.1–2.10 in §10.1 |
+| **2. Server storage & ingestion** | Schema + Alembic, Timescale hypertables, compression/retention policies, continuous aggregates, ingestor, Compose stack, `kterm-server init`, storage governor — broken into slices 2.1–2.10 in §10.1. **Code-complete at 2.9; the calibration and hardware qualification (2.10) are tracked in §10.2 and do not gate Phase 3** |
 | **3. Server API** | REST + WS push with catch-up, token auth, TLS, health/status endpoints |
 | **3b. LAN features** | zeroconf discovery, client profiles, TOFU cert pinning, `cert rotate`, `kterm server status`, backup/restore |
 | **4. Analytics** | Plugin framework + built-in analyzers + alerts |
@@ -726,10 +728,49 @@ container and run on the Linux CI job only (macOS/Windows runners have no Docker
 | 2.7 (a: compression — done; b: candles + raw-data retention — done; c: settled-market slimming/tombstoning + `pins` — done) | Split because raw-data retention must not be switched on before the candles that replace it exist. **a:** columnar compression after 1 day. **b:** 1-minute and 1-hour continuous aggregates (trades OHLC/volume, ticker aggregates), then retention (trades 30 d, tickers 14 d, orderbook deltas 14 d, snapshots 90 d + 5-min downsample, `combo_large_trades` 365 d). **c:** decision 15 (full 30 d / slim to 90 d / delete unless watched or pinned) as a scheduled job, plus the `pins` table |
 | 2.8 — done | Storage governor + `kterm-server status` (includes the data-drive checks: free space, missing/unwritable drive) |
 | 2.9 — done (rehearsed on the MacBook; the Mac Studio itself waits for the SSD) | `kterm-server init`, production Compose, health checks, Mac Studio deployment (TLS certificate generation moves to Phase 3 with the API). Also built because a deployed server needs it: the periodic discovery loop (`ingest --discover-every`), `kterm-server health`, the host-side drive check, SIGTERM-driven graceful stop |
-| 2.10 | 48-hour calibration run (decision 11), then retune retention defaults. Also a disk test on the real host with the data on the external SSD (`pg_test_fsync` and a write-heavy `pgbench` in the container) to measure fsync latency, and a pull-the-cable recovery test on the Mac Studio before it becomes the production host |
+| 2.10 (a: volume calibration — **not started, not a blocker**; b: hardware qualification — **waiting for the SSD, not a blocker**) | Split because only half of it needs the new hardware (decision 11 puts the volume run on the MacBook). **a:** 48-hour run against production data, then retune retention defaults and settle the open questions. **b:** disk tests and recovery tests with the data on the external SSD, then switch the Mac Studio on as the production host. Full protocol and checklist: §10.2 |
 
 The server uses its own read-only Kalshi key (created at deployment time), separate from the
 dev key.
+
+### 10.2 Deferred work to loop back to (2.10) — not a blocker
+
+Phase 2 is **code-complete at 2.9**: the whole server stack has been rehearsed on the MacBook
+(§8.2). What remains is measurement and hardware qualification, which can happen whenever the
+conditions are met. **Later phases must not wait for it and must not assume calibrated
+numbers**; anything that depends on the results is listed below so it is not forgotten.
+
+**2.10a — volume calibration.** Condition: none (decision 11: the MacBook, sleep disabled).
+Protocol: run the `deploy/` stack (rehearsed in §8.2) with `caffeinate -dimsu` for 48 hours
+against production data, a large budget (so the governor does not interfere), and the real
+default watchlist; save `kterm-server status --json` hourly. Report (in `docs/`) at 24 h and
+48 h: rows and compressed bytes per day for every table; the **fraction of markets that ever
+tick or trade** (decides the tombstone question); orderbook-delta share by market; WAL size;
+the gap log (sleep gaps are expected on a laptop and a good test of backfill); job health.
+Decisions waiting on it:
+- retention windows (§9.2) and whether any should be lengthened given the 500 GB budget;
+- tombstones for all settled markets vs only those with data (parking lot, ~7 GB/year);
+- excluding fast crypto 15-minute books from the auto top-N (parking lot);
+- the compression layout re-check on a full day of data (`segmentby` vs ordering, §9.2);
+- Postgres tuning (`shared_buffers`, `max_wal_size`; untuned defaults today) and the WAL floor;
+- whether 500 GB is the right budget, and the default `auto_top_n`.
+
+**2.10b — hardware qualification.** Condition: the 1 TB Thunderbolt 4 SSD is attached to the
+Mac Studio. Checklist, in order (show the commands before running any of them on that host):
+1. Format and mount the drive at a stable path; move Docker Desktop's disk image onto it.
+2. Disk tests inside the database container, internal disk versus the SSD: `pg_test_fsync`
+   and a write-heavy `pgbench`; record fsync latency. Check the drive's endurance rating.
+3. Create the server's own read-only Kalshi key; `init`; `up` (§8.2); install the host check
+   LaunchDaemon (`deploy/host/`) and confirm `status` shows the drive.
+4. Recovery tests while ingest runs: force-unmount or unplug the drive; confirm Postgres
+   crash-recovers without corruption (data checksums are on), the gap log and backfill repair
+   the trades, and `status` reports the outage and the return.
+5. Reboot and power-loss behaviour: automatic restart after power failure, the drive mounted
+   before Docker starts, ingest resumes by itself, UPS in place.
+6. Record the results here, set the production budget, and make the Mac Studio the host.
+
+Exit criteria: measured numbers recorded in §9 and §11, retention defaults retuned or
+explicitly confirmed, the open questions above closed, the Mac Studio running and healthy.
 
 ## 11. Risks & Notes
 
@@ -809,7 +850,7 @@ dev key.
 | 15 | Settled-market retention | Full rows 30 days after settlement, then outcome-only rows to day 90, then deleted unless watched or pinned. Estimated steady state ≈4.6 GB of the 8 GB reference allocation (30 d × 85k/day × ~1 KB + 60 d × 85k/day × ~0.37 KB + ~0.2 GB unsettled). Implemented in slice 2.7; the `pins` table is added with it | **Decided** |
 | 14 | Numeric representation | `bigint` fixed-point only: dollars/strikes at 10⁻⁶ (`*_e6`), counts at 10⁻² (`*_e2`); loud failure on finer precision | **Decided** |
 | 13 | Auto top-N churn | 12-hour minimum dwell once added; manual entries never auto-removed | **Decided** |
-| 11 | Calibration host | MacBook with sleep disabled (before the Mac Studio is the host) | **Decided** |
+| 11 | Calibration host | MacBook with sleep disabled (before the Mac Studio is the host); runs whenever convenient, does not gate later phases (§10.2) | **Decided** |
 | — | Server host | Mac Studio M4, Docker on macOS (supersedes Pi/Windows ideas) | **Decided** |
 | — | TLS approach | Self-signed + TOFU pinning | **Decided** |
 | — | Server location | Remote host on same LAN | **Decided** |
