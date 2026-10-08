@@ -5,19 +5,24 @@ under ``/v1`` needs a token (slice 3.2). Interactive docs and the OpenAPI docume
 unless ``KTERM_API_DOCS`` is set: they describe the whole surface to anyone on the LAN.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from kalshiterm_server import db
+from kalshiterm_server.api import errors, v1
+from kalshiterm_server.auth import FailureThrottle
 from kalshiterm_server.config import ServerSettings
 
 
 def create_app(
-    settings: ServerSettings | None = None, engine: AsyncEngine | None = None
+    settings: ServerSettings | None = None,
+    engine: AsyncEngine | None = None,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> FastAPI:
     """Build the app. Tests pass their own ``engine``; otherwise one is made from settings."""
     config = settings or ServerSettings()  # type: ignore[call-arg]  # db_url from KTERM_DB_URL
@@ -40,6 +45,13 @@ def create_app(
         redoc_url=None,
         openapi_url="/openapi.json" if config.api_docs else None,
     )
+    app.state.settings = config
+    app.state.clock = clock
+    app.state.throttle = FailureThrottle(
+        config.auth_failure_limit, config.auth_failure_window_seconds
+    )
+    errors.install(app)
+    app.include_router(v1.router)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:
