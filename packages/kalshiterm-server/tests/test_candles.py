@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
@@ -6,8 +7,10 @@ from typing import Any
 import pytest
 from kalshiterm_server import db
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from test_stream import rows
+from timescale_jobs import quiet_background_jobs
 
 pytestmark = pytest.mark.db
 
@@ -26,11 +29,8 @@ async def engine(migrated_db_url: str) -> Any:
                 ),
                 {"t": ticker},
             )
-    # Fix the aggregates' invalidation threshold before any test data goes in. Rows inserted
-    # below the threshold are logged for the next refresh; rows inserted above it are not, so
-    # if a background refresh policy ran between a test's inserts and its manual refresh (it
-    # does on a slow machine: new databases start their jobs at once) the old rows would be
-    # skipped. With the threshold already at "now", every old row is logged.
+    await quiet_background_jobs(engine)
+    # Fix the invalidation threshold before any test data goes in, so old rows are logged.
     now = datetime.now(UTC)
     for view in ("candles_1m", "candles_1h", "ticker_1m", "ticker_1h"):
         await refresh(engine, view, now - timedelta(hours=6), now - timedelta(hours=2))
@@ -93,18 +93,27 @@ SOURCE = {
 
 async def refresh(engine: AsyncEngine, view: str, start: datetime, end: datetime) -> None:
     notices: list[str] = []
-    async with engine.connect() as conn:
-        auto = await conn.execution_options(isolation_level="AUTOCOMMIT")
-        raw = await auto.get_raw_connection()
-        assert raw.driver_connection is not None
-        raw.driver_connection.add_log_listener(lambda _c, message: notices.append(str(message)))
-        await auto.execute(
-            text(
-                f"CALL refresh_continuous_aggregate('{view}', "
-                "CAST(:a AS timestamptz), CAST(:b AS timestamptz))"
-            ),
-            {"a": start, "b": end},
-        )
+    for attempt in range(40):
+        try:
+            async with engine.connect() as conn:
+                auto = await conn.execution_options(isolation_level="AUTOCOMMIT")
+                raw = await auto.get_raw_connection()
+                assert raw.driver_connection is not None
+                raw.driver_connection.add_log_listener(
+                    lambda _c, message: notices.append(str(message))
+                )
+                await auto.execute(
+                    text(
+                        f"CALL refresh_continuous_aggregate('{view}', "
+                        "CAST(:a AS timestamptz), CAST(:b AS timestamptz))"
+                    ),
+                    {"a": start, "b": end},
+                )
+            break
+        except DBAPIError as exc:
+            if "concurrent refresh" not in str(exc) or attempt == 39:
+                raise
+            await asyncio.sleep(0.25)
     source = SOURCE[view]
     in_window = await scalar(
         engine,

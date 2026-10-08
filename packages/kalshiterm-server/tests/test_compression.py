@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from test_stream import Gate, rows, scalar, trade_msg, until
 from test_stream_schema import query
+from timescale_jobs import quiet_background_jobs
 
 pytestmark = pytest.mark.db
 
@@ -39,6 +40,7 @@ async def test_the_big_tables_are_compressed_after_one_day_ordered_by_market_the
 @pytest.fixture
 async def engine(migrated_db_url: str) -> Any:
     engine = db.make_engine(migrated_db_url)
+    await quiet_background_jobs(engine)
     yield engine
     await engine.dispose()
 
