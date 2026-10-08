@@ -11,7 +11,7 @@ Phases 0 (scaffolding) and 1 (`kalshi-core`) are complete and merged to `main`. 
 (server storage and ingestion) is built through slice 2.9 (deployment rehearsed on the
 MacBook); 2.10 (48-hour volume calibration on the MacBook; hardware tests when the Mac Studio's
 SSD arrives) is tracked in PLAN.md §10.2 and does **not** block later phases. Next: Phase 3. Decisions made: web UI + Typer CLI, manual trading
-first, multi-user server, MIT license, private project (no PyPI), multivariate markets kept,
+first, multi-user server, MIT license, no PyPI publishing, public GitHub repository (since 2026-10-08), multivariate markets kept,
 read-only production key for dev. No **[OPEN]** items remain in PLAN.md §12.
 
 Live integration tests are opt-in: `KALSHI_INTEGRATION=1 uv run pytest
@@ -60,6 +60,10 @@ KalshiTerm 1 died of feature creep and directional changes. Guard against it:
 - The TimescaleDB image tag is pinned in `deploy/docker-compose.dev.yml` (tests read it from there).
 
 ## Conventions
+
+- The repository is **public**: never commit secrets, keys, `.env` files or personal data. Commit
+  with the GitHub no-reply address (already set in this clone's git config); the old personal
+  address was scrubbed from history on 2026-10-08.
 
 - uv workspace, three packages under `packages/` (`kalshi-core`, `kalshiterm-server`,
   `kalshiterm-client`), `src/` layout, hatchling, Python 3.11+.
