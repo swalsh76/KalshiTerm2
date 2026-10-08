@@ -17,6 +17,7 @@ from kalshi_core.rest import KalshiRestClient
 from kalshi_core.ws import KalshiWebSocket
 
 from kalshiterm_server import db
+from kalshiterm_server.api.serve import UnsafeBind, serve
 from kalshiterm_server.config import ServerSettings
 from kalshiterm_server.governor import GB, Governor
 from kalshiterm_server.ingest.backfill import GapBackfiller
@@ -294,3 +295,26 @@ def init_command(
     for path in result.kept:
         typer.echo(f"kept  {path} (already there)")
     typer.echo("Secrets were written with owner-only permissions and are not shown.")
+
+
+@app.command("api")
+def api_command(
+    host: Annotated[str | None, typer.Option(help="Address to bind (default: loopback).")] = None,
+    port: Annotated[int | None, typer.Option(help="Port (default 8700).")] = None,
+    tls_cert: Annotated[Path | None, typer.Option(help="TLS certificate (PEM).")] = None,
+    tls_key: Annotated[Path | None, typer.Option(help="TLS private key (PEM).")] = None,
+) -> None:
+    """Serve the HTTP API. Refuses to serve plaintext HTTP beyond this machine."""
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    settings = _settings()
+    try:
+        serve(
+            settings,
+            host or settings.api_host,
+            port or settings.api_port,
+            tls_cert,
+            tls_key,
+        )
+    except UnsafeBind as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc

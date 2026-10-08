@@ -772,6 +772,35 @@ Mac Studio. Checklist, in order (show the commands before running any of them on
 Exit criteria: measured numbers recorded in §9 and §11, retention defaults retuned or
 explicitly confirmed, the open questions above closed, the Mac Studio running and healthy.
 
+### 10.3 Phase 3 slices (server API)
+
+Same rules as Phase 2: one branch per slice, merged when CI is green, behaviour shown on real
+data. Phase 3b (zeroconf, client profiles, TOFU pinning on the client side, `cert rotate`
+prompts, backup/restore) follows and is not broken down yet.
+
+Decisions taken for Phase 3 (2026-10-08; revisit any of them by saying so):
+- **JSON carries prices and counts as decimal strings** (`"0.560000"`, `"18.50"`), like Kalshi
+  and consistent with decision 14: no float ever touches a stored fact. Timestamps are ISO-8601
+  UTC with microseconds.
+- **The API is its own container** (`api`), beside `ingest`: either can restart without
+  interrupting the other, and the API never holds the Kalshi key.
+- **Nothing is served in plaintext off the machine**: the `api` command refuses a non-loopback
+  bind without a TLS certificate. `/healthz` and `/readyz` are open and say nothing about the
+  data; everything else needs a token. Interactive docs are off by default.
+- Routes live under `/v1/`; list endpoints use keyset cursors (no offsets), with a hard page
+  limit.
+
+| # | Slice |
+|---|---|
+| 3.1 — done | API skeleton: FastAPI app factory, `/healthz`, `/readyz` (distinguishes database unreachable from not migrated; reveals nothing else), `kterm-server api` (uvicorn; `check_bind` refuses plaintext on any non-loopback address, tested against the real server), settings `KTERM_API_HOST/PORT/DOCS`, graceful SIGTERM. Not yet in Compose. Known: Starlette's test client warns that it will want `httpx2`; harmless today |
+| 3.2 | Users and tokens: `users`, `api_tokens` (stored hashed; shown once), roles `read` / `admin`, `kterm-server user add/list/remove` and `token create/list/revoke`, bearer-auth dependency, `/v1/me`, admin-only `/status` (the `status` report), failed-auth throttling |
+| 3.3 | TLS and deployment: `init` generates the self-signed certificate (SANs for host, `<host>.local`, LAN IP), certificate fingerprint command, `api` service in Compose (the only published port, 8700), tested with a real TLS handshake and a pinned fingerprint; rehearsed on the MacBook |
+| 3.4 | Reference and candle endpoints: markets (filter, search, keyset pages), a market, an event, candles from `candles_*` / `ticker_*` |
+| 3.5 | Raw-data endpoints: trades, ticker history, orderbook at a time (latest snapshot plus replayed deltas), gaps log |
+| 3.6 | Per-user watchlists: `user_watchlists`, `/v1/watchlist` CRUD; the ingest controller watches the **union** of the config file, auto top-N and every user's list (a market leaves only when no one wants it) |
+| 3.7 | Live push: ingest `NOTIFY`s per write batch, WebSocket `/v1/stream` (subscribe to markets / watchlist), `since` cursor catch-up on reconnect. The cursor design is settled at the start of the slice (rows have no unique sequence number; candidate: `received_at`, which also covers backfilled rows) |
+| deferred | Prometheus `/metrics` (optional in §5.4) goes to the parking lot unless wanted; analytics and alert endpoints arrive with Phase 4 |
+
 ## 11. Risks & Notes
 
 - **Client throughput (offline benchmark, `packages/kalshi-core/bench/throughput.py`,
