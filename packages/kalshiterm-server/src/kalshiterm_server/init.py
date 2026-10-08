@@ -108,7 +108,7 @@ KALSHI_PRIVATE_KEY_PATH={CONTAINER_KEY_PATH}
     if watchlist.exists():
         result.kept.append(watchlist)  # the operator's edits are never overwritten
     else:
-        watchlist.write_text(WATCHLIST_TEMPLATE)
+        watchlist.write_text(WATCHLIST_TEMPLATE, encoding="utf-8")
         result.written.append(watchlist)
     (out / "state").mkdir(exist_ok=True)  # the host-side drive check writes here
     return result

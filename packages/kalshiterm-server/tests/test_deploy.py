@@ -19,7 +19,7 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="needs bash and 
 
 
 def load(name: str) -> dict[str, Any]:
-    loaded = yaml.safe_load((DEPLOY / name).read_text())
+    loaded = yaml.safe_load((DEPLOY / name).read_text(encoding="utf-8"))
     assert isinstance(loaded, dict)
     return loaded
 
@@ -92,7 +92,7 @@ def test_ingest_gets_its_key_and_config_read_only_and_migrates_before_starting(
 
 
 def test_no_secret_is_written_into_the_compose_file(prod: dict[str, Any]) -> None:
-    text = (DEPLOY / "docker-compose.yml").read_text()
+    text = (DEPLOY / "docker-compose.yml").read_text(encoding="utf-8")
     assert not re.search(r"PRIVATE KEY|password\s*[:=]\s+[^$\s]", text, re.IGNORECASE)
     # every credential comes from the generated .env, with a message if init was not run
     assert "${POSTGRES_PASSWORD:?" in text and "${KALSHI_KEY_ID:?" in text

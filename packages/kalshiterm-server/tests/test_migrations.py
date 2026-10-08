@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from kalshiterm_server.cli import app
 from kalshiterm_server.config import ServerSettings
 from sqlalchemy import text
 from testcontainers.community.postgres import PostgresContainer
+from timescale_jobs import quiet_database
 from typer.testing import CliRunner
 
 pytestmark = pytest.mark.db
@@ -48,6 +50,7 @@ async def test_upgrade_is_idempotent(fresh_db_url: str) -> None:
 
 async def test_downgrade_to_base_removes_the_extension(fresh_db_url: str) -> None:
     await db.upgrade_async(fresh_db_url)
+    await quiet_database(fresh_db_url)
     await db.downgrade_async(fresh_db_url, "base")
     assert await extension_version(fresh_db_url) is None
     assert await revision(fresh_db_url) is None
@@ -78,6 +81,7 @@ def test_cli_upgrade_current_and_downgrade(
     result = runner.invoke(app, ["db", "upgrade"])
     assert result.exit_code == 0, result.output
     assert runner.invoke(app, ["db", "current"]).output.strip() == db.head_revision()
+    asyncio.run(quiet_database(fresh_db_url))  # no policy job may be running while tables drop
     result = runner.invoke(app, ["db", "downgrade", "base"])
     assert result.exit_code == 0, result.output
     assert "(no migrations applied)" in runner.invoke(app, ["db", "current"]).output

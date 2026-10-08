@@ -18,6 +18,7 @@ from test_stream import (
     trade_msg,
     until,
 )
+from timescale_jobs import quiet_database
 
 pytestmark = pytest.mark.db
 
@@ -197,5 +198,6 @@ async def test_migration_0005_drops_the_per_combo_tables_and_downgrade_restores_
     after = await tables()
     assert not {"combo_markets", "combo_tickers", "combo_trades"} & after
     assert {"combo_large_trades", "combo_stats_1m"} <= after
+    await quiet_database(fresh_db_url)
     await db.downgrade_async(fresh_db_url, "0004")
     assert await tables() >= {"combo_markets", "combo_tickers", "combo_trades"}
