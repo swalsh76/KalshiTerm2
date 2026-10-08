@@ -432,17 +432,57 @@ internal disk).
 
 ### 8.2 Bootstrap
 
+Phase 2 deploys **database + ingest only** (no API yet, so nothing is published to the LAN at
+all). Two compose files in `deploy/`: `docker-compose.setup.yml` (the one-off `init`, with no
+network) and `docker-compose.yml` (the stack; refuses to load until `.env` exists).
+
 ```bash
 git clone <private-repo> && cd KalshiTerm2/deploy
-docker compose run --rm api kterm-server init   # writes .env, secrets, TLS cert
+# 1. the server's OWN read-only Kalshi key (separate from the dev key); init validates it is
+#    an unencrypted Ed25519 PEM, copies it to secrets/ (mode 600) and prints nothing secret
+KEY_FILE=~/.kalshiterm/server_key.pem \
+  docker compose -f docker-compose.setup.yml run --rm init --key-id <key id> [--budget-gb 500]
+# 2. start (migrations run first; discovery runs every 15 min inside ingest)
 docker compose up -d --build
-docker compose exec api kterm-server user add <name>
-docker compose exec api kterm-server token create --user <name> --role read
+# 3. look
+docker compose exec ingest kterm-server status
 ```
 
-- Data directory is configurable (`KTERM_DATA_DIR`); a dedicated disk/partition is
-  recommended.
+`init` writes `.env` (generated database password, settings), `secrets/kalshi_key.pem`,
+`config/watchlist.toml` (starter: `auto_top_n = 20`; never overwritten) and `state/`. A second
+run refuses unless `--force`, because a new password would lock the server out of its existing
+database volume. All of these are git-ignored. On Linux add `--user "$(id -u):$(id -g)"`.
+
+Host-side drive check (Mac Studio; closes the "container cannot see the host mount" gap):
+`host/check-data-drive.sh DRIVE_PATH state/host.json` writes whether the drive is a mount
+point, writable, and its free space; install it as a LaunchDaemon from
+`host/com.kalshiterm.hostcheck.plist.template` (every minute, from boot, no login needed). The
+server reads the file (`KTERM_HOST_STATE_FILE`); `status` raises a problem if the drive is not
+mounted or writable, is nearly full, or the report is more than 5 minutes old or missing.
+
+Design of `docker-compose.yml`: the database is on an `internal: true` network (no route to the
+internet); only `ingest` also joins the default network to reach Kalshi; no `ports:`
+anywhere; both services have health checks (`kterm-server health`: database reachable, at
+head, fresh tickers and trades), `restart: unless-stopped`, rotated logs (20 MB x 5, so logs
+cannot fill the Docker VM disk), and clean-stop grace periods. Key and config are mounted
+read-only. The database image tag equals the dev compose file's (a test enforces it) and
+telemetry is off.
+
+**Rehearsed on the MacBook (2026-10-08, real Docker, real read-only key):** init -> up ->
+healthy in ~20 s; database container cannot resolve outside hosts; key readable at mode 600;
+full discovery 293 s; a 75 s ingest outage was backfilled (12,702 trades found, 9,344 added,
+1,408 duplicates skipped). The rehearsal found and fixed four real problems that unit tests
+could not: compose loads every service's required variables up front (so `init` had to move to
+its own file); `docker compose run` replaces `command` but appends to `entrypoint` (so the
+fixed init arguments live in the entrypoint); a Python process running as the container's
+main process **ignores SIGTERM**, so `docker stop` waited the full 30 s and then killed it
+without the final flush (now handled: stop takes under a second and drains); and the first
+orderbooks only appear ~5 minutes after a fresh start, because the first watchlist cycle runs
+before any trades exist to rank (the next cycle adds them).
+
 - Upgrades: `git pull && docker compose up -d --build` (migrations run on startup).
+- Phase 3 adds the `api` service (the only published port), users and tokens, TLS and the
+  user/token commands.
 
 ### 8.3 Network exposure & security (LAN treated as untrusted)
 
@@ -685,7 +725,7 @@ container and run on the Linux CI job only (macOS/Windows runners have no Docker
 | 2.6 — done | Gap handling: gap log; trade backfill via REST on a `reconnected` event and on startup (tickers cannot be backfilled, so those gaps are recorded) |
 | 2.7 (a: compression — done; b: candles + raw-data retention — done; c: settled-market slimming/tombstoning + `pins` — done) | Split because raw-data retention must not be switched on before the candles that replace it exist. **a:** columnar compression after 1 day. **b:** 1-minute and 1-hour continuous aggregates (trades OHLC/volume, ticker aggregates), then retention (trades 30 d, tickers 14 d, orderbook deltas 14 d, snapshots 90 d + 5-min downsample, `combo_large_trades` 365 d). **c:** decision 15 (full 30 d / slim to 90 d / delete unless watched or pinned) as a scheduled job, plus the `pins` table |
 | 2.8 — done | Storage governor + `kterm-server status` (includes the data-drive checks: free space, missing/unwritable drive) |
-| 2.9 | `kterm-server init`, production Compose, health checks, Mac Studio deployment (TLS certificate generation moves to Phase 3 with the API) |
+| 2.9 — done (rehearsed on the MacBook; the Mac Studio itself waits for the SSD) | `kterm-server init`, production Compose, health checks, Mac Studio deployment (TLS certificate generation moves to Phase 3 with the API). Also built because a deployed server needs it: the periodic discovery loop (`ingest --discover-every`), `kterm-server health`, the host-side drive check, SIGTERM-driven graceful stop |
 | 2.10 | 48-hour calibration run (decision 11), then retune retention defaults. Also a disk test on the real host with the data on the external SSD (`pg_test_fsync` and a write-heavy `pgbench` in the container) to measure fsync latency, and a pull-the-cable recovery test on the Mac Studio before it becomes the production host |
 
 The server uses its own read-only Kalshi key (created at deployment time), separate from the
@@ -779,5 +819,7 @@ dev key.
 Ideas raised but **not** in scope. Not to be built until promoted into a phase.
 
 - Automated trading strategies (decision #2: manual first; strategy interface later).
+- Run the containers as a non-root user (needs a uid strategy that works on both Docker Desktop and Linux bind mounts). Raised 2026-10-08; today they run as root with a read-only key mount, no published ports and an internal-only database network.
+- Make the first watchlist cycle retry after ~1 minute while there are no trades to rank, instead of waiting the full 5 minutes.
 - Tombstones only for markets that have data (candles, lifecycle events); delete the rest outright. Raised 2026-10-08 after measuring ~7 GB/year of tombstones; decide after the 2.10 calibration run.
 - Exclude the fast crypto 15-minute books from the auto top-N (they made 58% of orderbook deltas in the 2.7a sample). Raised 2026-10-07; deferred until the storage governor (2.8) shows whether it is needed.

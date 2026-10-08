@@ -222,3 +222,8 @@ __marimo__/
 # Private keys (keep outside the repo; safety net)
 *.pem
 *.key
+
+# Production deployment state written by `kterm-server init` and the host check (never commit)
+deploy/secrets/
+deploy/config/
+deploy/state/

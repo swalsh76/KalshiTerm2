@@ -1,0 +1,85 @@
+# Production stack. Phase 2 = database + ingest; the API service is added in Phase 3.
+# Nothing here publishes a port: the database lives on an internal network with no route to
+# the internet, and only `ingest` can reach both it and Kalshi.
+#
+# First time (from this directory; see docs/PLAN.md §8.2):
+#   KEY_FILE=~/.kalshiterm/server_key.pem \
+#     docker compose -f docker-compose.setup.yml run --rm init --key-id <the server key's id>
+#   docker compose up -d --build
+#   docker compose exec ingest kterm-server status
+# On Linux add  --user "$(id -u):$(id -g)"  to the init command so the files are yours.
+# Upgrades: git pull && docker compose up -d --build   (migrations run on startup)
+name: kalshiterm
+
+x-logging: &logging
+  # Docker keeps container logs inside its VM disk; unbounded logs would eat the data budget.
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  db:
+    image: timescale/timescaledb:2.30.2-pg18 # keep equal to docker-compose.dev.yml (tested)
+    # No usage reports to a third party from a private server.
+    command: ["postgres", "-c", "timescaledb.telemetry_level=off"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?run kterm-server init first}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run kterm-server init first}
+      POSTGRES_DB: ${POSTGRES_DB:?run kterm-server init first}
+    volumes:
+      # A named volume (inside Docker's VM disk, which lives on the external SSD), never a
+      # bind mount from macOS. PostgreSQL 18 keeps PGDATA below /var/lib/postgresql.
+      - kterm_pgdata:/var/lib/postgresql
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    stop_grace_period: 60s # let Postgres shut down cleanly
+    logging: *logging
+
+  ingest:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: kalshiterm-server:local
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - >-
+        kterm-server db upgrade &&
+        exec kterm-server ingest --watchlist /config/watchlist.toml --discover-every 900
+    environment:
+      KTERM_DB_URL: ${KTERM_DB_URL:?run kterm-server init first}
+      KTERM_STORAGE_BUDGET_GB: ${KTERM_STORAGE_BUDGET_GB:-500}
+      KTERM_HOST_STATE_FILE: ${KTERM_HOST_STATE_FILE:-/hoststate/host.json}
+      KALSHI_ENV: ${KALSHI_ENV:-production}
+      KALSHI_KEY_ID: ${KALSHI_KEY_ID:?run kterm-server init first}
+      KALSHI_PRIVATE_KEY_PATH: ${KALSHI_PRIVATE_KEY_PATH:-/run/secrets/kalshi_key.pem}
+    volumes:
+      - ./secrets:/run/secrets:ro # the server's own read-only Kalshi key
+      - ./config:/config:ro # watchlist.toml (edit freely; re-read every 5 minutes)
+      - ./state:/hoststate:ro # written by the host-side drive check
+    networks: [internal, default]
+    healthcheck:
+      test: ["CMD", "kterm-server", "health"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 180s
+    restart: unless-stopped
+    stop_grace_period: 30s # drain buffered rows before exiting
+    logging: *logging
+
+networks:
+  internal:
+    internal: true # no route to the internet; the database is never reachable from outside
+
+volumes:
+  kterm_pgdata:

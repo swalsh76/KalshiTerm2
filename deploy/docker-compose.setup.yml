@@ -1,0 +1,21 @@
+# One-off first-time setup: writes .env, secrets/ and config/ next to this file.
+# Kept apart from docker-compose.yml because that file refuses to load until .env exists.
+#
+#   KEY_FILE=~/.kalshiterm/server_key.pem \
+#     docker compose -f docker-compose.setup.yml run --rm init --key-id <the server key's id>
+# On Linux add  --user "$(id -u):$(id -g)"  so the files belong to you, not root.
+name: kalshiterm-setup
+
+services:
+  init:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: kalshiterm-server:local
+    # Fixed arguments live in the entrypoint: `run ... init --key-id X` replaces `command`
+    # but appends to the entrypoint.
+    entrypoint: ["kterm-server", "init", "--out", "/out", "--key-file", "/input/key.pem"]
+    volumes:
+      - ./:/out
+      - ${KEY_FILE:?set KEY_FILE to the server key (PEM file)}:/input/key.pem:ro
+    network_mode: none # setup needs no network at all
