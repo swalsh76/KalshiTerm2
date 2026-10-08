@@ -22,3 +22,8 @@ class ServerSettings(BaseSettings):
     # JSON file written by the host-side drive check (deploy/host/check-data-drive.sh); the
     # container cannot see whether the host mounted the external SSD, so it reads this instead.
     host_state_file: str | None = None
+
+    # The API (PLAN §5.4). It binds to loopback unless a TLS certificate is given.
+    api_host: str = "127.0.0.1"
+    api_port: int = 8700
+    api_docs: bool = False  # interactive docs and the OpenAPI document

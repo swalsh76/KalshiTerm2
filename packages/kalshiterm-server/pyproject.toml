@@ -17,6 +17,8 @@ dependencies = [
     "alembic>=1.13",
     "typer>=0.12",
     "pydantic-settings>=2.4",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
 ]
 
 [project.scripts]
