@@ -31,7 +31,8 @@
 - Run the server stack (Postgres + ingestion + analytics + API) on a **separate machine
   on the same LAN** as the client.
 - Written in **Python**, structured as standard installable packages. The project is
-  **private**: no PyPI publishing; distribution is via the private git repo.
+  **not published to PyPI**; distribution is via the git repo (public on GitHub since
+  2026-10-08).
 
 ## 2. System Architecture
 
@@ -63,7 +64,7 @@ WebSocket requires an authenticated connection even for public channels).
 
 ## 3. Repository & Packaging
 
-A **uv workspace** monorepo with **three packages** (private; never published to PyPI),
+A **uv workspace** monorepo with **three packages** (never published to PyPI),
 so each install pulls in only what it needs.
 
 | Package | Purpose | Key dependencies |
@@ -437,7 +438,7 @@ all). Two compose files in `deploy/`: `docker-compose.setup.yml` (the one-off `i
 network) and `docker-compose.yml` (the stack; refuses to load until `.env` exists).
 
 ```bash
-git clone <private-repo> && cd KalshiTerm2/deploy
+git clone https://github.com/swalsh76/KalshiTerm2 && cd KalshiTerm2/deploy
 # 1. the server's OWN read-only Kalshi key (separate from the dev key); init validates it is
 #    an unencrypted Ed25519 PEM, copies it to secrets/ (mode 600) and prints nothing secret
 KEY_FILE=~/.kalshiterm/server_key.pem \
@@ -864,8 +865,8 @@ Decisions taken for Phase 3 (2026-10-08; revisit any of them by saying so):
 | 3 | Ingestion scope: all markets vs watchlist | Tickers/trades for all; orderbooks watchlist-only | **Decided** — as recommended |
 | 4 | Server users: single vs multi-user | — | **Decided** — multi-user (see §8.3) |
 | 5a | License | MIT or Apache-2.0 | **Decided** — MIT |
-| 5b | Package names | Names as in §3 | **Decided** — keep as-is; private, no PyPI |
-| 6 | Distribution | — | **Decided** — private git repo, no PyPI; client native on Windows/macOS, server in Docker |
+| 5b | Package names | Names as in §3 | **Decided** — keep as-is; no PyPI |
+| 6 | Distribution | — | **Decided** — git repo (made **public** 2026-10-08, which also makes CI free on standard runners), no PyPI; client native on Windows/macOS, server in Docker |
 | — | Server host runs Docker | Required | **Decided** |
 | — | Server disk budget | **500 GB** on a dedicated 1 TB external Thunderbolt 4 SSD attached to the Mac Studio (decided 2026-10-08; was 100 GB internal); backups on NAS | **Decided** |
 | 8 | Key types | Ed25519 only; RSA-PSS not supported | **Decided** |
