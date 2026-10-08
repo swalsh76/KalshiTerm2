@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import json
 import logging
 from collections.abc import AsyncIterator
 from datetime import timedelta
@@ -17,18 +18,24 @@ from kalshi_core.ws import KalshiWebSocket
 
 from kalshiterm_server import db
 from kalshiterm_server.config import ServerSettings
+from kalshiterm_server.governor import GB, Governor
 from kalshiterm_server.ingest.backfill import GapBackfiller
 from kalshiterm_server.ingest.discovery import discover
 from kalshiterm_server.ingest.stream import StreamIngestor
 from kalshiterm_server.ingest.watchlist import WatchlistConfig, WatchlistController, load_config
+from kalshiterm_server.status import collect_status, render
 
 app = typer.Typer(no_args_is_help=True, help="KalshiTerm server operations.")
 db_app = typer.Typer(no_args_is_help=True, help="Database migrations.")
 app.add_typer(db_app, name="db")
 
 
+def _settings() -> ServerSettings:
+    return ServerSettings()  # type: ignore[call-arg]  # db_url is read from KTERM_DB_URL
+
+
 def _url() -> str:
-    return ServerSettings().db_url  # type: ignore[call-arg]  # read from KTERM_DB_URL
+    return _settings().db_url
 
 
 @db_app.command("upgrade")
@@ -113,6 +120,9 @@ def ingest_command(
     max_backfill_hours: float = typer.Option(
         6, help="Longest outage whose missed trades are fetched from REST (older is truncated)."
     ),
+    governor_every: float = typer.Option(
+        600, help="Seconds between storage-governor cycles (size sample, thresholds)."
+    ),
 ) -> None:
     """Stream tickers, trades and market lifecycle events (and watched orderbooks) to the DB."""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -152,7 +162,18 @@ def ingest_command(
                     rest, engine, ingestor, max_window=timedelta(hours=max_backfill_hours)
                 )
                 await backfiller.start()  # queues the gap since the last run stopped
-                tasks: list[asyncio.Task[None]] = [asyncio.create_task(backfiller.run())]
+                server = _settings()
+                governor = Governor(
+                    engine,
+                    int(server.storage_budget_gb * GB),
+                    shedder=ingestor,
+                    disk_path=server.disk_check_path,
+                    interval=governor_every,
+                )
+                tasks: list[asyncio.Task[None]] = [
+                    asyncio.create_task(backfiller.run()),
+                    asyncio.create_task(governor.run()),
+                ]
                 if feed is not None:
                     controller = WatchlistController(
                         engine,
@@ -196,3 +217,23 @@ def ingest_command(
             await engine.dispose()
 
     asyncio.run(run())
+
+
+@app.command("status")
+def status_command(
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
+) -> None:
+    """Storage, ingest freshness, gaps, jobs and discovery in one report."""
+
+    async def run() -> dict[str, object]:
+        server = _settings()
+        engine = db.make_engine(server.db_url)
+        try:
+            return await collect_status(engine, server.storage_budget_gb, server.disk_check_path)
+        finally:
+            await engine.dispose()
+
+    report = asyncio.run(run())
+    typer.echo(json.dumps(report, indent=2, default=str) if as_json else render(report))
+    if report["problems"]:
+        raise typer.Exit(code=1)  # so scripts and health checks can act on it

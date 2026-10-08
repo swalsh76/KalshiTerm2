@@ -610,6 +610,34 @@ is why the original "trades forever" and "7-day uncompressed window" defaults we
 - **The drive itself** is watched separately from the budget: alert when free space on the
   data drive falls below 15%, and `status` shows loudly if the drive is missing or unwritable.
 
+**As built (slice 2.8, verified live 2026-10-08):** `kalshiterm_server/governor.py` runs as a
+task inside `ingest` (every 10 minutes; `--governor-every`). Each cycle measures data + WAL,
+stores a sample (`storage_samples`, kept 30 days), projects growth by least squares over the
+last 24 h (needs 3 samples spanning an hour; compression makes sizes saw-tooth, so one number
+is never trusted), and applies three modes with hysteresis: **tightened** from 80% (halves the
+`tickers`, `orderbook_deltas` and `trades` raw windows, never below 3 / 3 / 7 days; snapshots
+and watchlist trades are never touched; restored exactly under 70%), **shedding** from 90%
+(orderbook deltas dropped at intake, snapshots/trades/tickers never; resumes under 85%; the
+period is a `delta_shed` row in `ingest_gaps`, extended each cycle so an open period reads "up
+to at least now"). State survives restarts (`governor_state`); every action is logged to
+`governor_events`. The drive is probed each cycle (free space below 15%, and a real
+write+fsync of a temp file). Settings: `KTERM_STORAGE_BUDGET_GB` (default 100, 500 in
+production) and `KTERM_DISK_CHECK_PATH`.
+**Limits to know:** (1) inside the server container the probe sees the *Docker VM's* disk,
+which is where Postgres lives; whether the host mounted the external SSD is a host-level
+fact the container cannot see, so 2.9 needs a small host-side check (launchd) and 2.10
+tests it for real. (2) WAL counts toward the budget and has a floor of ~80-110 MB, which
+dominates tiny dev budgets (irrelevant at 500 GB). (3) Tightening only shortens windows; it
+takes effect when the retention job next runs (the governor requests an immediate run).
+(4) Beyond 100% nothing more is shed: Trades and tickers are never shed by design.
+
+`kterm-server status [--json]` (data model reusable by the Phase 3 `/status` API) prints
+what needs attention first, then storage (largest tables, growth, days to full, drive), stream
+freshness and rates, recent gaps, unhealthy background jobs, discovery age, watchlist size;
+exit code 1 when anything needs attention. Timescale's built-in telemetry job is ignored and
+**telemetry is switched off in the database config** (`timescaledb.telemetry_level=off`; the
+production compose file written by `init` in 2.9 must do the same).
+
 ### 9.4 Calibration
 
 Volume figures above are estimates. Phase 2 includes a **48-hour calibration run against
@@ -656,7 +684,7 @@ container and run on the Linux CI job only (macOS/Windows runners have no Docker
 | 2.5 (a: live add/remove on the feed — done; b: orderbook storage — done; c: watchlist controller — done) | Orderbook storage for the watchlist: snapshots + deltas, config-file watchlist + automatic top-N by volume (per-user watchlists arrive with the Phase 3 API). Semantics (decisions 12–13): **adding** a market subscribes it live (`add_markets`, fresh snapshot), copies its last 30 days of raw trades into `trades_watchlist`, and opens a `watchlist_periods` row; **while watched**, snapshots/deltas are stored and trades go to both trade tables; **removing** stops orderbook capture (`delete_markets`) and closes the period but deletes nothing — orderbook data ages out under normal retention, `trades_watchlist` is kept forever. Capture covers the union of all users' watchlists (reference-counted). Auto top-N entries stay ≥12 h once added; manual entries are never auto-removed. Needs a `kalshi-core` extension (live add/remove on `OrderBookFeed`) and a live probe of Kalshi's undocumented per-subscription market limit |
 | 2.6 — done | Gap handling: gap log; trade backfill via REST on a `reconnected` event and on startup (tickers cannot be backfilled, so those gaps are recorded) |
 | 2.7 (a: compression — done; b: candles + raw-data retention — done; c: settled-market slimming/tombstoning + `pins` — done) | Split because raw-data retention must not be switched on before the candles that replace it exist. **a:** columnar compression after 1 day. **b:** 1-minute and 1-hour continuous aggregates (trades OHLC/volume, ticker aggregates), then retention (trades 30 d, tickers 14 d, orderbook deltas 14 d, snapshots 90 d + 5-min downsample, `combo_large_trades` 365 d). **c:** decision 15 (full 30 d / slim to 90 d / delete unless watched or pinned) as a scheduled job, plus the `pins` table |
-| 2.8 | Storage governor + `kterm-server status` (includes the data-drive checks: free space, missing/unwritable drive) |
+| 2.8 — done | Storage governor + `kterm-server status` (includes the data-drive checks: free space, missing/unwritable drive) |
 | 2.9 | `kterm-server init`, production Compose, health checks, Mac Studio deployment (TLS certificate generation moves to Phase 3 with the API) |
 | 2.10 | 48-hour calibration run (decision 11), then retune retention defaults. Also a disk test on the real host with the data on the external SSD (`pg_test_fsync` and a write-heavy `pgbench` in the container) to measure fsync latency, and a pull-the-cable recovery test on the Mac Studio before it becomes the production host |
 

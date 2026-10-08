@@ -8,6 +8,9 @@ name: kalshiterm-dev
 services:
   timescaledb:
     image: timescale/timescaledb:2.30.2-pg18
+    # No usage reports to a third party from a private server (also keeps `status` honest:
+    # the built-in telemetry job fails on a network without internet access).
+    command: ["postgres", "-c", "timescaledb.telemetry_level=off"]
     environment:
       POSTGRES_USER: ${KTERM_DB_USER:-kterm}
       POSTGRES_PASSWORD: ${KTERM_DB_PASSWORD:-kterm_dev_only} # dev only; never reuse
