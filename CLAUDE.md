@@ -26,7 +26,9 @@ packages/kalshi-core/tests/test_live.py -s` (read-only; skipped by default and i
 - Client runs natively (Windows/macOS), not in Docker.
 - Server deploys **only via Docker Compose** on a remote LAN host; API is the only exposed
   port; self-signed TLS with trust-on-first-use pinning.
-- Storage budget is **100 GB** (backups go to the NAS), enforced by the storage governor (PLAN.md §9).
+- Storage budget is **500 GB** on a dedicated 1 TB external Thunderbolt 4 SSD (backups go to
+  the NAS), enforced by the storage governor (PLAN.md §9). Docker's disk image lives on that
+  drive; never bind-mount the Postgres data directory.
 - Server is multi-user: named users, per-user tokens, per-user watchlists/alerts/layouts.
 - License is MIT.
 - Never hard-code `localhost` or Kalshi URLs outside `kalshi-core` config.
