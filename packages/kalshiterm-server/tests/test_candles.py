@@ -26,6 +26,14 @@ async def engine(migrated_db_url: str) -> Any:
                 ),
                 {"t": ticker},
             )
+    # Fix the aggregates' invalidation threshold before any test data goes in. Rows inserted
+    # below the threshold are logged for the next refresh; rows inserted above it are not, so
+    # if a background refresh policy ran between a test's inserts and its manual refresh (it
+    # does on a slow machine: new databases start their jobs at once) the old rows would be
+    # skipped. With the threshold already at "now", every old row is logged.
+    now = datetime.now(UTC)
+    for view in ("candles_1m", "candles_1h", "ticker_1m", "ticker_1h"):
+        await refresh(engine, view, now - timedelta(hours=6), now - timedelta(hours=2))
     yield engine
     await engine.dispose()
 
@@ -75,15 +83,50 @@ async def add_ticks(
             )
 
 
+SOURCE = {
+    "candles_1m": "trades",
+    "candles_1h": "trades",
+    "ticker_1m": "tickers",
+    "ticker_1h": "tickers",
+}
+
+
 async def refresh(engine: AsyncEngine, view: str, start: datetime, end: datetime) -> None:
+    notices: list[str] = []
     async with engine.connect() as conn:
         auto = await conn.execution_options(isolation_level="AUTOCOMMIT")
+        raw = await auto.get_raw_connection()
+        assert raw.driver_connection is not None
+        raw.driver_connection.add_log_listener(lambda _c, message: notices.append(str(message)))
         await auto.execute(
             text(
                 f"CALL refresh_continuous_aggregate('{view}', "
                 "CAST(:a AS timestamptz), CAST(:b AS timestamptz))"
             ),
             {"a": start, "b": end},
+        )
+    source = SOURCE[view]
+    in_window = await scalar(
+        engine,
+        f"select count(*) from {source} where ts >= '{start.isoformat()}' "
+        f"and ts < '{end.isoformat()}'",
+    )
+    if in_window and await scalar(engine, f"select count(*) from {view}") == 0:
+        state = await rows_of(
+            engine,
+            "select 'threshold', hypertable_id::text, watermark::text from "
+            "_timescaledb_catalog.continuous_aggs_invalidation_threshold "
+            "union all select 'hypertable_log', hypertable_id::text, count(*)::text from "
+            "_timescaledb_catalog.continuous_aggs_hypertable_invalidation_log group by 2 "
+            "union all select 'job', job_id::text, last_run_status || ' ' || "
+            "coalesce(last_successful_finish::text, '-') from timescaledb_information.job_stats "
+            "union all select 'watermark', '', _timescaledb_functions.to_timestamp("
+            "_timescaledb_functions.cagg_watermark(h.id))::text from "
+            "_timescaledb_catalog.hypertable h where h.table_name like '_materialized%'",
+        )
+        raise AssertionError(
+            f"{view} is empty after a refresh of {in_window} source rows in "
+            f"[{start}, {end}); notices={notices}; state={state}"
         )
 
 
