@@ -44,7 +44,8 @@ async def test_copy_column_lists_match_the_migrated_tables(
         "order by ordinal_position",
         t=table,
     )
-    assert [name for (name,) in rows] == columns
+    stored = [name for (name,) in rows if name != "ingest_seq"]  # filled by its default
+    assert stored == columns
 
 
 async def test_streaming_tables_are_hypertables_with_the_planned_chunk_sizes(

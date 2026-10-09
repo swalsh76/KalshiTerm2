@@ -207,6 +207,25 @@ ON CONFLICT (market_id) WHERE removed_at IS NULL DO NOTHING
 CLOSE_PERIOD = (
     "UPDATE watchlist_periods SET removed_at = now() WHERE market_id = $1 AND removed_at IS NULL"
 )
+# The kinds whose tables carry ``ingest_seq`` (the push cursor). Within a batch the tables are
+# COPYed one after another, so a column default would number rows in TABLE order, not in the
+# order messages arrived; instead a block of numbers is reserved per batch and handed out in
+# arrival order, across all four tables (found live: a snapshot got a lower cursor than the
+# deltas that preceded it).
+SEQUENCED = frozenset({"ticker", "trade", "ob_snapshot", "ob_delta"})
+RESERVE_SEQ = """
+WITH first AS (SELECT nextval('ingest_seq') AS n)
+SELECT n, setval('ingest_seq', n + $1 - 1) FROM first
+"""
+# Advance the committed watermark and wake listeners, inside the batch's own transaction: both
+# take effect at commit, together with the rows, so a reader that trusts ``last_seq`` never
+# skips a row that is not yet visible (PLAN §10.3, slice 3.7). Single writer: the sequence's
+# last value is this batch's highest.
+PUBLISH = """
+UPDATE ingest_progress SET last_seq = coalesce(pg_sequence_last_value('ingest_seq'::regclass), 0),
+       updated_at = now()
+RETURNING last_seq
+"""
 # Everything already in trades that trades_watchlist lacks (>= the newest copy, minus exact
 # duplicates, so a re-added market is filled in without repeating or missing a trade).
 COPY_HISTORY = """
@@ -614,11 +633,16 @@ class StreamIngestor:
         for op in ops:
             (watched.add if op.watch else watched.discard)(op.ticker)
         rows: dict[str, list[tuple[Any, ...]]] = {kind: [] for kind in TABLES}
+        arrival: dict[str, list[int]] = {kind: [] for kind in TABLES}  # row -> position in batch
+        sequenced: list[int] = []  # positions of rows that get a cursor, in arrival order
         rejected = 0
-        for item in batch:
+        for position, item in enumerate(batch):
             market_id = ids[item.ticker] if item.kind in ORDINARY_KINDS else 0
             try:
                 rows[item.kind].append(TABLES[item.kind][2](item, market_id))
+                arrival[item.kind].append(position)
+                if item.kind in SEQUENCED:
+                    sequenced.append(position)
                 if item.kind == "trade" and item.ticker in watched:
                     rows["trade_watched"].append(TABLES["trade_watched"][2](item, market_id))
             except (PrecisionError, ValueError) as exc:
@@ -639,13 +663,29 @@ class StreamIngestor:
                         await driver.execute(COPY_HISTORY, market_id)
                     else:
                         await driver.execute(CLOSE_PERIOD, market_id)
+                cursor_at: dict[int, int] = {}
+                if sequenced:  # one block, handed out in arrival order across all tables
+                    first = (await driver.fetchrow(RESERVE_SEQ, len(sequenced)))["n"]
+                    cursor_at = {pos: first + i for i, pos in enumerate(sequenced)}
                 for kind, (table, columns, _) in TABLES.items():
-                    if rows[kind]:
+                    if not rows[kind]:
+                        continue
+                    if kind in SEQUENCED:
+                        records = [
+                            (*row, cursor_at[pos])
+                            for row, pos in zip(rows[kind], arrival[kind], strict=True)
+                        ]
+                        await driver.copy_records_to_table(
+                            table, records=records, columns=[*columns, "ingest_seq"]
+                        )
+                    else:
                         await driver.copy_records_to_table(
                             table, records=rows[kind], columns=columns
                         )
                 if agg:
                     await driver.executemany(UPSERT_STATS, agg.records())
+                watermark = await driver.fetchval(PUBLISH)
+                await driver.execute("SELECT pg_notify('kterm_ingest', $1)", str(watermark))
 
         # Mutate shared state only after the transaction committed, so a retry starts clean.
         self.rejected += rejected

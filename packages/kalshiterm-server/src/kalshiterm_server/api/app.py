@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from kalshiterm_server import db
-from kalshiterm_server.api import errors, markets, rawdata, v1, watchlist
+from kalshiterm_server.api import errors, markets, rawdata, stream, v1, watchlist
 from kalshiterm_server.auth import FailureThrottle
 from kalshiterm_server.config import ServerSettings
 
@@ -31,9 +31,12 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         owned = engine is None
         app.state.engine = engine or db.make_engine(config.db_url)
+        app.state.hub = stream.Hub(config.db_url)
+        await app.state.hub.start()
         try:
             yield
         finally:
+            await app.state.hub.stop()
             if owned:
                 await app.state.engine.dispose()
 
@@ -55,6 +58,7 @@ def create_app(
     app.include_router(markets.router)
     app.include_router(rawdata.router)
     app.include_router(watchlist.router)
+    app.include_router(stream.router)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:

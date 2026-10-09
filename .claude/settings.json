@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp packages/kalshiterm-server/src/kalshiterm_server/api/stream.py *)",
+      "Bash(docker exec kalshiterm-dev-timescaledb-1 psql -U kterm -d kterm -c ' *)",
+      "Bash(pkill -f \"kterm-server api\")",
+      "Bash(pkill -f \"kterm-server ingest\")",
+      "Read(//tmp/**)",
+      "Bash(grep -vE \"^$|NOTICE|DETAIL|HINT\")",
+      "Bash(grep -vE \"^$|NOTICE|DETAIL|HINT|UPDATE\")"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}

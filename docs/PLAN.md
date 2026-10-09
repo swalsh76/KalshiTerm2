@@ -623,6 +623,44 @@ tick/trade: keep a tombstone only for markets that have candle/aggregate/lifecyc
 delete the rest outright (as decision 15 originally read). The storage governor (2.8) must
 watch `markets` size.
 
+**Live push (slice 3.7, 2026-10-09).**
+*Why not `received_at` as the cursor.* Measured on live data: 40-69% of rows are written after a
+row with a later `received_at`, by ~3 s on live streams and up to 22 s with backfill (messages
+arrive in bursts stamped once; bursts interleave; backfilled rows are stamped "now"). A client
+remembering "everything up to X" would silently miss rows. *Instead:* every row of the four
+pushed streams (trades, tickers, orderbook snapshots, orderbook deltas) carries `ingest_seq`,
+one sequence shared by all four, **assigned in arrival order**: each batch reserves a block of
+numbers and hands them out in the order messages arrived. A single writer commits a batch
+atomically, and `ingest_progress.last_seq` plus a `NOTIFY` are written in the same transaction,
+so a reader that trusts the watermark can never skip a row that has not committed. (Invariant:
+exactly one ingest writer; tested with a reader running flat out during real batches.)
+*Protocol* (`wss://host:8700/v1/stream`): authenticate with the bearer header or a first
+`{"op":"auth","token":...}` frame (browsers cannot set headers; tokens never go in the URL;
+same throttle, same uniform failure, close code 4401); `{"op":"subscribe","channels":
+["trades","ticker","orderbook"],"markets":[...],"watchlist":true,"since":"<cursor>"}` replaces
+the subscription; the `subscribed` ack carries the cursor live delivery starts after; events
+(`trade`, `ticker`, `book_snapshot`, `book_delta`) each carry their `cursor`; `caught_up` ends a
+`since` replay; `heartbeat` carries the cursor; `gap` means "refetch over REST" (cursor older
+than the replay horizon, 20 M sequence numbers ~ 3 h); `watchlist_changed` follows the user's
+list (re-read every 15 s). Without `since`, an orderbook subscription first receives each
+market's latest stored snapshot plus the stored changes after it, flagged `replay` and without
+a cursor; deltas whose `(sid, seq)` the client's book already includes are never repeated.
+*Delivery* is by pull, page by page, after the previous page was sent: no unbounded queue; a
+client that stops reading is dropped (1013) and resumes with `since`. Limits (settings): 100
+markets per subscription, 5 connections per user, 5 s to authenticate.
+*Verified live* (real ingest, real server, real client that drops the connection and resumes
+with its last cursor): 10,865 events, no duplicate cursors, strictly increasing, and per stream
+exactly the database's rows for the same cursor range (457/457 trades, 152/152 tickers,
+10,255/10,255 deltas). *Cost:* the column compresses to **3.5 B/row on deltas and 4.8 on
+tickers** (my prediction of "almost nothing" was wrong): ~25-35% on those tables, about 12 GB
+across the retention windows at the planned volumes (2% of the 500 GB budget), plus a
+`(market_id, ingest_seq)` index on hot chunks. Not built: pushing lifecycle events, frame
+batching, per-channel cursors.
+Two bugs found while verifying: the cursor first came from a column default, which numbers
+rows in *table* COPY order within a batch, so a snapshot got a lower cursor than the deltas that
+arrived before it (4 deltas "missing" in one run until traced); and connection slots were
+released only after an `await`, so a cancelled handler leaked them.
+
 **Corrections found while validating the orderbook API against the live exchange (slice 3.5,
 2026-10-09).** Three real bugs in earlier slices, none visible to their own tests:
 1. **Replay order (slice 2.5b).** A delta that follows a snapshot in Kalshi's sequence can carry
@@ -847,7 +885,7 @@ Decisions taken for Phase 3 (2026-10-08; revisit any of them by saying so):
 | 3.4 — done | Reference and candle endpoints (all need a token). `GET /v1/markets` (filters `status`, `event`, `series`, `q` = case-insensitive substring of ticker or event title with `%`/`_` taken literally; ticker-ordered keyset paging via an opaque cursor, 100 per page, max 500), `GET /v1/markets/{ticker}` (adds rules and creation times), `GET /v1/events/{event_ticker}` (with its markets), `GET /v1/markets/{ticker}/candles` (`interval` 1m/1h, `source` trades/ticker, `start`/`end` with required time zones, `limit` up to 5,000, forward paging by cursor; without `start` the most recent bars, oldest first). Every market carries `stage` = full / slim / tombstone so empty rules are not mistaken for missing data. **All prices and counts are decimal strings built from the stored integers** (`"0.560000"`, `"18.50"`; tested at the bigint maximum), timestamps ISO-8601 UTC with microseconds, errors uniform (`{"error": ...}`, parameters named but never echoed). Bars exist only for minutes/hours with activity (no fill-forward); the newest bar can lag by the aggregate's refresh interval (1 min / 15 min). **Measured on 816,558 real markets:** pages 7-11 ms, filters 5-45 ms, worst-case substring search (a full scan) 0.1-0.2 s. Bugs found by the tests: Postgres `sum()` returns `numeric`, which the formatter did not accept (every candle volume would have failed; now exact for whole values and an error, never a rounding, otherwise); Python's lenient base64 decoder accepted `!!!` as a cursor (now strict) |
 | 3.5 — done | Raw-data endpoints (token needed): `GET /v1/markets/{ticker}/trades` (the 30-day table plus the permanent copy, each trade once; keyset paging by time and trade id; most recent N without `start`), `.../ticks` (ticker history; the cursor counts rows already sent at a shared timestamp so ties page exactly), `.../orderbook?at=&depth=` (latest snapshot at or before `at` plus the net of the changes after it **in sequence**; `complete` is false for a REST-built snapshot, a recorded gap since the snapshot, or a change that removes more than existed; best bids/asks derived as 1 - the other side), `GET /v1/gaps`. Found by validating the orderbook against the exchange (see the corrections below) |
 | 3.6 — done | Per-user watchlists: `user_watchlists` (removed with the user), `GET /v1/watchlist`, `PUT` / `DELETE /v1/watchlist/{ticker}` (idempotent; any role manages **its own** list, even admins see only theirs). **Limits (settings, defaults 50 per user and 200 distinct markets server-wide, `KTERM_WATCHLIST_MAX_PER_USER/TOTAL`)** are enforced inside one transaction under an advisory lock (without it three simultaneous users admitted 11 markets against a cap of 6; tested); a market someone already wants costs the server-wide cap nothing. Refused: combos, settled markets, unknown tickers. **The ingest controller watches the union** of the file, the auto top-N and every user's list; a market leaves only when nobody wants it and never within 12 hours of being added (decision 13 extended to users, so add/remove cycling cannot churn the feed); the best claim holds a market (file > user > auto); periods opened for users have source `user`. A light poll (15 s) reconciles early when any list changed, so a new entry is captured in seconds rather than at the 5-minute full cycle; `status` shows watched markets by source and how many users have lists. Live: 3 markets captured at startup, a 4th added while ingest ran was capturing and serving a real book (98 changes applied, bid 0.65 / ask 0.66) 12 s later; a removed market stayed captured (dwell) |
-| 3.7 | Live push: ingest `NOTIFY`s per write batch, WebSocket `/v1/stream` (subscribe to markets / watchlist), `since` cursor catch-up on reconnect. The cursor design is settled at the start of the slice (rows have no unique sequence number; candidate: `received_at`, which also covers backfilled rows) |
+| 3.7 — done | Live push: `ingest_seq` write-order cursor (migration 0016), `/v1/stream` WebSocket. See "Live push" below |
 | deferred | Prometheus `/metrics` (optional in §5.4) goes to the parking lot unless wanted; analytics and alert endpoints arrive with Phase 4 |
 
 ## 11. Risks & Notes

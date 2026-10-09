@@ -30,5 +30,14 @@ class ServerSettings(BaseSettings):
     # Per-user watchlists: each watched market costs orderbook storage, so both are capped.
     watchlist_max_per_user: int = 50
     watchlist_max_total: int = 200  # distinct markets requested by all users together
+    # Live push (/v1/stream)
+    stream_max_markets: int = 100  # per subscription
+    stream_max_connections_per_user: int = 5
+    stream_heartbeat_seconds: float = 15.0
+    stream_auth_timeout: float = 5.0  # for clients that cannot send an Authorization header
+    stream_page: int = 1000  # rows read per table per pull
+    # a client further behind than this many sequence numbers (~3 hours at today's rates) is
+    # told to refetch over REST instead of replaying
+    stream_catchup_horizon: int = 20_000_000
     auth_failure_limit: int = 10  # failed logins from one address ...
     auth_failure_window_seconds: float = 60.0  # ... within this window lock it out for a while
