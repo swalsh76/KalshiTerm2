@@ -871,20 +871,10 @@ Phase 2 is **code-complete at 2.9**: the whole server stack has been rehearsed o
 conditions are met. **Later phases must not wait for it and must not assume calibrated
 numbers**; anything that depends on the results is listed below so it is not forgotten.
 
-**2.10a — volume calibration.** Condition: none (decision 11: the MacBook, sleep disabled).
-Protocol: run the `deploy/` stack (rehearsed in §8.2) with `caffeinate -dimsu` for 48 hours
-against production data, a large budget (so the governor does not interfere), and the real
-default watchlist; save `kterm-server status --json` hourly. Report (in `docs/`) at 24 h and
-48 h: rows and compressed bytes per day for every table; the **fraction of markets that ever
-tick or trade** (decides the tombstone question); orderbook-delta share by market; WAL size;
-the gap log (sleep gaps are expected on a laptop and a good test of backfill); job health.
-Decisions waiting on it:
-- retention windows (§9.2) and whether any should be lengthened given the 500 GB budget;
-- tombstones for all settled markets vs only those with data (parking lot, ~7 GB/year);
-- excluding fast crypto 15-minute books from the auto top-N (parking lot);
-- the compression layout re-check on a full day of data (`segmentby` vs ordering, §9.2);
-- Postgres tuning (`shared_buffers`, `max_wal_size`; untuned defaults today) and the WAL floor;
-- whether 500 GB is the right budget, and the default `auto_top_n`.
+**2.10a — volume calibration: dropped (2026-10-09, by the user).** The 48-hour run is no
+longer wanted. The decisions that waited on it (retention windows, tombstones, crypto 15-minute
+books, compression layout re-check, Postgres tuning, the 500 GB budget and `auto_top_n`) stay
+open and are decided from the live Mac Studio's own `status` history instead.
 
 **2.10b — hardware qualification.** Condition: the 1 TB Thunderbolt 4 SSD is attached to the
 Mac Studio. Checklist, in order (show the commands before running any of them on that host):
@@ -899,6 +889,27 @@ Mac Studio. Checklist, in order (show the commands before running any of them on
 5. Reboot and power-loss behaviour: automatic restart after power failure, the drive mounted
    before Docker starts, ingest resumes by itself, UPS in place.
 6. Record the results here, set the production budget, and make the Mac Studio the host.
+
+**Interim results (2026-10-09, MacBook Pro, 1 TB Sabrent SSD over USB 3.1 at 10 Gb/s, which
+is a slower stand-in for the Thunderbolt 4 drive).** The disk arrived as NTFS (Windows system
+disk, mounted read-only, first seen on a USB 2 port at 480 Mb/s); it was erased and formatted
+APFS. Steps 1 and 2 are done; the drive's own endurance rating is not checked.
+- Host raw: sequential write 987 MB/s and read 900 MB/s (internal: 3.9 GB/s write); a durable
+  8 KB write (`F_FULLFSYNC`) takes 4.4 ms (internal 3.9 ms), i.e. latency is close to internal
+  while bulk throughput is capped by the link.
+- Docker Desktop's disk image moved by setting `"DataFolder": "/Volumes/KalshiData/docker"` in
+  `~/Library/Group Containers/group.com.docker/settings-store.json` with Docker quit (a fresh
+  VM is created there: images and volumes start empty, so back up first). Dev database restored
+  from a `backup` file onto it, counts matching the manifest.
+- Inside the container: `pgbench -s 50` 1,674 TPS (1 client), 6,610 TPS (8 clients), durable
+  commits; a 5M-row insert took 4.2 s plus 1.2 s checkpoint. Caveat: commits at 0.6 ms are
+  faster than the host's 4.4 ms full flush, so the Docker VM does not appear to push every
+  flush through to the flash; `pg_test_fsync` has not been run.
+- Live production ingest (read-only) for 8 minutes: tickers about 645 rows/s and trades about
+  182 rows/s, newest rows 0-1 s old, no errors, 22 jobs healthy. A dump takes 6.4 s (52.6 MB)
+  and a restore of the 952 MB database was quick.
+- Not yet done: steps 3-6 (real server key, host LaunchDaemon, unplug/crash recovery, reboot
+  and power-loss behaviour) and a Thunderbolt link.
 
 Exit criteria: measured numbers recorded in §9 and §11, retention defaults retuned or
 explicitly confirmed, the open questions above closed, the Mac Studio running and healthy.
