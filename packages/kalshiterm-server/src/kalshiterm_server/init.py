@@ -66,6 +66,7 @@ def run_init(
     hosts: list[str] | None = None,
     ips: list[str] | None = None,
     budget_gb: float = 500.0,
+    backup_dir: Path | None = None,
     force: bool = False,
 ) -> InitResult:
     if not out.is_dir():
@@ -74,6 +75,13 @@ def run_init(
         raise InitError("the Kalshi key id must not be empty")
     if budget_gb <= 0:
         raise InitError("the storage budget must be positive")
+    if backup_dir is not None and (
+        not backup_dir.is_absolute() or any(c in str(backup_dir) for c in "\r\n\"'$")
+    ):
+        raise InitError(
+            "--backup-dir must be an absolute path on the HOST (the mounted NAS directory), "
+            "without quotes or $"
+        )
     if not hosts and not ips:
         raise InitError(
             "give --host and/or --ip: the TLS certificate is only valid for the names clients "
@@ -106,6 +114,13 @@ KTERM_HOST_STATE_FILE={HOST_STATE_PATH}
 KALSHI_ENV=production
 KALSHI_KEY_ID={key_id.strip()}
 KALSHI_PRIVATE_KEY_PATH={CONTAINER_KEY_PATH}
+"""
+    if backup_dir is not None:
+        env += f"""\
+# Nightly backups to a directory on another machine (the `backup` service is in this profile)
+COMPOSE_PROFILES=backup
+KTERM_BACKUP_DIR={backup_dir}
+KTERM_BACKUP_TARGET=/backup
 """
     secrets_dir = out / "secrets"
     secrets_dir.mkdir(exist_ok=True)

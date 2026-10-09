@@ -7,6 +7,7 @@
 #   KEY_FILE=~/.kalshiterm/server_key.pem docker compose -f docker-compose.setup.yml run --build --rm \
 #     init --key-id <the server key's id> --host <name clients use> --ip <its LAN address>
 #   docker compose up -d --build
+#   docker compose run --rm backup kterm-server backup init-target   # once, if using backups
 #   docker compose exec ingest kterm-server status
 #   docker compose exec api kterm-server user add <name>
 #   docker compose exec api kterm-server token create --user <name> --role read
@@ -62,6 +63,7 @@ services:
       KTERM_DB_URL: ${KTERM_DB_URL:?run kterm-server init first}
       KTERM_STORAGE_BUDGET_GB: ${KTERM_STORAGE_BUDGET_GB:-500}
       KTERM_HOST_STATE_FILE: ${KTERM_HOST_STATE_FILE:-/hoststate/host.json}
+      KTERM_BACKUP_TARGET: ${KTERM_BACKUP_TARGET:-} # only tells `status` that backups are expected
       KALSHI_ENV: ${KALSHI_ENV:-production}
       KALSHI_KEY_ID: ${KALSHI_KEY_ID:?run kterm-server init first}
       KALSHI_PRIVATE_KEY_PATH: ${KALSHI_PRIVATE_KEY_PATH:-/run/secrets/kalshi_key.pem}
@@ -103,6 +105,7 @@ services:
       KTERM_DB_URL: ${KTERM_DB_URL:?run kterm-server init first}
       KTERM_STORAGE_BUDGET_GB: ${KTERM_STORAGE_BUDGET_GB:-500}
       KTERM_HOST_STATE_FILE: ${KTERM_HOST_STATE_FILE:-/hoststate/host.json}
+      KTERM_BACKUP_TARGET: ${KTERM_BACKUP_TARGET:-}
       # deliberately no KALSHI_* settings: the API never holds the Kalshi key
     volumes:
       - ./secrets/tls_cert.pem:/run/tls/cert.pem:ro
@@ -127,6 +130,34 @@ services:
       start_period: 120s
     restart: unless-stopped
     stop_grace_period: 20s
+    logging: *logging
+
+  # Nightly backup of the database to a directory on another machine (PLAN §10.4). Enabled by
+  # COMPOSE_PROFILES=backup, which `kterm-server init --backup-dir` writes into .env. It has no
+  # route to the internet and holds only the database password.
+  backup:
+    profiles: [backup]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: kalshiterm-server:local
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["kterm-server", "backup", "loop"]
+    environment:
+      KTERM_DB_URL: ${KTERM_DB_URL:?run kterm-server init first}
+      KTERM_BACKUP_TARGET: /backup
+      KTERM_BACKUP_AT: ${KTERM_BACKUP_AT:-07:00} # UTC
+      KTERM_BACKUP_KEEP_DAILY: ${KTERM_BACKUP_KEEP_DAILY:-7}
+      KTERM_BACKUP_KEEP_WEEKLY: ${KTERM_BACKUP_KEEP_WEEKLY:-4}
+    volumes:
+      # The mounted NAS directory on the host. If the NAS is not mounted the marker file is
+      # missing and every backup fails loudly (and `status` says so), never writes locally.
+      - ${KTERM_BACKUP_DIR:-./backup-not-configured}:/backup
+    networks: [internal]
+    restart: unless-stopped
+    stop_grace_period: 30s
     logging: *logging
 
 networks:

@@ -32,6 +32,7 @@ STREAMS = {
 STALE_STREAM = timedelta(minutes=2)  # trades and tickers arrive many times a second
 STALE_SAMPLE = timedelta(minutes=30)  # the governor samples every 10 minutes by default
 STALE_DISCOVERY = timedelta(days=2)
+STALE_BACKUP = timedelta(hours=36)  # one a day, plus slack for a retry
 STALE_HOST_CHECK = timedelta(minutes=5)  # the host script runs every minute
 
 
@@ -41,6 +42,7 @@ async def collect_status(
     disk_path: str,
     now: datetime | None = None,
     host_state_file: str | None = None,
+    backup_configured: bool = False,
 ) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     problems: list[str] = []
@@ -58,6 +60,7 @@ async def collect_status(
     report["jobs"] = await _jobs(engine, problems)
     report["discovery"] = await _discovery(engine, now, problems)
     report["watchlist"] = await _watchlist(engine)
+    report["backup"] = await _backup(engine, now, backup_configured, problems)
     return report
 
 
@@ -302,6 +305,51 @@ async def _watchlist(engine: AsyncEngine) -> dict[str, Any]:
     }
 
 
+async def _backup(
+    engine: AsyncEngine, now: datetime, configured: bool, problems: list[str]
+) -> dict[str, Any]:
+    last_ok = (
+        await _rows(
+            engine,
+            "SELECT finished_at, file, size_bytes, seconds FROM backup_runs "
+            "WHERE status = 'ok' ORDER BY id DESC LIMIT 1",
+        )
+    )[:1]
+    last_failed = (
+        await _rows(
+            engine,
+            "SELECT finished_at, error FROM backup_runs WHERE status = 'failed' "
+            "ORDER BY id DESC LIMIT 1",
+        )
+    )[:1]
+    ok = last_ok[0] if last_ok else None
+    failed = last_failed[0] if last_failed else None
+    out: dict[str, Any] = {
+        "configured": configured,
+        "last_ok": None
+        if ok is None
+        else {
+            "at": ok["finished_at"].isoformat(),
+            "age_seconds": (now - ok["finished_at"]).total_seconds(),
+            "file": ok["file"],
+            "size_bytes": ok["size_bytes"],
+            "seconds": ok["seconds"],
+        },
+        "last_failure": None
+        if failed is None
+        else {"at": failed["finished_at"].isoformat(), "error": failed["error"]},
+    }
+    if ok is None and failed is None and not configured:
+        return out  # backups are not set up here (a development database)
+    if ok is None:
+        problems.append("no backup has ever completed")
+    elif now - ok["finished_at"] > STALE_BACKUP:
+        problems.append(f"last good backup was {_age(now - ok['finished_at'])} ago")
+        if failed is not None and failed["finished_at"] > ok["finished_at"]:
+            problems.append(f"the latest backup attempt failed: {failed['error'][:200]}")
+    return out
+
+
 # ------------------------------------------------------------------ rendering
 
 
@@ -411,4 +459,20 @@ def render(report: dict[str, Any]) -> str:
         f"{w['ever_watched']} ever; {w['users_with_lists']} user(s) with lists wanting "
         f"{w['markets_wanted_by_users']}"
     )
+    backup = report["backup"]
+    ok = backup["last_ok"]
+    if ok:
+        lines.append(
+            f"Backup: last good {_age(timedelta(seconds=ok['age_seconds']))} ago, "
+            f"{_size(ok['size_bytes'])} in {ok['seconds']:.0f}s ({ok['file']})"
+        )
+    elif backup["configured"] or backup["last_failure"]:
+        lines.append("Backup: none has completed")
+    else:
+        lines.append("Backup: not configured")
+    if backup["last_failure"]:
+        lines.append(
+            f"  last failure {backup['last_failure']['at'][:16]}: "
+            f"{backup['last_failure']['error'][:120]}"
+        )
     return "\n".join(lines)
