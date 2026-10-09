@@ -888,6 +888,16 @@ Decisions taken for Phase 3 (2026-10-08; revisit any of them by saying so):
 | 3.7 — done | Live push: `ingest_seq` write-order cursor (migration 0016), `/v1/stream` WebSocket. See "Live push" below |
 | deferred | Prometheus `/metrics` (optional in §5.4) goes to the parking lot unless wanted; analytics and alert endpoints arrive with Phase 4 |
 
+### 10.4 Phase 3b slices (LAN features)
+
+| # | Slice |
+|---|---|
+| 3b.1 | Backup and restore (server): measure a real dump and restore first; `kterm-server backup` / `restore`, retention (7 daily + 4 weekly), a scheduled `backup` service in Compose, loud failure and a mount check, status integration, and a restore drill on a real TimescaleDB container (compressed chunks, continuous aggregates, policy jobs) |
+| 3b.2 | Client foundations: the `kterm` CLI, connection profiles in the user config directory, tokens in the OS keyring (`kterm config`, `--profile`) |
+| 3b.3 | Trust-on-first-use pinning (the client shows the fingerprint, asks, pins the certificate; a changed certificate is refused until explicitly re-trusted) and `kterm server status` |
+| 3b.4 | Discovery: a host-side mDNS advertiser (macOS `dns-sd`, Linux `avahi-publish`; the container cannot advertise through the Docker VM) carrying the certificate fingerprint in its TXT record; `kterm server discover` and a fingerprint cross-check on first connect |
+| deferred | `kterm server logs` (mentioned in §8.6): parking lot |
+
 ## 11. Risks & Notes
 
 - **Client throughput (offline benchmark, `packages/kalshi-core/bench/throughput.py`,
