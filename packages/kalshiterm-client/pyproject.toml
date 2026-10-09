@@ -10,7 +10,15 @@ readme = "README.md"
 license = "MIT"
 license-files = ["../../LICENSE"]
 requires-python = ">=3.11"
-dependencies = ["kalshi-core"]
+dependencies = [
+    "kalshi-core",
+    "typer>=0.12",
+    "platformdirs>=4.2",
+    "keyring>=25",
+]
+
+[project.scripts]
+kterm = "kalshiterm_client.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kalshiterm_client"]
