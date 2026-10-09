@@ -27,6 +27,7 @@ class ProfileError(Exception):
 class Profile:
     name: str
     url: str
+    fingerprint: str | None = None  # SHA-256 of the pinned certificate, "AB:CD:..."
 
 
 def config_dir() -> Path:
@@ -36,6 +37,11 @@ def config_dir() -> Path:
 
 def profiles_path() -> Path:
     return config_dir() / FILE_NAME
+
+
+def pin_path(name: str) -> Path:
+    """Where a profile's pinned certificate (public, not secret) is kept."""
+    return config_dir() / "certs" / f"{check_name(name)}.pem"
 
 
 def check_name(name: str) -> str:
@@ -121,7 +127,8 @@ class ProfileStore:
         if name not in profiles:
             known = ", ".join(sorted(profiles)) or "none yet"
             raise ProfileError(f"no profile named {name!r} (have: {known}); see `kterm config add`")
-        return Profile(name, profiles[name]["url"])
+        entry = profiles[name]
+        return Profile(name, entry["url"], entry.get("fingerprint"))
 
     def add(self, name: str, url: str, *, replace: bool = False) -> Profile:
         check_name(name)
@@ -129,11 +136,18 @@ class ProfileStore:
         profiles: dict[str, dict[str, str]] = data["profiles"]  # type: ignore[assignment]
         if name in profiles and not replace:
             raise ProfileError(f"profile {name!r} already exists (use --replace to change it)")
-        profiles[name] = {"url": normalise_url(url)}
+        address = normalise_url(url)
+        previous = profiles.get(name)
+        keep_pin = previous is not None and previous["url"] == address and "fingerprint" in previous
+        profiles[name] = {"url": address}
+        if keep_pin and previous is not None:
+            profiles[name]["fingerprint"] = previous["fingerprint"]
         if data.get("default") is None:
             data["default"] = name  # the first profile is the default
         self._write(data)
-        return Profile(name, profiles[name]["url"])
+        if previous is not None and not keep_pin:
+            pin_path(name).unlink(missing_ok=True)  # a different server needs a fresh decision
+        return self.get(name)
 
     def remove(self, name: str) -> None:
         data = self._read()
@@ -141,8 +155,23 @@ class ProfileStore:
         if name not in profiles:
             raise ProfileError(f"no profile named {name!r}")
         del profiles[name]
+        pin_path(name).unlink(missing_ok=True)
         if data.get("default") == name:
             data["default"] = sorted(profiles)[0] if profiles else None
+        self._write(data)
+
+    def save_pin(self, name: str, pem: bytes, fingerprint: str) -> None:
+        """Pin ``pem`` for a profile: the file first, then the fingerprint that vouches for it."""
+        data = self._read()
+        profiles: dict[str, dict[str, str]] = data["profiles"]  # type: ignore[assignment]
+        if name not in profiles:
+            raise ProfileError(f"no profile named {name!r}")
+        path = pin_path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(pem)
+        os.replace(tmp, path)
+        profiles[name]["fingerprint"] = fingerprint
         self._write(data)
 
     def use(self, name: str) -> None:
