@@ -48,6 +48,8 @@ mypy_path = [
     "packages/kalshiterm-client/src",
 ]
 explicit_package_bases = true
+# two packages have a conftest.py; the client's is a shim around tests/client_fixtures.py
+exclude = ["packages/kalshiterm-client/tests/conftest\\.py"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

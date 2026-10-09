@@ -958,10 +958,22 @@ Decisions taken for Phase 3 (2026-10-08; revisit any of them by saying so):
 
 ### 10.4 Phase 3b slices (LAN features)
 
+**3b.2 as built.** `kterm` (entry point of `kalshiterm-client`, Typer) with `kterm config
+add|list|show|use|token|remove` and a global `--profile/-p` (or `KTERM_PROFILE`). Profiles are
+`profiles.json` in the platform config directory (`platformdirs`; override with
+`KTERM_CONFIG_DIR`), written atomically with mode 0600, holding only name and address; the
+first profile is the default. Addresses must be `https://` (plain `http://` only for loopback,
+so a token never crosses the LAN in the clear). **Tokens live only in the OS keyring** (macOS
+Keychain, Windows Credential Locker, Secret Service), entered with a hidden prompt or
+`--token-stdin`, format-checked, never echoed or written to a file; without a keyring
+(headless) `KTERM_TOKEN` supplies one, and there is no plaintext fallback. Everything is
+validated before anything is written. Pinned certificate fingerprints join the profile in
+3b.3. Checked against the real macOS Keychain (add, read, delete).
+
 | # | Slice |
 |---|---|
 | 3b.1 — done | Backup and restore (server): measure a real dump and restore first; `kterm-server backup` / `restore`, retention (7 daily + 4 weekly), a scheduled `backup` service in Compose, loud failure and a mount check, status integration, and a restore drill on a real TimescaleDB container (compressed chunks, continuous aggregates, policy jobs) |
-| 3b.2 | Client foundations: the `kterm` CLI, connection profiles in the user config directory, tokens in the OS keyring (`kterm config`, `--profile`) |
+| 3b.2 — done | Client foundations: the `kterm` CLI, connection profiles in the user config directory, tokens in the OS keyring (`kterm config`, `--profile`) |
 | 3b.3 | Trust-on-first-use pinning (the client shows the fingerprint, asks, pins the certificate; a changed certificate is refused until explicitly re-trusted) and `kterm server status` |
 | 3b.4 | Discovery: a host-side mDNS advertiser (macOS `dns-sd`, Linux `avahi-publish`; the container cannot advertise through the Docker VM) carrying the certificate fingerprint in its TXT record; `kterm server discover` and a fingerprint cross-check on first connect |
 | deferred | `kterm server logs` (mentioned in §8.6): parking lot |
