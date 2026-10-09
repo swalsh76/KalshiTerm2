@@ -129,13 +129,13 @@ async def test_markets_move_through_full_then_slim_then_tombstone_by_age(
     await add_market(engine, "KXF-E3-OLD", "KXF-E3", 100)
     await add_market(engine, "KXF-E4-OPEN", "KXF-E4", None)  # created 200 days ago, unsettled
 
-    await run_job_named(engine, "expire_markets")
+    state = await run_job_named(engine, "expire_markets")
 
-    assert is_full(await market(engine, "KXF-E1-FRESH"))
-    assert is_slim(await market(engine, "KXF-E2-MID"))
+    assert is_full(await market(engine, "KXF-E1-FRESH")), state
+    assert is_slim(await market(engine, "KXF-E2-MID")), state
     old = await market(engine, "KXF-E3-OLD")
     assert is_tombstone(old) and old["ticker"] == "KXF-E3-OLD"
-    assert is_full(await market(engine, "KXF-E4-OPEN"))  # unsettled markets never expire
+    assert is_full(await market(engine, "KXF-E4-OPEN")), state  # unsettled markets never expire
 
 
 async def test_watched_and_pinned_markets_are_slimmed_but_never_tombstoned(
@@ -152,10 +152,10 @@ async def test_watched_and_pinned_markets_are_slimmed_but_never_tombstoned(
             text("insert into pins (market_id, note) values (:m, 'keep')"), {"m": pinned}
         )
 
-    await run_job_named(engine, "expire_markets")
+    state = await run_job_named(engine, "expire_markets")
 
-    assert is_slim(await market(engine, "KXW-E1-A"))  # a closed watch period still counts
-    assert is_slim(await market(engine, "KXW-E2-B"))
+    assert is_slim(await market(engine, "KXW-E1-A")), state  # a closed watch period still counts
+    assert is_slim(await market(engine, "KXW-E2-B")), state
     assert await events(engine) == ["KXW-E1", "KXW-E2"]
 
 
@@ -177,10 +177,10 @@ async def test_events_are_deleted_only_when_all_their_markets_have_expired(
             )
         )
 
-    await run_job_named(engine, "expire_markets")
+    state = await run_job_named(engine, "expire_markets")
 
     assert await events(engine) == ["KXE-2", "KXE-3", "KXE-4"]
-    assert is_tombstone(await market(engine, "KXE-1-A"))  # the tombstones remain
+    assert is_tombstone(await market(engine, "KXE-1-A")), state  # the tombstones remain
 
 
 async def test_running_twice_changes_nothing_the_second_time(engine: AsyncEngine) -> None:
@@ -188,8 +188,8 @@ async def test_running_twice_changes_nothing_the_second_time(engine: AsyncEngine
     await add_market(engine, "KXI-E2-B", "KXI-E2", 100)
     await run_job_named(engine, "expire_markets")
     first = [await market(engine, t) for t in ("KXI-E1-A", "KXI-E2-B")]
-    await run_job_named(engine, "expire_markets")
-    assert [await market(engine, t) for t in ("KXI-E1-A", "KXI-E2-B")] == first
+    state = await run_job_named(engine, "expire_markets")
+    assert [await market(engine, t) for t in ("KXI-E1-A", "KXI-E2-B")] == first, state
 
 
 async def test_a_tombstone_keeps_its_id_so_old_data_still_joins_to_its_ticker(
@@ -218,8 +218,8 @@ async def test_a_tombstone_that_discovery_refills_is_reduced_again_by_the_next_r
     engine: AsyncEngine,
 ) -> None:
     await add_market(engine, "KXR-E1-A", "KXR-E1", 100)
-    await run_job_named(engine, "expire_markets")
-    assert is_tombstone(await market(engine, "KXR-E1-A"))
+    state = await run_job_named(engine, "expire_markets")
+    assert is_tombstone(await market(engine, "KXR-E1-A")), state
 
     await reference.upsert(  # Kalshi touched the old market, so discovery rewrote it in full
         engine,
@@ -243,8 +243,8 @@ async def test_a_tombstone_that_discovery_refills_is_reduced_again_by_the_next_r
     )
     assert (await market(engine, "KXR-E1-A"))["rules_primary"] == "Rules one"
 
-    await run_job_named(engine, "expire_markets")
-    assert is_tombstone(await market(engine, "KXR-E1-A"))
+    state = await run_job_named(engine, "expire_markets")
+    assert is_tombstone(await market(engine, "KXR-E1-A")), state
 
 
 async def test_the_windows_come_from_the_job_config(engine: AsyncEngine) -> None:
@@ -257,8 +257,8 @@ async def test_the_windows_come_from_the_job_config(engine: AsyncEngine) -> None
                 "from timescaledb_information.jobs where proc_name = 'expire_markets'"
             )
         )
-    await run_job_named(engine, "expire_markets")
-    assert is_tombstone(await market(engine, "KXC-E1-A"))
+    state = await run_job_named(engine, "expire_markets")
+    assert is_tombstone(await market(engine, "KXC-E1-A")), state
 
 
 async def test_a_pin_must_point_at_a_real_market(engine: AsyncEngine) -> None:
