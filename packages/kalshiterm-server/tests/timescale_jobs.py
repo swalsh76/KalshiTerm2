@@ -32,8 +32,41 @@ async def quiet_background_jobs(engine: AsyncEngine) -> None:
             await asyncio.sleep(0.05)
 
 
-async def run_job_named(engine: AsyncEngine, proc_name: str) -> None:
-    """Run a user-defined job (one with no hypertable) now."""
+async def job_state(engine: AsyncEngine, proc_name: str) -> str:
+    """What Timescale and Postgres say about a job right now, for failure messages."""
+    async with engine.connect() as conn:
+        jobs = (
+            await conn.execute(
+                text(
+                    "select j.job_id, j.scheduled, j.config, s.job_status, s.last_run_status, "
+                    "s.total_runs, s.last_run_started_at from timescaledb_information.jobs j "
+                    "left join timescaledb_information.job_stats s using (job_id) "
+                    "where j.proc_name = :p"
+                ),
+                {"p": proc_name},
+            )
+        ).all()
+        others = (
+            await conn.execute(
+                text(
+                    "select application_name, state, left(query, 60) from pg_stat_activity "
+                    "where datname = current_database() and pid <> pg_backend_pid() "
+                    "and backend_type <> 'client backend' or application_name like '%job%'"
+                )
+            )
+        ).all()
+    return (
+        f"job {proc_name}: {[tuple(r) for r in jobs]}; other backends: {[tuple(r) for r in others]}"
+    )
+
+
+async def run_job_named(engine: AsyncEngine, proc_name: str) -> str:
+    """Run a user-defined job (one with no hypertable) now; returns its state for messages.
+
+    Tests put the result in their assertion messages (``assert ok, state``): the one failure
+    seen so far (CI, 2026-10-09: a market the job should have slimmed was not) could not be
+    explained from the assertion alone.
+    """
     async with engine.connect() as conn:
         job = (
             await conn.execute(
@@ -41,9 +74,11 @@ async def run_job_named(engine: AsyncEngine, proc_name: str) -> None:
                 {"p": proc_name},
             )
         ).scalar_one()
+    before = await job_state(engine, proc_name)
     async with engine.connect() as conn:
         auto = await conn.execution_options(isolation_level="AUTOCOMMIT")
         await auto.execute(text(f"CALL run_job({job})"))
+    return f"before: {before}\nafter: {await job_state(engine, proc_name)}"
 
 
 async def quiet_database(url: str) -> None:
