@@ -908,8 +908,21 @@ APFS. Steps 1 and 2 are done; the drive's own endurance rating is not checked.
 - Live production ingest (read-only) for 8 minutes: tickers about 645 rows/s and trades about
   182 rows/s, newest rows 0-1 s old, no errors, 22 jobs healthy. A dump takes 6.4 s (52.6 MB)
   and a restore of the 952 MB database was quick.
-- Not yet done: steps 3-6 (real server key, host LaunchDaemon, unplug/crash recovery, reboot
-  and power-loss behaviour) and a Thunderbolt link.
+- **Step 4, drive-loss test (2026-10-09, 20:05 UTC, ingest running):** `diskutil unmount force`
+  under load, 10 minutes later remount. Postgres PANICked at once on `fdatasync ... I/O error`
+  (the right response: it does not carry on after a failed flush) and the Docker VM kept a
+  stale handle to the image, so after remounting Postgres stayed at "rejecting connections"
+  with I/O errors until **Docker Desktop was restarted**. Then crash recovery took 0.73 s
+  (redo from 1/84E84710), the server accepted connections 2 s later, and a full scan of the large
+  tables showed 0 checksum failures and 0 duplicate trades. Ingest, restarted, opened gap #36
+  and backfilled 86,137 trades; trades are continuous minute by minute across the outage.
+  **Lost for good: about 9.5 minutes of tickers (20:05:47 to 20:15:xx)** and, had a watchlist
+  been running, orderbook deltas, because Kalshi has no history for them; the gap log only
+  tracks trades. So: a lost drive needs an operator (remount, restart Docker), `status` and the
+  host check must make that visible, and recovery itself is safe.
+- Not yet done: steps 3, 5 and 6 (real server key, host LaunchDaemon, reboot and power-loss
+  behaviour, power-fail restart) and a Thunderbolt link. The test above was a software
+  unmount, not a physical unplug or power cut.
 
 Exit criteria: measured numbers recorded in §9 and §11, retention defaults retuned or
 explicitly confirmed, the open questions above closed, the Mac Studio running and healthy.
@@ -1045,4 +1058,5 @@ Ideas raised but **not** in scope. Not to be built until promoted into a phase.
 - Run the containers as a non-root user (needs a uid strategy that works on both Docker Desktop and Linux bind mounts). Raised 2026-10-08; today they run as root with a read-only key mount, no published ports and an internal-only database network.
 - Make the first watchlist cycle retry after ~1 minute while there are no trades to rank, instead of waiting the full 5 minutes.
 - Tombstones only for markets that have data (candles, lifecycle events); delete the rest outright. Raised 2026-10-08 after measuring ~7 GB/year of tombstones; decide after the 2.10 calibration run.
+- Record ticker and orderbook holes in the gap log and `status`, not only missing trades. Kalshi keeps no history for them, so they cannot be repaired, but a gap should still be visible (the 2026-10-09 drive-loss test lost about 9.5 minutes of tickers without any report). Raised 2026-10-09; decide later.
 - Exclude the fast crypto 15-minute books from the auto top-N (they made 58% of orderbook deltas in the 2.7a sample). Raised 2026-10-07; deferred until the storage governor (2.8) shows whether it is needed.
