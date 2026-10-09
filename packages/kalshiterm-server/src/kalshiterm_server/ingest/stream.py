@@ -85,10 +85,10 @@ TRADE_COLUMNS = [
 ]  # fmt: skip
 OB_SNAPSHOT_COLUMNS = [
     "ts", "received_at", "market_id", "seq", "approximate", "yes_prices_e6", "yes_sizes_e2",
-    "no_prices_e6", "no_sizes_e2",
+    "no_prices_e6", "no_sizes_e2", "sid",
 ]  # fmt: skip
 OB_DELTA_COLUMNS = [
-    "ts", "received_at", "market_id", "seq", "is_yes", "price_e6", "delta_e2",
+    "ts", "received_at", "market_id", "seq", "is_yes", "price_e6", "delta_e2", "sid",
 ]  # fmt: skip
 LIFECYCLE_COLUMNS = [
     "ts", "received_at", "market_id", "event_type", "open_ts", "close_ts", "determination_ts",
@@ -274,7 +274,9 @@ class StreamIngestor:
         retry_max: float = 30.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.time,
+        settle_timeout: float = 30.0,
     ) -> None:
+        self._settle_timeout = settle_timeout
         self._messages = messages
         self._engine = engine
         self._batch_size = batch_size
@@ -416,6 +418,7 @@ class StreamIngestor:
                     event.book.approximate,
                     [to_e6(p) for p, _ in yes], [to_e2(q) for _, q in yes],
                     [to_e6(p) for p, _ in no], [to_e2(q) for _, q in no],
+                    message.sid if message else None,
                 )  # fmt: skip
             else:
                 assert message is not None
@@ -426,7 +429,7 @@ class StreamIngestor:
                 ts = from_ms(exchange_ms) if exchange_ms else received
                 extra = (
                     message.seq, payload.side == "yes", to_e6(payload.price_dollars),
-                    to_e2(payload.delta_fp),
+                    to_e2(payload.delta_fp), message.sid,
                 )  # fmt: skip
         except PrecisionError as exc:
             self.rejected += 1
@@ -537,11 +540,20 @@ class StreamIngestor:
         agg, self._agg = self._agg, Aggregates()
         self._in_flight = len(batch)
         attempt = 0
+        settled = False  # the batch's fate was decided in the cancellation handler below
         try:
             while True:
                 started = time.monotonic()
+                # The write runs as its own task and is shielded: cancelling this flush must
+                # not abandon a transaction the database may still commit.
+                write = asyncio.ensure_future(self._write(batch, agg))
                 try:
-                    await self._write(batch, agg)
+                    await asyncio.shield(write)
+                except asyncio.CancelledError:
+                    settled = True
+                    if not await self._committed(write):
+                        self._restore(batch, agg)  # it did not commit: keep the data
+                    raise
                 except Exception as exc:
                     attempt += 1
                     self.retries += 1
@@ -557,11 +569,30 @@ class StreamIngestor:
                 self._record_delays(batch)
                 return
         except asyncio.CancelledError:
-            self._restore(batch, agg)  # keep the data; the shutdown drain writes it
+            if not settled:  # cancelled between attempts: nothing was in flight
+                self._restore(batch, agg)  # keep the data; the shutdown drain writes it
             raise
         finally:
             self._in_flight = 0
             self._space.set()
+
+    async def _committed(self, write: "asyncio.Future[None]") -> bool:
+        """After a cancellation: did the write that was in flight commit?
+
+        Restoring a batch that did commit writes it twice (found live: every graceful stop
+        duplicated the last second of every table); dropping one that did not loses it. So wait
+        for the write's own verdict. If it never arrives, assume it may have committed: a lost
+        final batch is repaired for trades by the startup backfill, a duplicate is not repaired
+        by anything.
+        """
+        deadline = time.monotonic() + self._settle_timeout
+        while not write.done() and (remaining := deadline - time.monotonic()) > 0:
+            with contextlib.suppress(asyncio.CancelledError):  # the cancellation is re-raised
+                await asyncio.wait({write}, timeout=remaining)
+        if not write.done():
+            log.error("final write did not finish in %.0f s: not retrying it", self._settle_timeout)
+            return True
+        return not write.cancelled() and write.exception() is None
 
     def _restore(self, batch: list[Item], agg: Aggregates) -> None:
         self._buffer[:0] = batch

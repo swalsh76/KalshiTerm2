@@ -278,3 +278,46 @@ async def test_backfilled_trades_of_a_watched_market_also_reach_the_permanent_co
         await until(lambda: env.ingestor.written["trades_watchlist"] == 1)
         await env.stop()
     assert await scalar(migrated_db_url, "select count(*) from trades_watchlist") == 1
+
+
+async def test_a_trade_in_the_sliver_the_second_rounding_adds_is_recognised_as_stored(
+    migrated_db_url: str,
+) -> None:
+    """Found live: REST returns whole seconds, so it hands back trades just before the window
+    start that an exact-timestamp lookup of stored ids did not cover; they were stored twice.
+    The trade is written straight to the database, as a *previous* process would have left it
+    (the running ingestor's own memory of recent ids would otherwise hide the problem)."""
+    trade_id = str(uuid.uuid4())
+    engine = db.make_engine(migrated_db_url)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO markets (ticker, event_ticker, market_type, status) "
+                "VALUES ('KXA-E1-X', 'KXA-E1', 'binary', 'active')"
+            )
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO trades (ts, received_at, market_id, trade_id, yes_price_e6, "
+                "count_e2) SELECT :ts, :ts, id, :t, 560000, 300 FROM markets"
+            ),
+            {"ts": T0 - timedelta(seconds=8.8), "t": uuid.UUID(trade_id)},
+        )
+    await engine.dispose()
+
+    env = Env(migrated_db_url, FakeRest([rest_trade(trade_id, at=timedelta(seconds=-8.8))]))
+    async with asyncio.timeout(30):
+        # gap started at +1.5 s, so the padded window starts at -8.5 s: REST rounds down to -9 s
+        env.backfiller.report(gap(timedelta(seconds=1.5), timedelta(seconds=5)))
+        await until(lambda: env.backfiller.processed == 1)
+        await env.stop()
+    assert env.rest.calls[0]["min_ts"] == T_MS // 1000 - 9  # the sliver really was requested
+    assert await rows_and_ids(migrated_db_url) == (1, 1)  # one row, not two
+    assert (await gap_rows(migrated_db_url))[0][1:5] == ("done", 1, 0, 1)  # found 1, added 0, dup 1
+
+
+async def rows_and_ids(url: str) -> tuple[int, int]:
+    return (
+        await scalar(url, "select count(*) from trades"),
+        await scalar(url, "select count(distinct trade_id) from trades"),
+    )

@@ -144,11 +144,22 @@ class GapBackfiller:
         )
 
     async def _fetch(self, start: datetime, end: datetime, counts: Counter[str]) -> None:
+        # REST takes whole seconds, so it returns trades from the rounded-off sliver before
+        # ``start``. Look up what is already stored over that same rounded range, plus a margin
+        # (the live stream stamps milliseconds, REST microseconds), or those trades would be
+        # fetched but not recognised and stored twice (found live, 2026-10-09).
+        low, high = math.floor(start.timestamp()), math.ceil(end.timestamp())
+        pad = timedelta(seconds=2)
         async with self._engine.connect() as conn:
-            found = await conn.execute(text(KNOWN_IDS), {"a": start, "b": end})
+            found = await conn.execute(
+                text(KNOWN_IDS),
+                {
+                    "a": datetime.fromtimestamp(low, UTC) - pad,
+                    "b": datetime.fromtimestamp(high, UTC) + pad,
+                },
+            )
             known = {row[0] for row in found}
-        params = {"min_ts": math.floor(start.timestamp()), "max_ts": math.ceil(end.timestamp())}
-        async for trade in self._rest.iter_trades(limit=1000, **params):
+        async for trade in self._rest.iter_trades(limit=1000, min_ts=low, max_ts=high):
             counts[await self._ingestor.backfill_trade(trade, known)] += 1
 
     async def _open(self, gap: GapInfo, start: datetime, end: datetime, note: str) -> int:
