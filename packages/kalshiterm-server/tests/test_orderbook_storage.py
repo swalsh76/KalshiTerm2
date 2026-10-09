@@ -305,3 +305,29 @@ async def test_a_value_finer_than_the_scale_is_rejected_without_stopping_the_res
     ingestor = await ingest(migrated_db_url, events)
     assert ingestor.rejected == 1 and ingestor.written["orderbook_deltas"] == 1
     assert "rejected orderbook delta" in caplog.text
+
+
+async def test_the_subscription_id_is_stored_with_every_snapshot_and_delta(
+    migrated_db_url: str,
+) -> None:
+    tracker = BookTracker()
+    tracker.begin_subscription(5, ["MKT-A"])
+    events = events_for(
+        tracker,
+        [
+            snap_msg(5, 1, "MKT-A", [("0.40", "10.00")], []),
+            delta_msg(5, 2, "MKT-A", "yes", "0.40", "1.00", offset_ms=10),
+        ],
+    )
+    events.append(
+        tracker.apply_rest_snapshot(
+            "MKT-A", OrderBook(yes=[PriceLevel(price=D("0.45"), quantity=D("2.00"))], no=[])
+        )
+    )
+    await ingest(migrated_db_url, events)
+    snaps = await rows(
+        migrated_db_url,
+        "select seq, sid, approximate from orderbook_snapshots order by ts, seq nulls last",
+    )
+    assert snaps == [(1, 5, False), (None, None, True)]  # a REST rebuild has neither
+    assert await rows(migrated_db_url, "select seq, sid from orderbook_deltas") == [(2, 5)]

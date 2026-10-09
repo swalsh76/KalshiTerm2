@@ -623,6 +623,33 @@ tick/trade: keep a tombstone only for markets that have candle/aggregate/lifecyc
 delete the rest outright (as decision 15 originally read). The storage governor (2.8) must
 watch `markets` size.
 
+**Corrections found while validating the orderbook API against the live exchange (slice 3.5,
+2026-10-09).** Three real bugs in earlier slices, none visible to their own tests:
+1. **Replay order (slice 2.5b).** A delta that follows a snapshot in Kalshi's sequence can carry
+   an *earlier* exchange timestamp, so replaying "deltas newer than the snapshot" by time drops
+   it (2 of ~1,800 around one snapshot; enough to drive a level negative later). Rows now store
+   the subscription id (`sid`, migration 0014) and books are rebuilt from the same `sid` with a
+   larger `seq`; rows without one (REST-built snapshots, pre-migration) fall back to time.
+2. **Duplicate writes on every graceful stop (slice 2.3 flush design, exposed by 2.9).** A stop
+   request arriving mid-write was treated as "the write failed", the batch was put back, and the
+   drain wrote it again although the database had often committed it: 671 delta rows, 369
+   trades and 1,310 ticker groups doubled in one test run. In-flight writes are now shielded and
+   their verdict awaited before deciding; if no verdict arrives in 30 s the batch is *not*
+   retried (a lost final batch of trades is repaired by the startup backfill; a duplicate is
+   repaired by nothing).
+3. **Duplicate trades from the startup backfill (slice 2.6).** REST takes whole seconds and
+   returned trades from the sliver before the window start that the "already stored" lookup
+   (exact timestamps) did not cover. The lookup now uses the same rounded range plus 2 s. The
+   2.6 live check compared *sets* of trade ids, which cannot show duplicate rows.
+Lessons: validate with **row counts**, not sets; and compare against the exchange only when
+(a) ingestion is running (a stored book is only as fresh as the last flush, <= 1 s) and (b) the
+exchange's own book held still across the read (two REST reads 1 s apart differ by 15-67 of
+85-276 levels on active markets, so any naive comparison looks like a failure). Deterministic
+self-check: a snapshot plus the deltas up to the next snapshot of the same `sid` reproduced
+that snapshot exactly (4/4 pairs, one with 11,838 deltas). Final live result: **26 of 26**
+non-empty books that held still matched Kalshi exactly (replays of up to 750 deltas), zero
+duplicate rows in any table after two runs plus a startup backfill.
+
 **Candles and retention (slice 2.7b, 2026-10-07):** continuous aggregates `candles_1m` /
 `candles_1h` (trades: open, high, low, close, volume, count; forever) and `ticker_1m` (30 days) /
 `ticker_1h` (forever) (price OHLC without null prices, last bid/ask, volume, open interest, tick
@@ -818,7 +845,7 @@ Decisions taken for Phase 3 (2026-10-08; revisit any of them by saying so):
 | 3.2 — done | Users and tokens: `users`, `api_tokens`, roles `read` / `admin`, `kterm-server user add/list/remove` and `token create/list/revoke` (the token goes alone to standard output, once), bearer-auth dependency, `/v1/me`, admin-only `/v1/status` (the `status` report), failed-auth throttling. Design: token = `kt_<id>_<256-bit secret>`; only the SHA-256 of the secret is stored; one row is fetched by id and compared in constant time; **every failure (missing, malformed, unknown, wrong, revoked, expired, removed user) returns the identical 401**; 10 failures in 60 s from one address locks it out with 429 + `Retry-After` (valid tokens included; in memory, bounded; configurable via `KTERM_AUTH_FAILURE_LIMIT/WINDOW_SECONDS`); `last_used_at` is written at most once a minute; tokens never appear in logs or `repr`s (tested). Found by the tests: Python's `\d` accepts non-ASCII digits, so token ids are now ASCII-only. Not yet built: token rotation, per-token scopes beyond the two roles, throttling by token (add if abuse appears) |
 | 3.3 — done | TLS and deployment: `init --host/--ip` generates the self-signed certificate (ECDSA P-256, 365 days, not a CA, server-auth only; names = given hosts + `<host>.local` + localhost/loopback), `cert show` / `cert rotate`, `api` service in Compose (the only published port, 8700; least-privilege secret mounts), tested with a real TLS handshake: untrusted by default, trusted when pinned, hostname mismatch refused, TLS 1.1 refused, old pin fails after rotation; rehearsed on the MacBook over the LAN address |
 | 3.4 — done | Reference and candle endpoints (all need a token). `GET /v1/markets` (filters `status`, `event`, `series`, `q` = case-insensitive substring of ticker or event title with `%`/`_` taken literally; ticker-ordered keyset paging via an opaque cursor, 100 per page, max 500), `GET /v1/markets/{ticker}` (adds rules and creation times), `GET /v1/events/{event_ticker}` (with its markets), `GET /v1/markets/{ticker}/candles` (`interval` 1m/1h, `source` trades/ticker, `start`/`end` with required time zones, `limit` up to 5,000, forward paging by cursor; without `start` the most recent bars, oldest first). Every market carries `stage` = full / slim / tombstone so empty rules are not mistaken for missing data. **All prices and counts are decimal strings built from the stored integers** (`"0.560000"`, `"18.50"`; tested at the bigint maximum), timestamps ISO-8601 UTC with microseconds, errors uniform (`{"error": ...}`, parameters named but never echoed). Bars exist only for minutes/hours with activity (no fill-forward); the newest bar can lag by the aggregate's refresh interval (1 min / 15 min). **Measured on 816,558 real markets:** pages 7-11 ms, filters 5-45 ms, worst-case substring search (a full scan) 0.1-0.2 s. Bugs found by the tests: Postgres `sum()` returns `numeric`, which the formatter did not accept (every candle volume would have failed; now exact for whole values and an error, never a rounding, otherwise); Python's lenient base64 decoder accepted `!!!` as a cursor (now strict) |
-| 3.5 | Raw-data endpoints: trades, ticker history, orderbook at a time (latest snapshot plus replayed deltas), gaps log |
+| 3.5 — done | Raw-data endpoints (token needed): `GET /v1/markets/{ticker}/trades` (the 30-day table plus the permanent copy, each trade once; keyset paging by time and trade id; most recent N without `start`), `.../ticks` (ticker history; the cursor counts rows already sent at a shared timestamp so ties page exactly), `.../orderbook?at=&depth=` (latest snapshot at or before `at` plus the net of the changes after it **in sequence**; `complete` is false for a REST-built snapshot, a recorded gap since the snapshot, or a change that removes more than existed; best bids/asks derived as 1 - the other side), `GET /v1/gaps`. Found by validating the orderbook against the exchange (see the corrections below) |
 | 3.6 | Per-user watchlists: `user_watchlists`, `/v1/watchlist` CRUD; the ingest controller watches the **union** of the config file, auto top-N and every user's list (a market leaves only when no one wants it) |
 | 3.7 | Live push: ingest `NOTIFY`s per write batch, WebSocket `/v1/stream` (subscribe to markets / watchlist), `since` cursor catch-up on reconnect. The cursor design is settled at the start of the slice (rows have no unique sequence number; candidate: `received_at`, which also covers backfilled rows) |
 | deferred | Prometheus `/metrics` (optional in §5.4) goes to the parking lot unless wanted; analytics and alert endpoints arrive with Phase 4 |
