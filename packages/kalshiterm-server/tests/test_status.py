@@ -1,7 +1,7 @@
 import json
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -227,3 +227,61 @@ async def test_status_includes_the_host_drive_report_when_configured(
     assert "Host drive (/Volumes/KalshiData): NOT MOUNTED" in render(report)
     unconfigured = await collect_status(engine, 100, str(tmp_path))
     assert unconfigured["host"] is None and unconfigured["problems"] == []
+
+
+async def _backup_run(engine: AsyncEngine, status: str, ago: timedelta, error: str = "") -> None:
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "insert into backup_runs (started_at, finished_at, status, file, size_bytes, "
+                "seconds, error) values (:at, "
+                ":at, :s, 'kterm-x.dump', 52000000, 7, :e)"
+            ),
+            {"at": datetime.now(UTC) - ago, "s": status, "e": error},
+        )
+
+
+async def test_backups_are_not_expected_where_none_are_configured(
+    engine: AsyncEngine, tmp_path: Path
+) -> None:
+    await healthy(engine)
+    report = await collect_status(engine, 100, str(tmp_path))
+    assert report["problems"] == [] and report["backup"]["configured"] is False
+    assert "Backup: not configured" in render(report)
+
+
+async def test_a_configured_server_with_no_backup_yet_is_a_problem(
+    engine: AsyncEngine, tmp_path: Path
+) -> None:
+    await healthy(engine)
+    report = await collect_status(engine, 100, str(tmp_path), backup_configured=True)
+    assert report["problems"] == ["no backup has ever completed"]
+    assert "Backup: none has completed" in render(report)
+
+
+async def test_a_recent_backup_is_fine_and_an_old_one_is_a_problem_with_the_reason(
+    engine: AsyncEngine, tmp_path: Path
+) -> None:
+    await healthy(engine)
+    await _backup_run(engine, "ok", timedelta(days=2))  # rows arrive in time order
+    await _backup_run(engine, "ok", timedelta(hours=3))
+    good = await collect_status(engine, 100, str(tmp_path), backup_configured=True)
+    assert good["problems"] == []
+    assert "Backup: last good 3h ago, 49.6 MB in 7s" in render(good)
+
+    await _backup_run(engine, "failed", timedelta(hours=1), "the NAS dropped off the network")
+    assert (await collect_status(engine, 100, str(tmp_path), backup_configured=True))[
+        "problems"
+    ] == []  # one failure with a good backup 3 hours old is not yet alarming
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "delete from backup_runs "
+                "where status = 'ok' and finished_at > now() - interval '1 day'"
+            )
+        )
+    stale = await collect_status(engine, 100, str(tmp_path), backup_configured=True)
+    assert any("last good backup was 2d ago" in p for p in stale["problems"])
+    assert any("the NAS dropped off the network" in p for p in stale["problems"])
+    assert "last failure" in render(stale)

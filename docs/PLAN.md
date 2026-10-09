@@ -780,7 +780,51 @@ It is tracked, with its protocol, in §10.2 and does not block later phases.
   4 weekly). No local staging copy is kept.
 - If the NAS is unreachable the backup job fails loudly (alert + `/status`), never
   silently; the mount must be present after reboots, so check it before each run.
-- `kterm-server backup` / `kterm-server restore`.
+- `kterm-server backup run|list|verify|init-target|loop` and `kterm-server restore FILE
+  --database NAME`.
+
+**As built (slice 3b.1).** Measured first on the 952 MB dev database: `pg_dump -Fc` 4-7 s,
+52 MB; restore 10 s; row counts, compressed chunks, 22 jobs, 4 aggregates and the revision all
+matched.
+
+- One `backup` Compose service (profile `backup`, switched on by `kterm-server init
+  --backup-dir <host path of the mounted NAS directory>`) runs `backup loop`: daily at
+  `KTERM_BACKUP_AT` (default 07:00 UTC), and after a failure retries every
+  `KTERM_BACKUP_RETRY_MINUTES` (30) until it works. The image carries PostgreSQL 18 client tools
+  from PGDG (Debian's are 17, which cannot dump an 18 server); CI checks this.
+- The dump is taken under an exported snapshot (`pg_export_snapshot`), so the file and its
+  manifest (per-table row counts, compressed chunks, jobs, aggregates, revision, `last_seq`,
+  SHA-256) describe the same instant while ingest carries on. It is written to a `.partial`
+  file, checked (its table of contents must list table data), and renamed into place with the
+  manifest; a crash or a full disk leaves no file that looks like a backup.
+- **Mount check:** the target directory must hold a marker file (`backup init-target`, run
+  once with the NAS mounted). An unmounted NAS looks like an empty local directory; without
+  the marker the backup fails instead of silently filling the wrong disk. Free space (1.2x the
+  last backup) and writability are checked too.
+- **Retention:** newest per day for 7 days, newest per ISO week for 4 weeks; only files named
+  `kterm-YYYYMMDD-HHMMSS.dump` (+ `.json`) are ever deleted, and stale `.partial` files.
+- `backup verify FILE [--deep]`: size, checksum and listing; `--deep` restores into a scratch
+  database, compares with the manifest and drops it.
+- **Restore never overwrites:** `restore` creates a NEW database (refuses an existing name,
+  including the live one), wraps the load in `timescaledb_pre_restore/post_restore`, and
+  compares the result with the manifest. Switching the server to the restored copy is a manual
+  step (change `POSTGRES_DB`/`KTERM_DB_URL`), deliberately.
+- Every run is recorded in `backup_runs` (migration 0017); `status` shows the last good backup
+  and the last failure, and raises a problem when there is no good backup in 36 hours (or none
+  ever, once `KTERM_BACKUP_TARGET` is set).
+
+Limits to know about:
+- A backup is a full dump of the database, so it grows with it: at today's 52 MB per 952 MB it
+  is cheap, but at 150 GB, 11 retained backups would be roughly 1.6 TB if compression stays the
+  same. Revisit retention (or move to `pg_basebackup`/WAL archiving) from the calibration
+  numbers (§10.2).
+- Recovery point is up to 24 hours: this is not point-in-time recovery.
+- Only the database is backed up. `.env`, `secrets/` (Kalshi key, TLS key and certificate) and
+  `config/` are not: losing them means re-running `init` and clients re-trusting the new
+  certificate.
+- `pg_dump` runs as a child process of the (asynchronous) backup loop, which does nothing
+  else, so a `docker stop` during a dump waits for it to finish or is killed after the grace
+  period; the leftover `.partial` file is removed by the next run.
 
 ## 10. Build Phases
 
@@ -892,7 +936,7 @@ Decisions taken for Phase 3 (2026-10-08; revisit any of them by saying so):
 
 | # | Slice |
 |---|---|
-| 3b.1 | Backup and restore (server): measure a real dump and restore first; `kterm-server backup` / `restore`, retention (7 daily + 4 weekly), a scheduled `backup` service in Compose, loud failure and a mount check, status integration, and a restore drill on a real TimescaleDB container (compressed chunks, continuous aggregates, policy jobs) |
+| 3b.1 — done | Backup and restore (server): measure a real dump and restore first; `kterm-server backup` / `restore`, retention (7 daily + 4 weekly), a scheduled `backup` service in Compose, loud failure and a mount check, status integration, and a restore drill on a real TimescaleDB container (compressed chunks, continuous aggregates, policy jobs) |
 | 3b.2 | Client foundations: the `kterm` CLI, connection profiles in the user config directory, tokens in the OS keyring (`kterm config`, `--profile`) |
 | 3b.3 | Trust-on-first-use pinning (the client shows the fingerprint, asks, pins the certificate; a changed certificate is refused until explicitly re-trusted) and `kterm server status` |
 | 3b.4 | Discovery: a host-side mDNS advertiser (macOS `dns-sd`, Linux `avahi-publish`; the container cannot advertise through the Docker VM) carrying the certificate fingerprint in its TXT record; `kterm server discover` and a fingerprint cross-check on first connect |

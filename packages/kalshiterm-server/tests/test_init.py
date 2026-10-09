@@ -190,3 +190,29 @@ def test_init_issues_a_certificate_for_those_names_and_prints_its_fingerprint(
     assert {"192.168.1.20", "127.0.0.1"} <= set(info.ip_addresses)
     assert mode(deploy / "secrets" / "tls_key.pem") == 0o600  # the key is private
     assert mode(deploy / "secrets" / "tls_cert.pem") == 0o644  # the certificate is not secret
+
+
+@posix_only
+def test_init_can_switch_on_nightly_backups(deploy: Path, key_file: Path) -> None:
+    result = init(deploy, key_file, "--backup-dir", "/Volumes/nas/kalshiterm")
+    assert result.exit_code == 0, result.output  # type: ignore[attr-defined]
+    env = dotenv_values(deploy / ".env")
+    assert env["COMPOSE_PROFILES"] == "backup"
+    assert env["KTERM_BACKUP_DIR"] == "/Volumes/nas/kalshiterm"
+    assert env["KTERM_BACKUP_TARGET"] == "/backup"
+
+
+@posix_only
+def test_without_a_backup_dir_the_backup_service_stays_off(deploy: Path, key_file: Path) -> None:
+    init(deploy, key_file)
+    env = dotenv_values(deploy / ".env")
+    assert "COMPOSE_PROFILES" not in env and "KTERM_BACKUP_TARGET" not in env
+
+
+@pytest.mark.parametrize("bad", ["relative/dir", "/nas/$HOME", '/nas/"x"'])
+def test_a_backup_dir_must_be_a_plain_absolute_host_path(
+    deploy: Path, key_file: Path, bad: str
+) -> None:
+    result = init(deploy, key_file, "--backup-dir", bad)
+    assert result.exit_code == 1 and "--backup-dir" in result.output  # type: ignore[attr-defined]
+    assert list(deploy.iterdir()) == []

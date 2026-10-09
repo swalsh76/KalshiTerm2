@@ -41,3 +41,10 @@ class ServerSettings(BaseSettings):
     stream_catchup_horizon: int = 20_000_000
     auth_failure_limit: int = 10  # failed logins from one address ...
     auth_failure_window_seconds: float = 60.0  # ... within this window lock it out for a while
+
+    # Backups (PLAN §10.4, slice 3b.1): a nightly pg_dump to a directory on another machine.
+    backup_target: str | None = None  # the mounted NAS directory (must hold the marker file)
+    backup_at: str = "07:00"  # UTC, HH:MM
+    backup_keep_daily: int = 7
+    backup_keep_weekly: int = 4
+    backup_retry_minutes: float = 30.0
