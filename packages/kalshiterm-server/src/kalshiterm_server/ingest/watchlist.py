@@ -1,10 +1,11 @@
 """Watchlist controller: decides which markets get orderbook capture and the trade copy.
 
-Two sources feed one set. **Manual** markets come from a TOML file that is re-read every cycle,
-so edits apply without a restart; they leave only when removed from the file. **Auto** markets
-are the busiest by traded contracts over a recent window; once added they stay at least
-``dwell`` (decision 13: 12 hours) so a market near the cut-off does not flap. Per-user
-watchlists arrive with the Phase 3 API; until then the file is the single list.
+Three sources feed one set. **Manual** markets come from a TOML file that is re-read every cycle,
+so edits apply without a restart; they leave only when removed from the file. **User** markets
+are those on any user's watchlist (the API); **auto** markets are the busiest by traded
+contracts over a recent window. A market is watched while *anyone* wants it. User and auto
+entries stay at least ``dwell`` (decision 13: 12 hours) once added, so neither a market near
+the top-N cut-off nor a user adding and removing one repeatedly makes the feed churn.
 
 Applying a change touches two places in a safe order: the orderbook feed (live add/remove),
 then the ingestor, which opens/closes the coverage period and starts/stops the permanent
@@ -13,8 +14,9 @@ trade copy inside its next write transaction.
 
 import asyncio
 import logging
+import time
 import tomllib
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -75,7 +77,7 @@ def load_config(path: Path) -> WatchlistConfig:
 
 @dataclass(slots=True)
 class Entry:
-    source: str  # "manual" | "auto": who currently holds the market
+    source: str  # "manual" | "user" | "auto": who currently holds the market (best claim wins)
     added_at: datetime
 
 
@@ -91,19 +93,23 @@ def plan(
     current: dict[str, Entry],
     now: datetime,
     dwell: timedelta = DWELL,
+    users: frozenset[str] = frozenset(),
 ) -> Plan:
-    """Pure reconcile step: what to add and remove."""
-    wanted_auto = [t for t in top if t not in manual]
+    """Pure reconcile step: what to add and remove.
+
+    A market is kept while anyone wants it (the file, a user, the top-N). One nobody wants is
+    removed at once if the file was its holder (an edit takes effect immediately), otherwise
+    once it has been watched for at least ``dwell``.
+    """
     add = {t: "manual" for t in sorted(manual) if t not in current}
-    add.update({t: "auto" for t in wanted_auto if t not in current})
-    keep_auto = set(wanted_auto)
+    add.update({t: "user" for t in sorted(users - manual) if t not in current})
+    add.update({t: "auto" for t in top if t not in manual and t not in users and t not in current})
+    wanted = manual | users | set(top)
     remove: list[str] = []
     for ticker, entry in current.items():
-        if ticker in manual:
+        if ticker in wanted:
             continue
-        if entry.source == "manual":
-            remove.append(ticker)  # taken out of the file: gone now, no dwell
-        elif ticker not in keep_auto and now - entry.added_at >= dwell:
+        if entry.source == "manual" or now - entry.added_at >= dwell:
             remove.append(ticker)
     return Plan(add, sorted(remove))
 
@@ -129,6 +135,16 @@ async def top_by_volume(engine: AsyncEngine, n: int, window: timedelta, now: dat
         return [ticker for (ticker,) in rows]
 
 
+USERS_WANT = """
+SELECT DISTINCT m.ticker
+FROM user_watchlists w JOIN markets m ON m.id = w.market_id
+WHERE m.settlement_ts IS NULL AND m.ticker NOT LIKE :combo
+"""
+USERS_SIGNATURE = """
+SELECT count(*)::text || ':' || coalesce(max(added_at)::text, '') FROM user_watchlists
+"""
+
+
 class WatchlistController:
     def __init__(
         self,
@@ -139,8 +155,11 @@ class WatchlistController:
         *,
         extra_manual: frozenset[str] = frozenset(),
         interval: float = 300.0,
+        poll_interval: float = 15.0,
         dwell: timedelta = DWELL,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._engine = engine
         self._feed = feed
@@ -148,8 +167,12 @@ class WatchlistController:
         self._config = config
         self._extra = extra_manual
         self._interval = interval
+        self._poll_interval = poll_interval
         self._dwell = dwell
         self._clock = clock
+        self._sleep = sleep
+        self._monotonic = monotonic
+        self._signature: str | None = None  # of the users' lists at the last reconcile
         self.current: dict[str, Entry] = {}
         self.failed: set[str] = set()  # markets the feed refused (e.g. unknown ticker)
 
@@ -162,22 +185,49 @@ class WatchlistController:
         await self.reconcile()
 
     async def run(self) -> None:
+        """Full reconcile every ``interval``; in between, a cheap poll that reconciles early
+        when a user's list changed (so a new entry is captured within seconds, not minutes)."""
+        last_full = self._monotonic()
         while True:
-            await asyncio.sleep(self._interval)
+            await self._sleep(self._poll_interval)
             try:
-                await self.reconcile()
+                if self._monotonic() - last_full >= self._interval:
+                    await self.reconcile()
+                    last_full = self._monotonic()
+                else:
+                    await self.poll()
             except Exception:
                 log.exception("watchlist reconcile failed; keeping the current list")
+
+    async def poll(self) -> bool:
+        """Reconcile now if any user's list changed since the last time; True if it did."""
+        async with self._engine.connect() as conn:
+            signature = (await conn.execute(text(USERS_SIGNATURE))).scalar_one()
+        if signature == self._signature:
+            return False
+        await self.reconcile()
+        return True
 
     async def reconcile(self) -> Plan:
         config = self._config()
         now = self._clock()
         manual = config.markets | self._extra
+        async with self._engine.connect() as conn:
+            # the signature first: a change landing while we work is seen by the next poll
+            self._signature = (await conn.execute(text(USERS_SIGNATURE))).scalar_one()
+            users = frozenset(
+                ticker
+                for (ticker,) in await conn.execute(text(USERS_WANT), {"combo": COMBO_PREFIX + "%"})
+            )
         top = await top_by_volume(self._engine, config.auto_top_n, config.auto_window, now)
-        for ticker, entry in self.current.items():  # the file takes over from auto
+        for ticker, entry in self.current.items():  # the best claim holds a market
             if ticker in manual:
                 entry.source = "manual"
-        todo = plan(manual, top, self.current, now, self._dwell)
+            elif ticker in users:
+                entry.source = "user"
+            elif ticker in top:
+                entry.source = "auto"
+        todo = plan(manual, top, self.current, now, self._dwell, users)
         if todo.remove:
             await self._feed.remove_markets(todo.remove)
             self._recorder.unwatch(todo.remove)

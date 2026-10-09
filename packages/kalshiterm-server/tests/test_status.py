@@ -81,7 +81,13 @@ async def test_a_healthy_server_has_no_problems_and_prints_one_reassuring_line(
     assert report["storage"]["mode"] == "normal" and report["storage"]["percent"] < 1
     assert report["streams"]["tickers"]["age_seconds"] < 60
     assert report["streams"]["tickers"]["per_second_5min"] == pytest.approx(0.1)
-    assert report["watchlist"] == {"watching_now": 0, "ever_watched": 0}
+    assert report["watchlist"] == {
+        "watching_now": 0,
+        "by_source": {},
+        "ever_watched": 0,
+        "users_with_lists": 0,
+        "markets_wanted_by_users": 0,
+    }
     out = render(report)
     assert "All checks passed." in out and "NEEDS ATTENTION" not in out
     assert "largest tables:" in out and "Streams" in out and "Gaps" in out

@@ -27,5 +27,8 @@ class ServerSettings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8700
     api_docs: bool = False  # interactive docs and the OpenAPI document
+    # Per-user watchlists: each watched market costs orderbook storage, so both are capped.
+    watchlist_max_per_user: int = 50
+    watchlist_max_total: int = 200  # distinct markets requested by all users together
     auth_failure_limit: int = 10  # failed logins from one address ...
     auth_failure_window_seconds: float = 60.0  # ... within this window lock it out for a while

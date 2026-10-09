@@ -363,3 +363,173 @@ async def test_starting_closes_periods_a_previous_run_left_open(engine: AsyncEng
             )
         ).scalar_one()
     assert open_periods == 0
+
+
+# ---------------------------------------------------------------- users' lists
+
+
+async def add_user_watch(engine: AsyncEngine, user: str, *tickers: str) -> None:
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("INSERT INTO users (name) VALUES (:n) ON CONFLICT DO NOTHING"), {"n": user}
+        )
+        for ticker in tickers:
+            await conn.execute(
+                text(
+                    "INSERT INTO user_watchlists (user_id, market_id) "
+                    "SELECT u.id, m.id FROM users u, markets m WHERE u.name = :u AND m.ticker = :t"
+                ),
+                {"u": user, "t": ticker},
+            )
+
+
+async def drop_user_watch(engine: AsyncEngine, user: str, ticker: str) -> None:
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "DELETE FROM user_watchlists w USING users u, markets m WHERE w.user_id = u.id "
+                "AND w.market_id = m.id AND u.name = :u AND m.ticker = :t"
+            ),
+            {"u": user, "t": ticker},
+        )
+
+
+def user_controller(
+    engine: AsyncEngine, feed: FakeFeed, recorder: FakeRecorder, clock: Clock
+) -> WatchlistController:
+    return WatchlistController(engine, feed, recorder, WatchlistConfig, clock=clock)
+
+
+async def test_markets_users_want_are_watched_once_however_many_want_them(
+    engine: AsyncEngine,
+) -> None:
+    await seed_volumes(engine)
+    await add_user_watch(engine, "alice", "KXBIG-E1-X", "KXMID-E1-X")
+    await add_user_watch(engine, "bob", "KXBIG-E1-X")
+    feed, recorder, clock = FakeFeed(), FakeRecorder(), Clock()
+    controller = user_controller(engine, feed, recorder, clock)
+    await controller.reconcile()
+    assert sorted(feed.watching) == ["KXBIG-E1-X", "KXMID-E1-X"]
+    assert sorted(c[1][0] for c in recorder.calls) == ["KXBIG-E1-X", "KXMID-E1-X"]
+    assert {c[2] for c in recorder.calls} == {"user"}
+
+
+async def test_a_market_stays_while_any_user_wants_it_and_goes_after_the_dwell(
+    engine: AsyncEngine,
+) -> None:
+    await seed_volumes(engine)
+    await add_user_watch(engine, "alice", "KXBIG-E1-X")
+    await add_user_watch(engine, "bob", "KXBIG-E1-X")
+    feed, recorder, clock = FakeFeed(), FakeRecorder(), Clock()
+    controller = user_controller(engine, feed, recorder, clock)
+    await controller.reconcile()
+
+    await drop_user_watch(engine, "alice", "KXBIG-E1-X")
+    clock.now += timedelta(hours=13)
+    await controller.reconcile()
+    assert feed.watching == ["KXBIG-E1-X"]  # bob still wants it
+
+    await drop_user_watch(engine, "bob", "KXBIG-E1-X")
+    await controller.reconcile()
+    assert feed.watching == []  # nobody wants it and it is well past the 12 hours
+    assert recorder.calls[-1] == ("unwatch", ["KXBIG-E1-X"], "")
+
+
+async def test_the_last_user_leaving_early_does_not_drop_the_market_before_the_dwell(
+    engine: AsyncEngine,
+) -> None:
+    await seed_volumes(engine)
+    await add_user_watch(engine, "alice", "KXBIG-E1-X")
+    feed, recorder, clock = FakeFeed(), FakeRecorder(), Clock()
+    controller = user_controller(engine, feed, recorder, clock)
+    await controller.reconcile()
+    await drop_user_watch(engine, "alice", "KXBIG-E1-X")
+    clock.now += timedelta(hours=2)
+    await controller.reconcile()
+    assert feed.watching == ["KXBIG-E1-X"]  # only 2 hours in: kept
+    clock.now += timedelta(hours=11)
+    await controller.reconcile()
+    assert feed.watching == []
+
+
+async def test_the_file_dropping_a_market_a_user_wants_does_not_remove_it(
+    engine: AsyncEngine,
+) -> None:
+    await seed_volumes(engine)
+    await add_user_watch(engine, "alice", "KXMID-E1-X")
+    state = {"config": WatchlistConfig(frozenset({"KXMID-E1-X"}))}
+    feed, recorder, clock = FakeFeed(), FakeRecorder(), Clock()
+    controller = WatchlistController(engine, feed, recorder, lambda: state["config"], clock=clock)
+    await controller.reconcile()
+    assert controller.current["KXMID-E1-X"].source == "manual"
+    state["config"] = WatchlistConfig()  # the file no longer lists it
+    await controller.reconcile()
+    assert feed.watching == ["KXMID-E1-X"] and controller.current["KXMID-E1-X"].source == "user"
+
+
+async def test_settled_and_combo_markets_on_a_list_are_ignored_by_the_controller(
+    engine: AsyncEngine,
+) -> None:
+    await seed_volumes(engine)
+    await add_market(engine, "KXMVECROSS-E1-X")
+    await add_user_watch(engine, "alice", "KXBIG-E1-X", "KXMVECROSS-E1-X")
+    async with engine.begin() as conn:  # KXBIG settles after being added to the list
+        await conn.execute(
+            text("UPDATE markets SET settlement_ts = now() WHERE ticker = 'KXBIG-E1-X'")
+        )
+    feed, recorder, clock = FakeFeed(), FakeRecorder(), Clock()
+    await user_controller(engine, feed, recorder, clock).reconcile()
+    assert feed.watching == []
+
+
+async def test_the_poll_reconciles_only_when_a_users_list_changed(engine: AsyncEngine) -> None:
+    await seed_volumes(engine)
+    feed, recorder, clock = FakeFeed(), FakeRecorder(), Clock()
+    controller = user_controller(engine, feed, recorder, clock)
+    assert await controller.poll() is True  # the first look always reconciles
+    assert await controller.poll() is False and feed.calls == []  # nothing changed
+    await add_user_watch(engine, "alice", "KXBIG-E1-X")
+    assert await controller.poll() is True and feed.watching == ["KXBIG-E1-X"]
+    assert await controller.poll() is False
+    await drop_user_watch(engine, "alice", "KXBIG-E1-X")
+    assert await controller.poll() is True  # a removal counts as a change too
+
+
+class Stop(Exception):
+    pass
+
+
+async def test_the_run_loop_polls_often_and_does_a_full_reconcile_on_the_slow_interval(
+    engine: AsyncEngine,
+) -> None:
+    feed, recorder = FakeFeed(), FakeRecorder()
+    now = [0.0]
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+        if len(sleeps) == 25:
+            raise Stop
+
+    controller = WatchlistController(
+        engine, feed, recorder, WatchlistConfig, interval=100, poll_interval=10,
+        sleep=sleep, monotonic=lambda: now[0],
+    )  # fmt: skip
+    calls = {"full": 0, "poll": 0}
+    real_reconcile, real_poll = controller.reconcile, controller.poll
+
+    async def reconcile() -> Any:
+        calls["full"] += 1
+        return await real_reconcile()
+
+    async def poll() -> bool:
+        calls["poll"] += 1
+        return await real_poll()
+
+    controller.reconcile, controller.poll = reconcile, poll  # type: ignore[method-assign]
+    with pytest.raises(Stop):
+        await controller.run()
+    assert sleeps == [10.0] * 25
+    # 250 s of simulated time: full reconciles at 100 s and 200 s, polls the other 23 times
+    assert calls["full"] == 2 + 1 and calls["poll"] == 22  # (+1: the poll that found no signature)
