@@ -277,11 +277,29 @@ async def _discovery(engine: AsyncEngine, now: datetime, problems: list[str]) ->
 
 
 async def _watchlist(engine: AsyncEngine) -> dict[str, Any]:
-    open_now = await _query_one(
-        engine, "SELECT count(*) FROM watchlist_periods WHERE removed_at IS NULL"
-    )
+    by_source = {
+        r["source"]: r["n"]
+        for r in await _rows(
+            engine,
+            "SELECT source, count(*) AS n FROM watchlist_periods WHERE removed_at IS NULL "
+            "GROUP BY source",
+        )
+    }
     ever = await _query_one(engine, "SELECT count(DISTINCT market_id) FROM watchlist_periods")
-    return {"watching_now": open_now, "ever_watched": ever}
+    users = (
+        await _rows(
+            engine,
+            "SELECT count(DISTINCT user_id) AS users, count(DISTINCT market_id) AS markets "
+            "FROM user_watchlists",
+        )
+    )[0]
+    return {
+        "watching_now": sum(by_source.values()),
+        "by_source": by_source,
+        "ever_watched": ever,
+        "users_with_lists": users["users"],
+        "markets_wanted_by_users": users["markets"],
+    }
 
 
 # ------------------------------------------------------------------ rendering
@@ -387,5 +405,10 @@ def render(report: dict[str, Any]) -> str:
         + f", {disc['unresolved_placeholders']} unresolved placeholder(s)"
     )
     w = report["watchlist"]
-    lines.append(f"Watchlist: {w['watching_now']} market(s) watched now, {w['ever_watched']} ever")
+    split = ", ".join(f"{n} {name}" for name, n in sorted(w["by_source"].items())) or "none"
+    lines.append(
+        f"Watchlist: {w['watching_now']} market(s) watched now ({split}), "
+        f"{w['ever_watched']} ever; {w['users_with_lists']} user(s) with lists wanting "
+        f"{w['markets_wanted_by_users']}"
+    )
     return "\n".join(lines)
