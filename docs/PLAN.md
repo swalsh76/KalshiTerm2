@@ -970,11 +970,27 @@ Keychain, Windows Credential Locker, Secret Service), entered with a hidden prom
 validated before anything is written. Pinned certificate fingerprints join the profile in
 3b.3. Checked against the real macOS Keychain (add, read, delete).
 
+**3b.3 as built.** `kterm server trust` fetches the certificate the server presents (unverified,
+for display only), shows its SHA-256 fingerprint, names and validity, and pins it after an
+explicit yes (default No); `--fingerprint` pins without asking only if the fetched certificate
+matches exactly (the scripting path; there is no blanket `--yes`). The pin is the certificate
+file `certs/<profile>.pem` in the config directory plus its fingerprint in the profile; a
+missing or altered file is refused. Connections use a TLS context that trusts **only** that
+certificate (so name and expiry are still checked), and an `https` profile with no pin never
+connects, so **the token is never sent to an untrusted or changed server**. A different
+certificate is reported as "THE CERTIFICATE HAS CHANGED" with both fingerprints and refused;
+an expired certificate or an uncovered name is reported as that, not as a change. Re-trusting
+shows a warning and defaults to No. `config add --replace` with another address, and `config
+remove`, drop the pin. `kterm server status [--json]` summarises `GET /v1/status` (admin token;
+exit 1 when the report has problems) and explains 401/403/429. Verified against the real
+`kterm-server api` over TLS, including a rotated certificate. Not done here (3b.4): mDNS
+discovery and cross-checking the fingerprint a server advertises.
+
 | # | Slice |
 |---|---|
 | 3b.1 — done | Backup and restore (server): measure a real dump and restore first; `kterm-server backup` / `restore`, retention (7 daily + 4 weekly), a scheduled `backup` service in Compose, loud failure and a mount check, status integration, and a restore drill on a real TimescaleDB container (compressed chunks, continuous aggregates, policy jobs) |
 | 3b.2 — done | Client foundations: the `kterm` CLI, connection profiles in the user config directory, tokens in the OS keyring (`kterm config`, `--profile`) |
-| 3b.3 | Trust-on-first-use pinning (the client shows the fingerprint, asks, pins the certificate; a changed certificate is refused until explicitly re-trusted) and `kterm server status` |
+| 3b.3 — done | Trust-on-first-use pinning (the client shows the fingerprint, asks, pins the certificate; a changed certificate is refused until explicitly re-trusted) and `kterm server status` |
 | 3b.4 | Discovery: a host-side mDNS advertiser (macOS `dns-sd`, Linux `avahi-publish`; the container cannot advertise through the Docker VM) carrying the certificate fingerprint in its TXT record; `kterm server discover` and a fingerprint cross-check on first connect |
 | deferred | `kterm server logs` (mentioned in §8.6): parking lot |
 

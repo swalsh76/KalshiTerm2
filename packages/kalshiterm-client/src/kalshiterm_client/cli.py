@@ -1,11 +1,12 @@
 """``kterm``: the KalshiTerm client's command line (grows with later slices)."""
 
+import json
 import sys
 from typing import Annotated
 
 import typer
 
-from kalshiterm_client import secrets
+from kalshiterm_client import connection, pinning, secrets, status_view
 from kalshiterm_client.profiles import (
     PROFILE_ENV,
     Profile,
@@ -19,6 +20,8 @@ from kalshiterm_client.profiles import (
 app = typer.Typer(no_args_is_help=True, help="KalshiTerm client.")
 config_app = typer.Typer(no_args_is_help=True, help="Servers (profiles) and their tokens.")
 app.add_typer(config_app, name="config")
+server_app = typer.Typer(no_args_is_help=True, help="The server you are connected to.")
+app.add_typer(server_app, name="server")
 
 
 class State:
@@ -125,6 +128,9 @@ def config_show(name: Annotated[str | None, typer.Argument()] = None) -> None:
     typer.echo(f"name:  {profile.name}")
     typer.echo(f"url:   {profile.url}")
     typer.echo(f"token: {'in the system keyring' if stored else 'NOT SET'}")
+    if profile.url.startswith("https://"):
+        pinned = profile.fingerprint or "NOT YET (run `kterm server trust`)"
+        typer.echo(f"pin:   {pinned}")
 
 
 @config_app.command("use")
@@ -146,3 +152,77 @@ def config_remove(name: str) -> None:
     except (ProfileError, secrets.SecretError) as exc:
         raise fail(str(exc)) from exc
     typer.echo(f"removed {name}")
+
+
+# ------------------------------------------------------------------ the server itself
+
+
+def _show_certificate(details: pinning.CertDetails) -> None:
+    typer.echo(f"  fingerprint (SHA-256): {details.fingerprint}")
+    typer.echo(f"  names:   {', '.join(details.dns_names + details.ip_addresses) or '(none)'}")
+    typer.echo(
+        f"  valid:   {pinning.local_time(details.not_before)} to "
+        f"{pinning.local_time(details.not_after)}"
+    )
+
+
+@server_app.command("trust")
+def server_trust(
+    fingerprint: Annotated[
+        str | None,
+        typer.Option(
+            help="Pin without asking, but only if the server's certificate has exactly this "
+            "fingerprint (as printed by `kterm-server init` or `cert show`)."
+        ),
+    ] = None,
+) -> None:
+    """Read the server's certificate, show its fingerprint, and pin it after you confirm.
+
+    Compare the fingerprint with the one the server's operator printed (`kterm-server cert
+    show`). From then on this profile trusts that certificate and no other.
+    """
+    profile = current_profile()
+    if not profile.url.startswith("https://"):
+        raise fail("this profile is plain http to this machine: there is no certificate to trust")
+    try:
+        pem = pinning.fetch_certificate(profile.url)
+        details = pinning.describe(pem)
+        if fingerprint is not None:
+            wanted = pinning.normalise_fingerprint(fingerprint)
+            if wanted != details.fingerprint:
+                raise fail(
+                    f"the server presented {details.fingerprint}, not {wanted}. Nothing pinned."
+                )
+        elif profile.fingerprint == details.fingerprint:
+            typer.echo(f"{profile.name} already trusts this certificate:")
+            _show_certificate(details)
+            return
+        else:
+            if profile.fingerprint:
+                typer.echo(f"WARNING: {profile.name} trusts a DIFFERENT certificate.")
+                typer.echo(f"  currently pinned: {profile.fingerprint}")
+                typer.echo("The server's certificate is now:")
+            else:
+                typer.echo(f"The server at {profile.url} presents this certificate:")
+            _show_certificate(details)
+            if not typer.confirm("Trust this certificate for this profile?", default=False):
+                raise fail("not trusted; nothing changed")
+        ProfileStore().save_pin(profile.name, pem, details.fingerprint)
+    except ProfileError as exc:
+        raise fail(str(exc)) from exc
+    typer.echo(f"pinned for {profile.name}: {details.fingerprint}")
+
+
+@server_app.command("status")
+def server_status(
+    as_json: Annotated[bool, typer.Option("--json", help="The raw report.")] = False,
+) -> None:
+    """Storage, ingest freshness, gaps, jobs and backups (needs an admin token)."""
+    profile = current_profile()
+    try:
+        report = connection.request(profile, "/v1/status")
+    except ProfileError as exc:
+        raise fail(str(exc)) from exc
+    typer.echo(json.dumps(report, indent=2) if as_json else status_view.render(report))
+    if report.get("problems"):
+        raise typer.Exit(code=1)  # so scripts can act on it, like `kterm-server status`

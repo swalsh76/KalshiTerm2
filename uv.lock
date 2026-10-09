@@ -826,6 +826,8 @@ name = "kalshiterm-client"
 version = "0.0.0"
 source = { editable = "packages/kalshiterm-client" }
 dependencies = [
+    { name = "cryptography" },
+    { name = "httpx" },
     { name = "kalshi-core" },
     { name = "keyring" },
     { name = "platformdirs" },
@@ -834,6 +836,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=43" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "kalshi-core", editable = "packages/kalshi-core" },
     { name = "keyring", specifier = ">=25" },
     { name = "platformdirs", specifier = ">=4.2" },
