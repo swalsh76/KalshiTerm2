@@ -1,6 +1,7 @@
 import asyncio
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 
@@ -12,10 +13,23 @@ async def quiet_background_jobs(engine: AsyncEngine) -> None:
     reject the second ("concurrent refresh"), so tests that run policies switch them off and
     call them explicitly.
     """
-    async with engine.begin() as conn:
-        await conn.execute(
-            text("select alter_job(job_id, scheduled => false) from timescaledb_information.jobs")
-        )
+    # TimescaleDB itself can fail here with "more than one bgw job stat found" when the
+    # scheduler records the first run of a job at the very moment we alter it (seen once on CI,
+    # 2026-10-10). The state is consistent a moment later, so retry that error, and only that.
+    for attempt in range(10):
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "select alter_job(job_id, scheduled => false) "
+                        "from timescaledb_information.jobs"
+                    )
+                )
+            break
+        except DBAPIError as exc:
+            if "bgw job stat" not in str(exc) or attempt == 9:
+                raise
+            await asyncio.sleep(0.2)
     async with asyncio.timeout(30):
         while True:
             async with engine.connect() as conn:
