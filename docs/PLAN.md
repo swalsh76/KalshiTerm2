@@ -859,7 +859,7 @@ Each phase ends with passing tests and CI green.
 | **2. Server storage & ingestion** | Schema + Alembic, Timescale hypertables, compression/retention policies, continuous aggregates, ingestor, Compose stack, `kterm-server init`, storage governor — broken into slices 2.1–2.10 in §10.1. **Code-complete at 2.9; the calibration and hardware qualification (2.10) are tracked in §10.2 and do not gate Phase 3** |
 | **3. Server API** | REST + WS push with catch-up, token auth, TLS, health/status endpoints |
 | **3b. LAN features** | zeroconf discovery, client profiles, TOFU cert pinning, `cert rotate`, `kterm server status`, backup/restore — **done** (slices 3b.1-3b.4 in §10.4) |
-| **4. Analytics** | Plugin framework + built-in analyzers + alerts |
+| **4. Analytics** | Plugin framework + built-in analyzers + alerts — slices 4.1-4.5 in §10.5 |
 | **5. Client data side** | Server API client, CLI data views |
 | **6. Client trading** | Risk layer first, order management, private WS channels; **demo-only until sign-off**; test proving trading works with server offline |
 | **7. Terminal UI** | Bloomberg-style UI per §7 decision (local backend, panels, grids, charts, command bar, order entry) |
@@ -1024,6 +1024,38 @@ discovery and cross-checking the fingerprint a server advertises.
 | 3b.4 — done | Discovery: a host-side mDNS advertiser (macOS `dns-sd`, Linux `avahi-publish`; the container cannot advertise through the Docker VM) carrying the certificate fingerprint in its TXT record; `kterm server discover` and a fingerprint cross-check on first connect |
 | deferred | `kterm server logs` (mentioned in §8.6): parking lot |
 
+### 10.5 Phase 4 slices (analytics)
+
+Measured first (dev database, 2026-10-10): tickers carry `yes_bid`, `yes_ask` and their sizes,
+so spread and top-of-book liquidity need no orderbook. Of 6,205 mutually exclusive events,
+2,337 had every active market quoted in the last hour. Summing the latest quotes: 27 events had
+YES **bids** summing over 100¢ (none over 105¢) and 70 had YES **asks** under 100¢; the largest
+"opportunities" were stale or very wide (bids 114 / asks 189), so a usable check must require
+simultaneous quotes, sizes and fees. The two directions are not equally valid: selling every
+YES leg when bids sum over 100¢ is a real arbitrage for any mutually exclusive event (profit =
+sum of bids - 100, before fees), but buying every YES leg when asks sum under 100¢ only works
+if the event is also *exhaustive*, which Kalshi does not flag (most of the 70 are partial lists).
+
+**Decisions (recommended defaults; say if you disagree).**
+1. **Results are one narrow table** (`analysis_results`: analyzer, subject kind and id, metric,
+   ts, `value_e6 bigint`), a compressed hypertable with retention. This keeps decision 14
+   (no float, no JSON numbers); ratios such as volatility are stored as scaled integers.
+2. **Arbitrage is bid-side only** (true for mutually exclusive events). The ask-side check is
+   parked until there is a reliable "exhaustive" signal.
+3. **The storage governor stays in the ingest process** (it works and is tested there), instead
+   of moving into the analytics worker as §5.3 says. `kterm-server analyze` runs only analyzers.
+4. **Fees are a configurable model**, default zero in code and set from Kalshi's published
+   schedule when the arbitrage slice is built (it must be checked then, not assumed now).
+
+| # | Slice |
+|---|---|
+| 4.1 | Framework: migration (`analysis_results`, `analyzer_runs`), the `Analyzer` interface and registry (entry points `kalshiterm.analyzers`; built-ins are registered the same way), `kterm-server analyze` runner (per-analyzer interval, per-run timeout, failures isolated and recorded), `NOTIFY` on new results, an `analyze` Compose service, `status` shows each analyzer's last run and problems; tested with a fake third-party plugin installed through an entry point |
+| 4.2 | Market metrics: spread and top-of-book liquidity, realized volatility, price and volume change over windows, for markets that ticked recently; results stored per 4.1 |
+| 4.3 | Cross-market arbitrage (bid side): simultaneous-quote window, sizes, executable size, fee model, one result per event; the fee schedule is checked against Kalshi's published one at the start of the slice |
+| 4.4 | Alerts: per-user rules (price move, volume spike, spread, arbitrage profit) with per-user limits and cooldown, evaluator in `analyze`, `alerts` table, REST to create/list/acknowledge |
+| 4.5 | API and push: `/v1/analytics/...` result queries, alerts pushed to their owner over `/v1/stream` with the existing cursor and resume rules, analyzer state in `/v1/status` |
+| deferred | Alert delivery outside the client (email, mobile push), the ask-side arbitrage check, plugin sandboxing: parking lot |
+
 ## 11. Risks & Notes
 
 - **Client throughput (offline benchmark, `packages/kalshi-core/bench/throughput.py`,
@@ -1117,4 +1149,7 @@ Ideas raised but **not** in scope. Not to be built until promoted into a phase.
 - Make the first watchlist cycle retry after ~1 minute while there are no trades to rank, instead of waiting the full 5 minutes.
 - Tombstones only for markets that have data (candles, lifecycle events); delete the rest outright. Raised 2026-10-08 after measuring ~7 GB/year of tombstones; decide after the 2.10 calibration run.
 - Record ticker and orderbook holes in the gap log and `status`, not only missing trades. Kalshi keeps no history for them, so they cannot be repaired, but a gap should still be visible (the 2026-10-09 drive-loss test lost about 9.5 minutes of tickers without any report). Raised 2026-10-09; decide later.
+- Alert delivery outside the client (email, mobile push, webhooks). Raised 2026-10-10 with the Phase 4 breakdown; alerts reach clients over the stream only.
+- Ask-side arbitrage (buy every YES leg when asks sum under 100¢): needs a reliable "exhaustive event" signal Kalshi does not provide. Raised 2026-10-10.
+- Sandboxing or resource limits for third-party analyzers beyond a per-run timeout. Raised 2026-10-10.
 - Exclude the fast crypto 15-minute books from the auto top-N (they made 58% of orderbook deltas in the 2.7a sample). Raised 2026-10-07; deferred until the storage governor (2.8) shows whether it is needed.
