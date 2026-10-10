@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Announces the server on the LAN (mDNS, _kterm._tcp) with its certificate fingerprint, from boot,
+  as a LaunchDaemon. Optional: clients can always be given the address by hand.
+  Install on the Mac Studio (replace the placeholders, then):
+    sed -e 's|__DEPLOY_DIR__|/path/to/KalshiTerm2/deploy|' -e 's|__PORT__|8700|' \
+        host/com.kalshiterm.advertise.plist.template | sudo tee /Library/LaunchDaemons/com.kalshiterm.advertise.plist
+    sudo chown root:wheel /Library/LaunchDaemons/com.kalshiterm.advertise.plist
+    sudo launchctl bootstrap system /Library/LaunchDaemons/com.kalshiterm.advertise.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kalshiterm.advertise</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__DEPLOY_DIR__/host/advertise.sh</string>
+    <string>__DEPLOY_DIR__/secrets/tls_cert.pem</string>
+    <string>__PORT__</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>

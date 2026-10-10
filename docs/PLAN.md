@@ -537,6 +537,28 @@ a stale image (hence `--build`), and passing `localhost` as a host added a point
 - Server advertises `_kterm._tcp.local` via **zeroconf/mDNS**.
 - `kterm server discover` lists servers; manual host/IP always supported.
 
+**As built (slice 3b.4).** The container cannot announce itself on the LAN (it sits behind
+Docker's VM), so a host-side script, `deploy/host/advertise.sh CERT_PEM PORT`, publishes
+`_kterm._tcp` with TXT `v=1` and `fp=<64 hex digits: SHA-256 of the TLS certificate>`, using
+`dns-sd` on macOS and `avahi-publish-service` on Linux. It re-reads the certificate every
+minute, so `cert rotate` is re-advertised on its own (seen within a minute on a real network).
+Install on the Mac Studio as a LaunchDaemon from `host/com.kalshiterm.advertise.plist.template`
+(the same steps as the drive check). On the client, `kterm server discover` lists what is
+announced (name, `https://host:port`, addresses, the start of the fingerprint, and the `config
+add` command), and `kterm server trust` looks for an advertisement of the address it is
+pinning (1.5 s, optional; `--no-mdns` skips it): the same fingerprint is noted, a **different**
+one is refused (a stale record just after a rotation, or something else answering) unless the
+operator's fingerprint is passed with `--fingerprint`; no advertisement, or a network without
+multicast, never blocks pinning.
+- **Not a trust anchor.** mDNS is unauthenticated: anyone on the LAN can publish any record,
+  including a fingerprint for their own certificate. The advertisement catches mistakes and
+  stale servers; the fingerprint the operator printed (`kterm-server cert show`, or `init`)
+  remains the authority, and `discover` says so.
+- **Names.** The advertised address is the Mac's mDNS name (`scutil --get LocalHostName` +
+  `.local`), which can differ from `hostname -s`. Give `kterm-server init --host` that name,
+  or the certificate will not cover the address that `discover` suggests (the client reports
+  this as a name problem, not as a changed certificate).
+
 ### 8.6 Operations & resilience
 
 - `kterm server status` / `kterm server logs` from the workstation; health panel in the UI.
@@ -836,7 +858,7 @@ Each phase ends with passing tests and CI green.
 | **1. kalshi-core** | Signing (Ed25519), REST client & models, WS client with reconnect/resubscribe/seq-gap recovery, rate limiter, **multivariate market support** (`/events/multivariate`, MVE market fields `mve_collection_ticker` / `mve_selected_legs`, WS `multivariate_market_lifecycle` channel); integration-tested read-only (production data key; demo where applicable) |
 | **2. Server storage & ingestion** | Schema + Alembic, Timescale hypertables, compression/retention policies, continuous aggregates, ingestor, Compose stack, `kterm-server init`, storage governor — broken into slices 2.1–2.10 in §10.1. **Code-complete at 2.9; the calibration and hardware qualification (2.10) are tracked in §10.2 and do not gate Phase 3** |
 | **3. Server API** | REST + WS push with catch-up, token auth, TLS, health/status endpoints |
-| **3b. LAN features** | zeroconf discovery, client profiles, TOFU cert pinning, `cert rotate`, `kterm server status`, backup/restore |
+| **3b. LAN features** | zeroconf discovery, client profiles, TOFU cert pinning, `cert rotate`, `kterm server status`, backup/restore — **done** (slices 3b.1-3b.4 in §10.4) |
 | **4. Analytics** | Plugin framework + built-in analyzers + alerts |
 | **5. Client data side** | Server API client, CLI data views |
 | **6. Client trading** | Risk layer first, order management, private WS channels; **demo-only until sign-off**; test proving trading works with server offline |
@@ -920,6 +942,14 @@ APFS. Steps 1 and 2 are done; the drive's own endurance rating is not checked.
   been running, orderbook deltas, because Kalshi has no history for them; the gap log only
   tracks trades. So: a lost drive needs an operator (remount, restart Docker), `status` and the
   host check must make that visible, and recovery itself is safe.
+- **Sleep is a drive-loss event (2026-10-10, unplanned).** With Docker running from the USB
+  SSD, closing the MacBook's lid ("Clamshell Sleep", 13:53:20) made Postgres PANIC on an
+  `fdatasync` I/O error in the same second and left the Docker VM's filesystem read-only; the
+  drive and link were fine afterwards. Same recovery as the unmount test (restart Docker
+  Desktop; WAL replay, 0 checksum failures). **The Mac Studio must never sleep**: set
+  `sudo pmset -a sleep 0 disksleep 0` and "Start up automatically after a power failure", and
+  keep it on mains. The host drive check does not see sleep; it would show up as the drive
+  check going stale and then as an unmount.
 - Not yet done: steps 3, 5 and 6 (real server key, host LaunchDaemon, reboot and power-loss
   behaviour, power-fail restart) and a Thunderbolt link. The test above was a software
   unmount, not a physical unplug or power cut.
@@ -991,7 +1021,7 @@ discovery and cross-checking the fingerprint a server advertises.
 | 3b.1 — done | Backup and restore (server): measure a real dump and restore first; `kterm-server backup` / `restore`, retention (7 daily + 4 weekly), a scheduled `backup` service in Compose, loud failure and a mount check, status integration, and a restore drill on a real TimescaleDB container (compressed chunks, continuous aggregates, policy jobs) |
 | 3b.2 — done | Client foundations: the `kterm` CLI, connection profiles in the user config directory, tokens in the OS keyring (`kterm config`, `--profile`) |
 | 3b.3 — done | Trust-on-first-use pinning (the client shows the fingerprint, asks, pins the certificate; a changed certificate is refused until explicitly re-trusted) and `kterm server status` |
-| 3b.4 | Discovery: a host-side mDNS advertiser (macOS `dns-sd`, Linux `avahi-publish`; the container cannot advertise through the Docker VM) carrying the certificate fingerprint in its TXT record; `kterm server discover` and a fingerprint cross-check on first connect |
+| 3b.4 — done | Discovery: a host-side mDNS advertiser (macOS `dns-sd`, Linux `avahi-publish`; the container cannot advertise through the Docker VM) carrying the certificate fingerprint in its TXT record; `kterm server discover` and a fingerprint cross-check on first connect |
 | deferred | `kterm server logs` (mentioned in §8.6): parking lot |
 
 ## 11. Risks & Notes

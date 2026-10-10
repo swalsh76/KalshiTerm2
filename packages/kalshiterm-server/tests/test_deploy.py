@@ -285,3 +285,41 @@ async def test_the_discovery_loop_keeps_going_after_a_failed_cycle() -> None:
     with pytest.raises(Stop):
         await discovery_loop(None, None, 900, run=cycle, sleep=sleep)  # type: ignore[arg-type]
     assert calls == ["cycle"] * 3 and sleeps == [900, 900, 900]  # the failure did not end it
+
+
+# ---------------------------------------------------------------- the host-side mDNS advertiser
+
+ADVERTISE = DEPLOY / "host" / "advertise.sh"
+
+
+def advertise(*args: object) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["bash", str(ADVERTISE), *map(str, args)], capture_output=True, text=True)
+
+
+@posix_only
+def test_the_advertiser_publishes_the_certificate_fingerprint_in_the_txt_record(
+    tmp_path: Path,
+) -> None:
+    from kalshiterm_server import tls
+
+    info = tls.write_certificate(tmp_path, ["mac-studio"], [])
+    result = advertise(tmp_path / tls.CERT_FILE, 8700, "--name", "My Studio", "--print")
+    if "need dns-sd" in result.stderr:
+        pytest.skip("neither dns-sd nor avahi-publish-service is installed here")
+    assert result.returncode == 0, result.stderr
+    words = result.stdout.splitlines()  # one argument per line
+    assert words[0] in ("dns-sd", "avahi-publish-service")
+    assert "My Studio" in words and "_kterm._tcp" in words and "8700" in words
+    assert "v=1" in words
+    assert f"fp={info.fingerprint.replace(':', '').lower()}" in words
+
+
+@posix_only
+def test_the_advertiser_refuses_bad_input_without_publishing(tmp_path: Path) -> None:
+    missing = advertise(tmp_path / "nothing.pem", 8700, "--print")
+    assert missing.returncode == 1 and "cannot read a certificate" in missing.stderr
+    from kalshiterm_server import tls
+
+    tls.write_certificate(tmp_path, ["h"], [])
+    assert advertise(tmp_path / tls.CERT_FILE, "eighty", "--print").returncode == 2
+    assert advertise(tmp_path / tls.CERT_FILE, 8700, "--bogus").returncode == 2
