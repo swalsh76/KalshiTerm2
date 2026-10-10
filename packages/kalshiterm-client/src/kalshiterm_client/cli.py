@@ -6,7 +6,7 @@ from typing import Annotated
 
 import typer
 
-from kalshiterm_client import connection, pinning, secrets, status_view
+from kalshiterm_client import connection, discovery, pinning, secrets, status_view
 from kalshiterm_client.profiles import (
     PROFILE_ENV,
     Profile,
@@ -166,6 +166,42 @@ def _show_certificate(details: pinning.CertDetails) -> None:
     )
 
 
+def _advertised(url: str, skip: bool) -> discovery.Found | None:
+    """The LAN advertisement for this address, if any (never an error: it is optional)."""
+    if skip:
+        return None
+    try:
+        return discovery.matching(url, discovery.browse(timeout=1.5))
+    except Exception:  # mDNS can be unavailable (no multicast, firewall); pinning still works
+        return None
+
+
+@server_app.command("discover")
+def server_discover(
+    timeout: Annotated[float, typer.Option(help="Seconds to listen.")] = 3.0,
+) -> None:
+    """List KalshiTerm servers announcing themselves on this network (mDNS)."""
+    try:
+        servers = discovery.browse(timeout=timeout)
+    except Exception as exc:  # no network, no multicast, ...
+        raise fail(f"cannot listen for servers: {exc.__class__.__name__}: {exc}") from exc
+    if not servers:
+        typer.echo(
+            "no servers found (announcing is optional: add one by hand with `kterm config add`)"
+        )
+        return
+    for server in servers:
+        short = (server.fingerprint or "none advertised")[:23]
+        typer.echo(f"{server.name}")
+        typer.echo(f"  address:     {server.url}  ({', '.join(server.addresses) or 'no address'})")
+        typer.echo(f"  fingerprint: {short}{'...' if server.fingerprint else ''}")
+        typer.echo(f"  add it:      kterm config add NAME --url {server.url}")
+    typer.echo(
+        "\nThese are announcements anyone on the network can make. Confirm the fingerprint with "
+        "the server's operator when you run `kterm server trust`."
+    )
+
+
 @server_app.command("trust")
 def server_trust(
     fingerprint: Annotated[
@@ -175,6 +211,9 @@ def server_trust(
             "fingerprint (as printed by `kterm-server init` or `cert show`)."
         ),
     ] = None,
+    no_mdns: Annotated[
+        bool, typer.Option("--no-mdns", help="Do not look for the server's LAN advertisement.")
+    ] = False,
 ) -> None:
     """Read the server's certificate, show its fingerprint, and pin it after you confirm.
 
@@ -187,6 +226,20 @@ def server_trust(
     try:
         pem = pinning.fetch_certificate(profile.url)
         details = pinning.describe(pem)
+        advert = _advertised(profile.url, no_mdns)
+        if advert is not None and advert.fingerprint not in (None, details.fingerprint):
+            typer.echo("WARNING: the fingerprint this server ADVERTISES on the LAN differs:")
+            typer.echo(f"  advertised: {advert.fingerprint}")
+            typer.echo(f"  presented:  {details.fingerprint}")
+            typer.echo(
+                "A stale advertisement (certificate just rotated) or something else answering "
+                "on this address. Wait a minute and retry, or compare with the operator's "
+                "fingerprint and pass it with --fingerprint."
+            )
+            if fingerprint is None:
+                raise fail("not trusted; nothing changed")
+        elif advert is not None and advert.fingerprint:
+            typer.echo("The LAN advertisement carries the same fingerprint (a cross-check only).")
         if fingerprint is not None:
             wanted = pinning.normalise_fingerprint(fingerprint)
             if wanted != details.fingerprint:

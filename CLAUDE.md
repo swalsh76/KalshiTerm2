@@ -7,10 +7,11 @@ architecture, packaging, deployment, and build order. Update it when decisions c
 
 ## Status
 
-Phases 0 (scaffolding) and 1 (`kalshi-core`) are complete and merged to `main`. Phase 2
-(server storage and ingestion) is built through slice 2.9 (deployment rehearsed on the
-MacBook); 2.10 (48-hour volume calibration on the MacBook; hardware tests when the Mac Studio's
-SSD arrives) is tracked in PLAN.md §10.2 and does **not** block later phases. Next: Phase 3. Decisions made: web UI + Typer CLI, manual trading
+Phases 0 (scaffolding), 1 (`kalshi-core`), 2 (server storage and ingestion), 3 (server API)
+and 3b (LAN features: backup/restore, client profiles with keyring tokens, TOFU certificate
+pinning, mDNS discovery) are complete and merged to `main`. Remaining hardware/measurement work
+(2.10b steps 3-6) is tracked in PLAN.md §10.2 and does **not** block later phases; the 48-hour
+calibration (2.10a) was dropped. Next: Phase 4 (analytics). Decisions made: web UI + Typer CLI, manual trading
 first, multi-user server, MIT license, no PyPI publishing, public GitHub repository (since 2026-10-08), multivariate markets kept,
 read-only production key for dev. No **[OPEN]** items remain in PLAN.md §12.
 
