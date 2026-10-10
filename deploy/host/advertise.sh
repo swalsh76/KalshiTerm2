@@ -29,6 +29,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# A DNS label is at most 63 bytes; a longer service name is rejected by mDNS responders.
+name="$(printf '%s' "$name" | LC_ALL=C cut -b1-63)"
+
 case "$port" in
   '' | *[!0-9]*) echo "PORT must be a number" >&2; exit 2 ;;
 esac

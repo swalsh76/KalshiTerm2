@@ -323,3 +323,15 @@ def test_the_advertiser_refuses_bad_input_without_publishing(tmp_path: Path) -> 
     tls.write_certificate(tmp_path, ["h"], [])
     assert advertise(tmp_path / tls.CERT_FILE, "eighty", "--print").returncode == 2
     assert advertise(tmp_path / tls.CERT_FILE, 8700, "--bogus").returncode == 2
+
+
+@posix_only
+def test_a_long_service_name_is_cut_to_the_63_bytes_mdns_allows(tmp_path: Path) -> None:
+    from kalshiterm_server import tls
+
+    tls.write_certificate(tmp_path, ["h"], [])
+    result = advertise(tmp_path / tls.CERT_FILE, 8700, "--name", "N" * 100, "--print")
+    if "need dns-sd" in result.stderr:
+        pytest.skip("neither dns-sd nor avahi-publish-service is installed here")
+    assert result.returncode == 0, result.stderr
+    assert "N" * 63 in result.stdout.splitlines() and "N" * 64 not in result.stdout

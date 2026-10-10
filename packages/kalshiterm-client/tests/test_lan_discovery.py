@@ -1,4 +1,5 @@
 import socket
+import uuid
 from pathlib import Path
 
 import pytest
@@ -62,7 +63,7 @@ def test_real_multicast_round_trip() -> None:
     publisher = Zeroconf(interfaces=["127.0.0.1"])
     advertised = ServiceInfo(
         SERVICE_TYPE,
-        f"KalshiTerm test-{socket.gethostname()}.{SERVICE_TYPE}",
+        f"KalshiTerm test-{uuid.uuid4().hex[:8]}.{SERVICE_TYPE}",
         addresses=[socket.inet_aton("127.0.0.1")],
         port=8700,
         properties={b"v": b"1", b"fp": b"cd" * 32},
