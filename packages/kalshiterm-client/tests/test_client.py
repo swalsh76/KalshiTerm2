@@ -1,7 +1,8 @@
 """ServerClient behaviour against a scripted transport: retries, errors, paging, parameters."""
 
+import json
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -387,3 +388,282 @@ async def test_loopback_http_profiles_need_no_pin_and_use_the_stored_token() -> 
         assert api.base_url == "http://127.0.0.1:8700"
     explicit = ServerClient.for_profile(profile("http://127.0.0.1:8700"), token="kt_1_" + "A" * 43)
     await explicit.aclose()
+
+
+# ------------------------------------------------------------------ account and analytics
+
+RULE = {
+    "id": 7,
+    "name": "wide",
+    "metric": "market_quotes.spread",
+    "op": "gt",
+    "threshold": "0.050000",
+    "unit": "dollars",
+    "cooldown_seconds": 900,
+    "enabled": True,
+    "active": False,
+    "last_fired_at": None,
+    "created_at": "2026-10-12T12:00:00.000000+00:00",
+    "ticker": "KXA-E1-X",
+}
+ALERT = {
+    "id": 3,
+    "rule_id": 7,
+    "rule_name": "wide",
+    "fired_at": "2026-10-12T12:01:00.000000+00:00",
+    "metric": "market_quotes.spread",
+    "op": "gt",
+    "threshold": "0.050000",
+    "value": "0.080000",
+    "unit": "dollars",
+    "acknowledged_at": None,
+    "ticker": "KXA-E1-X",
+}
+
+
+def body(request: httpx.Request) -> dict[str, Any]:
+    parsed: dict[str, Any] = json.loads(request.content)
+    return parsed
+
+
+async def test_the_watchlist_is_read_and_changed_with_the_right_verbs() -> None:
+    listing = {
+        "markets": [
+            {
+                "ticker": "KXA-E1-X",
+                "event_title": "An event",
+                "status": "active",
+                "added_at": "2026-10-12T12:00:00.000000+00:00",
+                "capturing": False,
+            }
+        ],
+        "limit": 50,
+    }
+    server = Server(listing)
+    async with server.client() as api:
+        watchlist = await api.watchlist()
+    assert watchlist.limit == 50 and watchlist.markets[0].capturing is False
+    changes = Server(
+        {"ticker": "T", "added": True},
+        {"ticker": "T", "added": False},
+        {"ticker": "T", "removed": True},
+    )
+    async with changes.client() as api:
+        assert await api.watch("T") is True and await api.watch("T") is False
+        assert await api.unwatch("T") is True
+    assert [(r.method, r.url.path) for r in changes.requests] == [
+        ("PUT", "/v1/watchlist/T"),
+        ("PUT", "/v1/watchlist/T"),
+        ("DELETE", "/v1/watchlist/T"),
+    ]
+
+
+async def test_a_rule_is_created_with_an_exact_string_threshold_and_only_the_given_fields() -> None:
+    server = Server(httpx.Response(201, json=RULE))
+    async with server.client() as api:
+        rule = await api.create_alert_rule(
+            "market_quotes.spread", "gt", Decimal("0.050"), ticker="KXA-E1-X", name="wide"
+        )
+    [request] = server.requests
+    assert request.method == "POST" and request.url.path == "/v1/alert-rules"
+    assert body(request) == {
+        "metric": "market_quotes.spread",
+        "op": "gt",
+        "threshold": "0.050",
+        "ticker": "KXA-E1-X",
+        "name": "wide",
+    }
+    assert rule.id == 7 and rule.threshold == Decimal("0.050000") and rule.ticker == "KXA-E1-X"
+    assert rule.event_ticker is None and rule.last_fired_at is None
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        (0.1, TypeError),  # a float is already not the number you meant
+        (True, TypeError),
+        (5, TypeError),
+        (None, TypeError),
+        ("abc", ValueError),
+        ("NaN", ValueError),
+        ("Infinity", ValueError),
+        (Decimal("0.1234567"), ValueError),  # finer than a millionth
+        ("1e-7", ValueError),
+    ],
+)
+async def test_thresholds_that_are_not_exact_numbers_are_refused_before_any_request(
+    value: Any, error: type[Exception]
+) -> None:
+    server = Server(httpx.Response(201, json=RULE))
+    async with server.client() as api:
+        with pytest.raises(error):
+            await api.create_alert_rule("market_quotes.spread", "gt", value, ticker="T")
+        if value is not None:  # for an update, None means "leave the threshold alone"
+            with pytest.raises(error):
+                await api.update_alert_rule(7, threshold=value)
+    assert server.requests == []
+
+
+@pytest.mark.parametrize(
+    ("given", "sent"),
+    [
+        (Decimal("0.25"), "0.25"),
+        ("0.25", "0.25"),
+        (Decimal("1E+2"), "100"),
+        (Decimal("-0.05"), "-0.05"),
+        ("100", "100"),
+        (Decimal("0.000001"), "0.000001"),
+    ],
+)
+async def test_numbers_are_sent_in_plain_notation(given: Any, sent: str) -> None:
+    server = Server(httpx.Response(201, json=RULE))
+    async with server.client() as api:
+        await api.create_alert_rule("market_quotes.spread", "gt", given, ticker="T")
+    assert body(server.requests[0])["threshold"] == sent
+
+
+async def test_updating_a_rule_sends_only_what_changes_including_false() -> None:
+    server = Server(RULE)
+    async with server.client() as api:
+        await api.update_alert_rule(7, enabled=False)
+        await api.update_alert_rule(7, threshold="0.2", cooldown_seconds=600, name="renamed")
+        await api.update_alert_rule(7)
+    assert [r.method for r in server.requests] == ["PATCH"] * 3
+    assert body(server.requests[0]) == {"enabled": False}
+    assert body(server.requests[1]) == {
+        "threshold": "0.2",
+        "cooldown_seconds": 600,
+        "name": "renamed",
+    }
+    assert body(server.requests[2]) == {}
+
+
+async def test_deleting_and_acknowledging_use_the_right_verbs() -> None:
+    server = Server({"id": 7, "deleted": True}, {"id": 3, "acknowledged": True})
+    async with server.client() as api:
+        await api.delete_alert_rule(7)
+        await api.acknowledge_alert(3)
+    assert [(r.method, r.url.path) for r in server.requests] == [
+        ("DELETE", "/v1/alert-rules/7"),
+        ("POST", "/v1/alerts/3/acknowledge"),
+    ]
+
+
+@pytest.mark.parametrize("failure", [error(500, "x"), error(503, "x"), httpx.ConnectError("reset")])
+async def test_no_write_is_ever_retried(failure: Any, real_delays: None) -> None:
+    """A retried create could make the rule twice; a retried acknowledge is harmless but the rule
+    is the same for every write: if the answer is lost, the caller looks and decides."""
+    calls: list[Callable[[ServerClient], Awaitable[Any]]] = [
+        lambda api: api.watch("T"),
+        lambda api: api.unwatch("T"),
+        lambda api: api.create_alert_rule("market_quotes.spread", "gt", "0.1", ticker="T"),
+        lambda api: api.update_alert_rule(7, enabled=True),
+        lambda api: api.delete_alert_rule(7),
+        lambda api: api.acknowledge_alert(3),
+    ]
+    for call in calls:
+        server = Server(failure)
+        async with server.client() as api:
+            with pytest.raises(ConnectionProblem):
+                await call(api)
+        assert len(server.requests) == 1 and server.sleeps == []
+
+
+async def test_a_rejected_rule_keeps_the_servers_reason() -> None:
+    server = Server(error(422, "not_watched", ticker="KXA-E1-X"))
+    async with server.client() as api:
+        with pytest.raises(InvalidRequest) as caught:
+            await api.create_alert_rule("market_quotes.spread", "gt", "0.05", ticker="KXA-E1-X")
+    assert caught.value.code == "not_watched" and caught.value.extra == {"ticker": "KXA-E1-X"}
+    other = Server(error(422, "cooldown_too_short", minimum=300))
+    async with other.client() as api:
+        with pytest.raises(InvalidRequest) as short:
+            await api.create_alert_rule(
+                "market_quotes.spread", "gt", "0.05", ticker="T", cooldown_seconds=5
+            )
+    assert short.value.extra == {"minimum": 300}
+
+
+async def test_analytics_answers_are_typed_and_the_parameters_reach_the_server() -> None:
+    results = {
+        "ticker": "T",
+        "as_of": "2026-10-12T12:00:00.000000+00:00",
+        "results": [
+            {
+                "metric": "market_quotes.spread",
+                "value": "0.020000",
+                "unit": "dollars",
+                "time": "2026-10-12T11:59:00.000000+00:00",
+                "age_seconds": 60,
+            }
+        ],
+    }
+    opportunities = {
+        "as_of": "2026-10-12T12:00:00.000000+00:00",
+        "total": 1,
+        "opportunities": [
+            {
+                "event_ticker": "KX-E1",
+                "time": "2026-10-12T11:59:30.000000+00:00",
+                "bid_sum": "1.050000",
+                "edge": "0.050000",
+                "size": "10.000000",
+                "fees": "0.480000",
+                "profit": "0.020000",
+                "legs": 3,
+                "legs_total": 4,
+                "oldest_quote_age_seconds": 45,
+            }
+        ],
+    }
+    server = Server(results, opportunities)
+    async with server.client() as api:
+        got = await api.market_results("T", max_age_seconds=600)
+        found = await api.arbitrage(min_profit=Decimal("0"), limit=5)
+    assert got.results[0].value == Decimal("0.020000") and got.results[0].age_seconds == 60
+    assert dict(server.requests[0].url.params) == {"max_age_seconds": "600"}
+    assert dict(server.requests[1].url.params) == {"min_profit": "0", "limit": "5"}
+    assert found.opportunities[0].profit == Decimal("0.020000") and found.total == 1
+    with pytest.raises(TypeError):
+        await api.arbitrage(min_profit=0.0)  # type: ignore[arg-type]
+
+
+async def test_history_and_alert_iterators_page_to_the_end() -> None:
+    points = [
+        {"time": f"2026-10-12T11:{59 - n:02d}:00.000000+00:00", "value": "0.010000"}
+        for n in range(5)
+    ]
+
+    def history(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params.get("cursor", "0"))
+        chunk = points[offset : offset + 2]
+        more = offset + 2 < 5
+        return httpx.Response(
+            200,
+            json={
+                "ticker": "T",
+                "metric": "a.b",
+                "unit": None,
+                "points": chunk,
+                "next_cursor": str(offset + 2) if more else None,
+            },
+        )
+
+    api = ServerClient("https://example.test", TOKEN, transport=httpx.MockTransport(history))
+    async with api:
+        assert len([p async for p in api.iter_market_history("T", "a.b", limit=2)]) == 5
+
+    seen: list[httpx.Request] = []
+
+    def alerts(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        offset = int(request.url.params.get("cursor", "0"))
+        chunk = [{**ALERT, "id": 10 - offset - i} for i in range(2)]
+        return httpx.Response(
+            200, json={"alerts": chunk, "next_cursor": "2" if offset == 0 else None}
+        )
+
+    api = ServerClient("https://example.test", TOKEN, transport=httpx.MockTransport(alerts))
+    async with api:
+        ids = [a.id async for a in api.iter_alerts(unacknowledged=True, limit=2)]
+    assert ids == [10, 9, 8, 7] and seen[0].url.params["unacknowledged"] == "true"

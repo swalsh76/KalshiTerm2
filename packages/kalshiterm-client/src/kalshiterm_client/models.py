@@ -187,3 +187,137 @@ class Gap(ApiModel):
     messages_dropped: int
     trades_recovered: int
     note: str
+
+
+# ---------------------------------------------------------------- your watchlist
+
+
+class WatchedMarket(ApiModel):
+    ticker: str
+    event_title: str | None = None
+    status: str
+    added_at: datetime
+    capturing: bool  # the server is storing this market's orderbook right now
+
+
+class Watchlist(ApiModel):
+    markets: list[WatchedMarket]
+    limit: int
+
+
+# ---------------------------------------------------------------- analytics
+
+
+class AnalyticsValue(ApiModel):
+    """One analyzer metric. ``value`` is in ``unit`` (dollars, contracts or seconds); ``unit`` is
+    None for a plugin's metric the catalog does not know."""
+
+    metric: str  # "analyzer.metric"
+    value: Decimal
+    unit: str | None = None
+    time: datetime
+    age_seconds: int
+
+
+class MarketResults(ApiModel):
+    ticker: str
+    as_of: datetime
+    results: list[AnalyticsValue]
+
+
+class EventResults(ApiModel):
+    event_ticker: str
+    as_of: datetime
+    results: list[AnalyticsValue]
+
+
+class HistoryPoint(ApiModel):
+    time: datetime
+    value: Decimal
+
+
+class MetricHistory(ApiModel):
+    ticker: str
+    metric: str
+    unit: str | None = None
+    points: list[HistoryPoint]  # newest first
+    next_cursor: str | None = None
+
+
+class Opportunity(ApiModel):
+    """An event whose YES bids sum to more than $1. ``profit`` is after Kalshi's taker fees and
+    is often negative; this is an indication from stored quotes (see ``oldest_quote_age_seconds``),
+    to be confirmed against the live book before trading."""
+
+    event_ticker: str
+    time: datetime
+    bid_sum: Decimal | None = None
+    edge: Decimal
+    size: Decimal | None = None
+    fees: Decimal | None = None
+    profit: Decimal
+    legs: int | None = None
+    legs_total: int | None = None
+    oldest_quote_age_seconds: int | None = None
+
+
+class Opportunities(ApiModel):
+    as_of: datetime
+    opportunities: list[Opportunity]
+    total: int
+
+
+# ---------------------------------------------------------------- alerts
+
+
+class AlertMetric(ApiModel):
+    metric: str  # "analyzer.metric"
+    subject: Literal["market", "event"]
+    unit: str
+    ops: list[str]
+    meaning: str
+
+
+class AlertMetrics(ApiModel):
+    metrics: list[AlertMetric]
+
+
+class AlertRule(ApiModel):
+    id: int
+    name: str
+    metric: str
+    op: str
+    threshold: Decimal  # in the metric's unit
+    unit: str | None = None
+    cooldown_seconds: int
+    enabled: bool
+    active: bool  # the condition held when the rule was last checked
+    last_fired_at: datetime | None = None
+    created_at: datetime
+    ticker: str | None = None
+    event_ticker: str | None = None
+
+
+class AlertRules(ApiModel):
+    rules: list[AlertRule]
+    limit: int
+
+
+class Alert(ApiModel):
+    id: int
+    rule_id: int | None = None  # None once the rule was deleted
+    rule_name: str
+    fired_at: datetime
+    metric: str
+    op: str
+    threshold: Decimal
+    value: Decimal
+    unit: str | None = None
+    acknowledged_at: datetime | None = None
+    ticker: str | None = None
+    event_ticker: str | None = None
+
+
+class AlertPage(ApiModel):
+    alerts: list[Alert]
+    next_cursor: str | None = None
