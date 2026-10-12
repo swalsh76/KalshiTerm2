@@ -862,7 +862,7 @@ Each phase ends with passing tests and CI green.
 | **3. Server API** | REST + WS push with catch-up, token auth, TLS, health/status endpoints |
 | **3b. LAN features** | zeroconf discovery, client profiles, TOFU cert pinning, `cert rotate`, `kterm server status`, backup/restore — **done** (slices 3b.1-3b.4 in §10.4) |
 | **4. Analytics** | Plugin framework + built-in analyzers + alerts — **done** (slices 4.1-4.5 in §10.5) |
-| **5. Client data side** | Server API client, CLI data views |
+| **5. Client data side** | Server API client, CLI data views — slices 5.1-5.5 in §10.6 |
 | **6. Client trading** | Risk layer first, order management, private WS channels; **demo-only until sign-off**; test proving trading works with server offline |
 | **7. Terminal UI** | Bloomberg-style UI per §7 decision (local backend, panels, grids, charts, command bar, order entry) |
 | **8. Packaging** | Frontend build bundled into client wheel, install docs, tagged v0.1.0 |
@@ -1199,6 +1199,40 @@ relative-volume rules, alert delivery outside the client, ask-side arbitrage, pl
 | 4.5 — done | API and push: `/v1/analytics/...` result queries, alerts pushed to their owner over `/v1/stream` with the existing cursor and resume rules, analyzer state in `/v1/status` |
 | deferred | Alert delivery outside the client (email, mobile push), the ask-side arbitrage check, plugin sandboxing: parking lot |
 
+### 10.6 Phase 5 slices (client data side)
+
+**What exists:** the server's API is complete (reference data, candles, raw trades / ticks /
+orderbook, gaps, watchlist, analytics, alerts, `/v1/stream`). The client has profiles, keyring
+tokens, certificate pinning, discovery and one GET-only helper (`connection.request`: a new
+connection per call, no retries, no streaming). **Why the library comes before the CLI:** Phase 6
+(trading needs market data beside it) and Phase 7 (the local backend that serves the browser) are
+both consumers of the same typed client, so the CLI is built as a thin consumer of it, not the
+other way round.
+
+**Decisions (recommended defaults; say if you disagree).**
+1. **Async-first typed client** (`httpx` + `websockets`), response models in `pydantic` like
+   `kalshi-core`, prices and counts as `Decimal` parsed from the server's decimal strings (never
+   `float`). The CLI wraps it with `asyncio.run`.
+2. **The client does not import the server package** (separate wheels; a workstation never has the
+   server installed), so the response models are written for the client. **Drift is prevented by
+   contract tests**: client tests run the real server app over a seeded database and require every
+   endpoint's JSON to validate against the client's models (the workspace has both packages).
+3. **Only idempotent GETs are retried** (network errors and 5xx, bounded backoff, honouring
+   `Retry-After` on 429). Writes (watchlist, rules, acknowledge) are never retried silently.
+4. **Live stream state lives in memory** (cursors for market data and for alerts); a dropped
+   connection resumes with `since` / `alerts_since` and the library hands the caller each event
+   exactly once. Persisting cursors across CLI runs is not needed (parking lot).
+5. **CLI output:** `rich` tables for people, `--json` on every command for scripts; no CSV yet.
+
+| # | Slice |
+|---|---|
+| 5.1 | API client foundation: `ServerClient` (pinned TLS, token, connection reuse, timeouts, retries for GETs, the error taxonomy of `connection.py`, pagination iterators) and typed models + methods for `me`, `status`, markets (list / search / get), events, candles, trades, ticks, orderbook and gaps; contract tests against the real server; `kterm server status` moves onto it |
+| 5.2 | The rest of the API in the client: watchlist, analytics (market latest / history, event, arbitrage) and alerts (metrics, rules create / list / change / delete, alerts list / acknowledge), with contract tests |
+| 5.3 | Live stream client: `StreamClient` (pinned `wss`, header auth, reconnect with backoff, heartbeat timeout detection, `since` / `alerts_since` resume with exactly-once delivery, `gap` handling), a `BookTracker` that keeps an orderbook from `book_snapshot` / `book_delta` events; tested against the real server over a real socket with forced disconnects (no duplicates, no gaps) |
+| 5.4 | CLI data views: `kterm markets`, `market`, `candles`, `trades`, `book`, `analytics`, `arbitrage` (tables and `--json`) |
+| 5.5 | CLI account and live views: `watchlist`, `alerts` (rules, list, acknowledge), `watch` (live tickers / trades / book) and `alerts watch`; an end-to-end check against a live server |
+| deferred | CSV export, a local response cache or offline mode, persisted stream cursors, shell completion: parking lot. Trading is Phase 6 and the browser UI Phase 7 |
+
 ## 11. Risks & Notes
 
 - **Client throughput (offline benchmark, `packages/kalshi-core/bench/throughput.py`,
@@ -1296,4 +1330,5 @@ Ideas raised but **not** in scope. Not to be built until promoted into a phase.
 - Ask-side arbitrage (buy every YES leg when asks sum under 100¢): needs a reliable "exhaustive event" signal Kalshi does not provide. Raised 2026-10-10.
 - Sandboxing or resource limits for third-party analyzers beyond a per-run timeout. Raised 2026-10-10.
 - Alerts on plugin-provided metrics (today only the built-in catalog is alertable), "any watched market" wildcard rules, and relative volume-spike rules (volume against the market's own baseline). Raised 2026-10-12 with slice 4.4.
+- Client: CSV export of series (candles, history), a local response cache / offline mode, persisted stream cursors across CLI runs, and shell completion. Raised 2026-10-12 with the Phase 5 breakdown.
 - Exclude the fast crypto 15-minute books from the auto top-N (they made 58% of orderbook deltas in the 2.7a sample). Raised 2026-10-07; deferred until the storage governor (2.8) shows whether it is needed.
