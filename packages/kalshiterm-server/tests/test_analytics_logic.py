@@ -15,6 +15,16 @@ from kalshiterm_server.analytics.base import (
 )
 from kalshiterm_server.analytics.registry import discover
 
+BUILTIN = {"market_quotes", "market_moves", "market_volatility"}
+
+
+def test_the_built_in_analyzers_come_through_the_same_entry_points_as_plugins() -> None:
+    found = discover()
+    assert set(found.analyzers) >= BUILTIN and found.failures == []
+    assert all(found.sources[name].startswith("kalshiterm-server: ") for name in BUILTIN)
+    assert found.analyzers["market_volatility"].interval == timedelta(seconds=300)
+    assert set(discover(disabled=BUILTIN).analyzers) == set()
+
 
 class Good:
     name = "good"
@@ -175,7 +185,7 @@ def test_a_broken_plugin_is_reported_and_the_good_ones_still_load(plugins: Path)
         },
     )
     found = discover()
-    assert set(found.analyzers) == {"spread"}
+    assert set(found.analyzers) == {"spread"} | BUILTIN
     reasons = {f.entry_point: f.error for f in found.failures}
     assert "ModuleNotFoundError" in reasons["missing"]
     assert "must match" in reasons["wrong"]
@@ -194,4 +204,4 @@ def test_two_entry_points_providing_the_same_analyzer_do_not_both_load(plugins: 
 def test_disabled_analyzers_are_left_out_without_being_failures(plugins: Path) -> None:
     install(plugins, "kterm-fake", {"spread": "kterm_fake_plugin:Spread"})
     found = discover(disabled={"spread"})
-    assert found.analyzers == {} and found.failures == []
+    assert set(found.analyzers) == BUILTIN and found.failures == []

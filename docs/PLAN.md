@@ -1071,10 +1071,42 @@ if the event is also *exhaustive*, which Kalshi does not flag (most of the 70 ar
 4. **Fees are a configurable model**, default zero in code and set from Kalshi's published
    schedule when the arbitrage slice is built (it must be checked then, not assumed now).
 
+**4.2 as built.** Three built-in analyzers in `analytics/builtin/market_metrics.py`, registered
+through the same entry points as plugins: `market_quotes` (60 s), `market_moves` (60 s) and
+`market_volatility` (300 s). **Universe: the watch union** (every open watchlist period plus pins,
+`analytics/universe.py`). *Measured 2026-10-12:* 17,892 markets ticked in 10 minutes and 34,798 in an
+hour, so analyzing every active market at one-minute cadence would store ~250 million rows a day;
+the watch union reached 149 markets within an hour at `auto_top_n = 60` (each entry stays 12 h),
+which is ~14 rows per market per minute, **~3 million rows a day**. Compressed (2.88 M rows of
+10 metrics for 200 markets: 504 MB -> 22 MB) that is ~7.7 B/row on smooth data, so budget 10-15
+B/row, **~1 GB for the 30-day retention**; the first day is uncompressed (~175 B/row with indexes,
+~0.5 GB). Compute is not the constraint: 60-150 markets take well under a second per analyzer.
+*Units:* every `value_e6` is millionths of the natural unit: prices, spreads, changes and volatility in
+dollars (one cent = 10000), sizes and volumes in contracts, ages in seconds. Source facts are exact
+(sizes are hundredths of a contract x 10000); derived numbers (mid rounded half up, averages, the
+square root) are rounded to a millionth. *Metrics:* `bid ask mid spread spread_avg_15m quote_age
+bid_size ask_size` (latest two-sided quote within 15 minutes), `last change_15m change_1h change_24h
+volume_1h volume_24h` (baseline = the last tick at or before the window start), `volatility_1h` (the
+per-minute root-mean-square change of the last price, a step across silent minutes scaled as a
+random walk, at least 20 steps). A metric that cannot be computed honestly is absent; nothing is
+carried over or invented. *Read from raw `tickers`, not `ticker_1m`:* the aggregate is
+materialized-only and measured ~3 minutes behind the newest tick.
+**Recording gaps (found while checking the design):** a quiet market and a market we were not
+recording look the same in `tickers`, so a "24-hour change" across an ingest outage would be wrong.
+A window metric is therefore reported only if the whole window lies after recording last resumed
+(newest `ended_at` in `ingest_gaps`, ignoring `delta_shed`; never `started_at`, which is truncated
+to the backfill window for long outages). Consequence: after any ingest restart, `change_24h` and
+`volume_24h` return 24 hours later, 1-hour metrics after an hour, and volatility uses only the
+trustworthy part of its hour. **Verified:** 301 values (quotes, 15-minute changes, volatility)
+recomputed independently in Python from raw ticks on frozen data matched exactly; on live data
+the first comparison showed 18 differences, all ticks that arrived between the analyzer's query
+and the check. Runs are snapshots "as of the run's start": a tick stamped before that moment can
+still be written a few seconds later.
+
 | # | Slice |
 |---|---|
 | 4.1 — done | Framework: migration (`analysis_results`, `analyzer_runs`), the `Analyzer` interface and registry (entry points `kalshiterm.analyzers`; built-ins are registered the same way), `kterm-server analyze` runner (per-analyzer interval, per-run timeout, failures isolated and recorded), `NOTIFY` on new results, an `analyze` Compose service, `status` shows each analyzer's last run and problems; tested with a fake third-party plugin installed through an entry point |
-| 4.2 | Market metrics: spread and top-of-book liquidity, realized volatility, price and volume change over windows, for markets that ticked recently; results stored per 4.1 |
+| 4.2 — done | Market metrics: spread and top-of-book liquidity, realized volatility, price and volume change over windows, for markets that ticked recently; results stored per 4.1 |
 | 4.3 | Cross-market arbitrage (bid side): simultaneous-quote window, sizes, executable size, fee model, one result per event; the fee schedule is checked against Kalshi's published one at the start of the slice |
 | 4.4 | Alerts: per-user rules (price move, volume spike, spread, arbitrage profit) with per-user limits and cooldown, evaluator in `analyze`, `alerts` table, REST to create/list/acknowledge |
 | 4.5 | API and push: `/v1/analytics/...` result queries, alerts pushed to their owner over `/v1/stream` with the existing cursor and resume rules, analyzer state in `/v1/status` |

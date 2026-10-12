@@ -24,6 +24,12 @@ dependencies = [
 [project.scripts]
 kterm-server = "kalshiterm_server.cli:app"
 
+# Built-in analyzers are registered exactly like third-party ones (PLAN §10.5)
+[project.entry-points."kalshiterm.analyzers"]
+market_quotes = "kalshiterm_server.analytics.builtin.market_metrics:MarketQuotes"
+market_moves = "kalshiterm_server.analytics.builtin.market_metrics:MarketMoves"
+market_volatility = "kalshiterm_server.analytics.builtin.market_metrics:MarketVolatility"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/kalshiterm_server"]
 
