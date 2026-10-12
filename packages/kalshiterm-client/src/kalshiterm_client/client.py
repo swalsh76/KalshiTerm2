@@ -60,7 +60,7 @@ MAX_RETRY_AFTER = 5.0  # a 429 asking for a longer wait is reported, not waited 
 USER_AGENT = "kterm"
 
 
-def _ssl_cause(exc: BaseException) -> ssl.SSLCertVerificationError | None:
+def ssl_cause(exc: BaseException) -> ssl.SSLCertVerificationError | None:
     seen: set[int] = set()
     while exc is not None and id(exc) not in seen:
         if isinstance(exc, ssl.SSLCertVerificationError):
@@ -68,6 +68,38 @@ def _ssl_cause(exc: BaseException) -> ssl.SSLCertVerificationError | None:
         seen.add(id(exc))
         exc = exc.__cause__ or exc.__context__  # type: ignore[assignment]
     return None
+
+
+def _why(cause: ssl.SSLCertVerificationError) -> str:
+    """OpenSSL's reason for the failure (not every error carries it)."""
+    return str(getattr(cause, "verify_message", None) or cause)
+
+
+async def explain_tls_failure(
+    profile: Profile | None, cause: ssl.SSLCertVerificationError
+) -> ConnectionProblem:
+    """Tell a changed certificate (a security event) from an expired or mismatched one."""
+    if profile is None:
+        return ConnectionProblem(f"the server's certificate was rejected ({_why(cause)})")
+    try:
+        presented = fingerprint_of_pem(await asyncio.to_thread(fetch_certificate, profile.url))
+    except ProfileError:
+        presented = None
+    if presented is not None and presented != profile.fingerprint:
+        return CertificateChanged(
+            f"THE CERTIFICATE OF {profile.name} HAS CHANGED. Nothing was sent.\n"
+            f"  pinned:    {profile.fingerprint}\n"
+            f"  presented: {presented}\n"
+            "If you rotated the server's certificate, check the new fingerprint with the "
+            "server's operator (`kterm-server cert show`), then run "
+            f"`kterm --profile {profile.name} server trust`. If you did not, someone may be "
+            "impersonating the server: do not trust it."
+        )
+    return ConnectionProblem(
+        f"the pinned certificate is no longer acceptable ({_why(cause)}); the "
+        "certificate is unchanged, so check the name in the URL against the certificate's "
+        "names and its expiry (`kterm-server cert show`)"
+    )
 
 
 def _wire(params: dict[str, Any] | None) -> dict[str, str]:
@@ -159,31 +191,7 @@ class ServerClient:
     # ------------------------------------------------------------------ transport
 
     async def _explain_tls(self, cause: ssl.SSLCertVerificationError) -> ConnectionProblem:
-        """Tell a changed certificate (a security event) from an expired or mismatched one."""
-        profile = self._profile
-        if profile is None:
-            return ConnectionProblem(
-                f"the server's certificate was rejected ({cause.verify_message})"
-            )
-        try:
-            presented = fingerprint_of_pem(await asyncio.to_thread(fetch_certificate, profile.url))
-        except ProfileError:
-            presented = None
-        if presented is not None and presented != profile.fingerprint:
-            return CertificateChanged(
-                f"THE CERTIFICATE OF {profile.name} HAS CHANGED. Nothing was sent.\n"
-                f"  pinned:    {profile.fingerprint}\n"
-                f"  presented: {presented}\n"
-                "If you rotated the server's certificate, check the new fingerprint with the "
-                "server's operator (`kterm-server cert show`), then run "
-                f"`kterm --profile {profile.name} server trust`. If you did not, someone may be "
-                "impersonating the server: do not trust it."
-            )
-        return ConnectionProblem(
-            f"the pinned certificate is no longer acceptable ({cause.verify_message}); the "
-            "certificate is unchanged, so check the name in the URL against the certificate's "
-            "names and its expiry (`kterm-server cert show`)"
-        )
+        return await explain_tls_failure(self._profile, cause)
 
     def _problem(self, response: httpx.Response) -> ApiProblem:
         """The error a failed response stands for."""
@@ -235,7 +243,7 @@ class ServerClient:
             try:
                 response = await self._http.request(method, path, params=_wire(params), json=json)
             except httpx.HTTPError as exc:
-                cause = _ssl_cause(exc)
+                cause = ssl_cause(exc)
                 if cause is not None:  # never retried: a certificate problem will not go away
                     raise await self._explain_tls(cause) from exc
                 if attempt < len(delays):
