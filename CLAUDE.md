@@ -7,11 +7,12 @@ architecture, packaging, deployment, and build order. Update it when decisions c
 
 ## Status
 
-Phases 0 (scaffolding), 1 (`kalshi-core`), 2 (server storage and ingestion), 3 (server API)
-and 3b (LAN features: backup/restore, client profiles with keyring tokens, TOFU certificate
-pinning, mDNS discovery) are complete and merged to `main`. Remaining hardware/measurement work
+Phases 0 (scaffolding), 1 (`kalshi-core`), 2 (server storage and ingestion), 3 (server API),
+3b (LAN features: backup/restore, client profiles with keyring tokens, TOFU certificate
+pinning, mDNS discovery) and 4 (analytics: plugin framework, market metrics, arbitrage, per-user
+alerts, analytics REST and alert push) are complete and merged to `main`. Remaining hardware/measurement work
 (2.10b steps 3-6) is tracked in PLAN.md §10.2 and does **not** block later phases; the 48-hour
-calibration (2.10a) was dropped. Next: Phase 4 (analytics). Decisions made: web UI + Typer CLI, manual trading
+calibration (2.10a) was dropped. Next: Phase 5 (client data side). Decisions made: web UI + Typer CLI, manual trading
 first, multi-user server, MIT license, no PyPI publishing, public GitHub repository (since 2026-10-08), multivariate markets kept,
 read-only production key for dev. No **[OPEN]** items remain in PLAN.md §12.
 

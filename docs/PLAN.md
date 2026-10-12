@@ -861,7 +861,7 @@ Each phase ends with passing tests and CI green.
 | **2. Server storage & ingestion** | Schema + Alembic, Timescale hypertables, compression/retention policies, continuous aggregates, ingestor, Compose stack, `kterm-server init`, storage governor — broken into slices 2.1–2.10 in §10.1. **Code-complete at 2.9; the calibration and hardware qualification (2.10) are tracked in §10.2 and do not gate Phase 3** |
 | **3. Server API** | REST + WS push with catch-up, token auth, TLS, health/status endpoints |
 | **3b. LAN features** | zeroconf discovery, client profiles, TOFU cert pinning, `cert rotate`, `kterm server status`, backup/restore — **done** (slices 3b.1-3b.4 in §10.4) |
-| **4. Analytics** | Plugin framework + built-in analyzers + alerts — slices 4.1-4.5 in §10.5 |
+| **4. Analytics** | Plugin framework + built-in analyzers + alerts — **done** (slices 4.1-4.5 in §10.5) |
 | **5. Client data side** | Server API client, CLI data views |
 | **6. Client trading** | Risk layer first, order management, private WS channels; **demo-only until sign-off**; test proving trading works with server offline |
 | **7. Terminal UI** | Bloomberg-style UI per §7 decision (local backend, panels, grids, charts, command bar, order entry) |
@@ -1160,13 +1160,43 @@ alert is a 404):* `GET /v1/alert-metrics`; `POST|GET /v1/alert-rules`,
 over TLS (rule refused until the market was watched, fired once at the stored price of $0.997, not
 again on a second evaluation, acknowledged).
 
+**4.5 as built.** *Alerts over `/v1/stream`:* add `"alerts"` to `channels` in `subscribe` (alone or
+beside market channels) to receive your own alerts as `alert` events. They have **their own cursor
+space**, `alerts.id`, named `alert_cursor` on events and `alerts_cursor` in `subscribed`,
+`heartbeat` and `alerts_caught_up`, so it can never be mistaken for a market `cursor`; resume with
+`"alerts_since": "<id>"` (replays your missed alerts in id order, then `alerts_caught_up`, then
+live). Without it only alerts raised after the subscription are sent, so the recommended client
+flow is `GET /v1/alerts?unacknowledged=true` for the backlog, then subscribe with `alerts_since`
+set to the highest id held. *Why this is exactly-once:* the evaluator is the only writer of
+`alerts`; it holds a per-analyzer advisory lock for its whole run and commits before releasing it,
+so ids are assigned in commit order (the single-writer invariant of 3.7, again); a live
+subscription starts after the highest **committed** id, so a transaction still open at that moment
+is delivered when it commits (a test holds one open). Delivery is pulled page by page like the
+market streams (`stream_page`), a slow client is dropped (1013) and resumes with `alerts_since`,
+and the hub listens to `kterm_alerts` (with the 1-second poll as the fallback). Bad cursors are
+rejected without changing the subscription (`alerts_since` without the channel, non-numeric, in
+the future; `since` on an alerts-only subscription). Alerts older than 90 days are gone.
+*Analytics REST (shared by all users, read-only):* `GET /v1/analytics/markets/{ticker}` (newest
+value of every metric within `max_age_seconds`, default 1 hour, at most 24), `.../history?metric=
+analyzer.metric` (newest first, `since` / `until` / `limit` / `next_cursor`),
+`GET /v1/analytics/events/{event_ticker}`, and `GET /v1/analytics/arbitrage` (current
+opportunities, best profit first, `min_profit`, with `oldest_quote_age_seconds`; indications only,
+re-read the live book before trading). *Measured first:* on 2.6 million result rows (a day of 150
+markets x 12 metrics) the latest-per-metric, per-pair and history queries all took ~4 ms, so
+`DISTINCT ON` with the existing indexes is enough. `/v1/status` already carried the analyzer
+state (4.1) and is now covered by an API test. Verified over TLS: a `wss://` client was pushed an
+alert created by the real analyzer and evaluator running in separate processes.
+
+**Phase 4 is complete.** Open items it leaves (parking lot): plugin metrics in alerts, wildcard and
+relative-volume rules, alert delivery outside the client, ask-side arbitrage, plugin sandboxing.
+
 | # | Slice |
 |---|---|
 | 4.1 — done | Framework: migration (`analysis_results`, `analyzer_runs`), the `Analyzer` interface and registry (entry points `kalshiterm.analyzers`; built-ins are registered the same way), `kterm-server analyze` runner (per-analyzer interval, per-run timeout, failures isolated and recorded), `NOTIFY` on new results, an `analyze` Compose service, `status` shows each analyzer's last run and problems; tested with a fake third-party plugin installed through an entry point |
 | 4.2 — done | Market metrics: spread and top-of-book liquidity, realized volatility, price and volume change over windows, for markets that ticked recently; results stored per 4.1 |
 | 4.3 — done | Cross-market arbitrage (bid side): simultaneous-quote window, sizes, executable size, fee model, one result per event; the fee schedule is checked against Kalshi's published one at the start of the slice |
 | 4.4 — done | Alerts: per-user rules (price move, volume spike, spread, arbitrage profit) with per-user limits and cooldown, evaluator in `analyze`, `alerts` table, REST to create/list/acknowledge |
-| 4.5 | API and push: `/v1/analytics/...` result queries, alerts pushed to their owner over `/v1/stream` with the existing cursor and resume rules, analyzer state in `/v1/status` |
+| 4.5 — done | API and push: `/v1/analytics/...` result queries, alerts pushed to their owner over `/v1/stream` with the existing cursor and resume rules, analyzer state in `/v1/status` |
 | deferred | Alert delivery outside the client (email, mobile push), the ask-side arbitrage check, plugin sandboxing: parking lot |
 
 ## 11. Risks & Notes

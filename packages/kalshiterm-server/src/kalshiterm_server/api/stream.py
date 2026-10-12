@@ -20,6 +20,16 @@ REST), and ``error``. Without ``since`` an orderbook subscription first receives
 stored snapshot of each market plus the stored changes after it, flagged ``"replay": true``
 and without a cursor (the book state, not part of the live sequence).
 
+Alerts: add ``"alerts"`` to ``channels`` (alone or beside market channels) to receive your own
+alerts as ``alert`` events. They have their own cursor space, ``alerts.id``, named
+``alert_cursor`` on events and ``alerts_cursor`` in ``subscribed`` / ``heartbeat`` /
+``alerts_caught_up`` so it can never be mistaken for a market cursor; resume with
+``"alerts_since": "<id>"``. Without it only alerts raised after the subscription are sent, so a
+client fetches its backlog with ``GET /v1/alerts?unacknowledged=true`` and subscribes with
+``alerts_since`` set to the highest id it holds. Exactly-once holds because one writer (the
+alert evaluator, under an advisory lock, committing before it lets go) assigns ids, so id order
+is commit order and a live subscription starts after the highest *committed* id.
+
 Cursors follow arrival order across all four tables (one block of numbers per committed batch,
 handed out in the order messages arrived), so a snapshot always carries a higher cursor than the
 deltas that preceded it. Orderbook deltas the client's book already includes (same ``sid``,
@@ -41,13 +51,15 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from kalshiterm_server import alerts as alerts_domain
 from kalshiterm_server import auth
+from kalshiterm_server.api import alerts as alerts_api
 from kalshiterm_server.api import format as fmt
 
 log = logging.getLogger("kalshiterm_server")
 router = APIRouter()
 
-CHANNELS = ("trades", "ticker", "orderbook")
+CHANNELS = ("trades", "ticker", "orderbook", "alerts")
 TICKER_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 MAX_FRAME = 64 * 1024
 SEND_TIMEOUT = 10.0
@@ -72,6 +84,7 @@ CHANNEL_TABLES = {
     "trades": ("trades",),
     "ticker": ("tickers",),
     "orderbook": ("orderbook_snapshots", "orderbook_deltas"),
+    "alerts": (),  # not market data: delivered by Session.advance_alerts
 }
 
 
@@ -118,6 +131,7 @@ class Hub:
             closed = asyncio.Event()
             connection.add_termination_listener(lambda _c, done=closed: done.set())
             await connection.add_listener("kterm_ingest", lambda *_: self.wake_all())
+            await connection.add_listener("kterm_alerts", lambda *_: self.wake_all())
             self.wake_all()
             try:
                 await closed.wait()
@@ -145,6 +159,9 @@ class Subscription:
     refs: dict[int, BookRef] = field(default_factory=dict)
     pos: int = 0
     catching_up: bool = False
+    alerts: bool = False
+    alert_pos: int = 0  # the highest alerts.id this connection has been sent (or started after)
+    alert_catching_up: bool = False
 
     @property
     def market_ids(self) -> list[int]:
@@ -263,6 +280,26 @@ class Session:
                 (await conn.execute(text("SELECT last_seq FROM ingest_progress"))).scalar_one()
             )
 
+    async def alert_head(self) -> int:
+        """The highest committed alert id (0 if none): where live alert delivery starts."""
+        async with self.engine.connect() as conn:
+            return int(
+                (await conn.execute(text("SELECT coalesce(max(id), 0) FROM alerts"))).scalar_one()
+            )
+
+    async def alert_rows(self, after: int, limit: int) -> list[Any]:
+        async with self.engine.connect() as conn:
+            found = await conn.execute(
+                text(
+                    "SELECT a.id, a.rule_id, a.rule_name, a.fired_at, a.analyzer, a.metric, "
+                    "m.ticker, a.event_ticker, a.op, a.threshold_e6, a.value_e6, "
+                    "a.acknowledged_at FROM alerts a LEFT JOIN markets m ON m.id = a.market_id "
+                    "WHERE a.user_id = :u AND a.id > :after ORDER BY a.id LIMIT :n"
+                ),
+                {"u": self.who.user_id, "after": after, "n": limit},
+            )
+            return list(found)
+
     async def resolve(self, tickers: list[str]) -> dict[str, int]:
         if not tickers:
             return {}
@@ -321,6 +358,25 @@ class Session:
             if not isinstance(since, str) or not since.isascii() or not since.isdigit():
                 return await self.error("invalid_parameter", fields=["since"])
             cursor = int(since)
+        wants_alerts = "alerts" in channels
+        alerts_since = message.get("alerts_since")
+        alert_cursor: int | None = None
+        if alerts_since is not None:
+            if (
+                not wants_alerts
+                or not isinstance(alerts_since, str)
+                or not alerts_since.isascii()
+                or not alerts_since.isdigit()
+            ):
+                return await self.error("invalid_parameter", fields=["alerts_since"])
+            alert_cursor = int(alerts_since)
+        if since is not None and set(channels) <= {"alerts"}:
+            return await self.error("invalid_parameter", fields=["since"], reason="not_applicable")
+        alert_head = await self.alert_head() if wants_alerts else 0
+        if alert_cursor is not None and alert_cursor > alert_head:
+            return await self.error(
+                "invalid_parameter", fields=["alerts_since"], reason="in_the_future"
+            )
         use_watchlist = bool(message.get("watchlist", False))
         explicit = await self.resolve(list(dict.fromkeys(markets)))
         watched = await self.watchlist_markets() if use_watchlist else {}
@@ -337,6 +393,10 @@ class Session:
             watched=watched,
         )
         sub.tickers = {mid: t for t, mid in (explicit | watched).items()}
+        if wants_alerts:
+            sub.alerts = True
+            sub.alert_pos = alert_head if alert_cursor is None else alert_cursor
+            sub.alert_catching_up = alert_cursor is not None
         self.sub = sub
         unknown = [m for m in dict.fromkeys(markets) if m not in explicit]
         no_book: list[str] = []
@@ -350,6 +410,7 @@ class Session:
                 "unknown": unknown,
                 "no_orderbook": no_book,
                 "cursor": str(head if cursor is None else cursor),
+                **({"alerts_cursor": str(sub.alert_pos)} if sub.alerts else {}),
             }
         )
         await self.flush_initial()
@@ -458,6 +519,26 @@ class Session:
                 sub.catching_up = False
                 await self.send({"type": "caught_up", "cursor": str(sub.pos)})
 
+    async def advance_alerts(self) -> None:
+        """Send this user's alerts after ``alert_pos`` in id order, page by page."""
+        sub = self.sub
+        if not sub.alerts:
+            return
+        page = self.config.stream_page
+        while True:
+            found = await self.alert_rows(sub.alert_pos, page)
+            for row in found:
+                event = alerts_api.alert_json(alerts_domain.Alert(*row))
+                event["type"] = "alert"
+                event["alert_cursor"] = str(row.id)
+                await self.send(event)
+                sub.alert_pos = row.id
+            if len(found) < page:
+                break
+        if sub.alert_catching_up:
+            sub.alert_catching_up = False
+            await self.send({"type": "alerts_caught_up", "alerts_cursor": str(sub.alert_pos)})
+
     async def refresh_watchlist(self) -> None:
         sub = self.sub
         if not sub.use_watchlist:
@@ -495,15 +576,17 @@ class Session:
                 else:
                     await self.error("unknown_op")
             await self.advance()
+            await self.advance_alerts()
             now = time.monotonic()
             if now - last_refresh >= WATCHLIST_REFRESH:
                 last_refresh = now
                 await self.refresh_watchlist()
             if now - last_beat >= self.config.stream_heartbeat_seconds:
                 last_beat = now
-                await self.send(
-                    {"type": "heartbeat", "cursor": str(self.sub.pos or await self.watermark())}
-                )
+                beat = {"type": "heartbeat", "cursor": str(self.sub.pos or await self.watermark())}
+                if self.sub.alerts:
+                    beat["alerts_cursor"] = str(self.sub.alert_pos)
+                await self.send(beat)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.wake.wait(), timeout=1.0)
 

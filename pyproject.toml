@@ -39,6 +39,10 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
 
+[tool.ruff.lint.per-file-ignores]
+# imports the pytest fixture `env` from test_api_stream and uses it as a parameter name
+"packages/kalshiterm-server/tests/test_api_stream_alerts.py" = ["F811"]
+
 [tool.mypy]
 strict = true
 python_version = "3.11"
