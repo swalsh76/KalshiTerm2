@@ -24,8 +24,15 @@ class Alerts:
     def __init__(self, url: str) -> None:
         self.url = url
         self.dsn = url.replace("postgresql+asyncpg://", "postgresql://")
-        self.users = asyncio.run(self._users())
+        self._users_by_name: dict[str, int] | None = None
         self.n = 0
+
+    @property
+    def users(self) -> dict[str, int]:
+        """Looked up on first use, so building an ``Alerts`` inside a running loop is fine."""
+        if self._users_by_name is None:
+            self._users_by_name = asyncio.run(self._users())
+        return self._users_by_name
 
     async def _users(self) -> dict[str, int]:
         engine = db.make_engine(self.url)
@@ -37,6 +44,7 @@ class Alerts:
 
     def add(self, *who: str) -> list[int]:
         """One transaction inserting an alert per name; returns their ids."""
+        _ = self.users  # look the users up now, outside the coroutine's event loop
         return asyncio.run(self._add(who))
 
     async def _add(self, who: tuple[str, ...]) -> list[int]:
@@ -67,6 +75,7 @@ class Alerts:
 
     def add_slowly(self, name: str, release: threading.Event) -> tuple[threading.Thread, list[int]]:
         """Insert an alert in a transaction that stays open until ``release`` is set."""
+        _ = self.users
         ids: list[int] = []
         opened = threading.Event()
 
@@ -286,6 +295,7 @@ def test_the_evaluator_to_the_socket_end_to_end(env: Any, alerts: Alerts) -> Non
         finally:
             await engine.dispose()
 
+    _ = alerts.users  # looked up here, not inside setup()'s event loop
     asyncio.run(setup())
     with server(env) as client, connect(client, env) as wire:
         subscribe(wire, ["alerts"], [])

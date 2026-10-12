@@ -3,8 +3,6 @@ certificate pinned. If the server grows or renames a field these fail, which is 
 (PLAN §10.6: the client does not import the server, so this is what keeps them in step)."""
 
 import asyncio
-import threading
-import time
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -12,15 +10,15 @@ from pathlib import Path
 from typing import Any, get_args
 
 import pytest
-import uvicorn
 from kalshiterm_client import models
 from kalshiterm_client.client import ServerClient
 from kalshiterm_client.errors import Forbidden, InvalidRequest, NotFound
 from kalshiterm_client.pinning import fingerprint_of_pem
 from kalshiterm_client.profiles import ProfileStore
-from kalshiterm_server import auth, db, tls
+from kalshiterm_server import auth, db
 from kalshiterm_server.api.app import create_app
 from kalshiterm_server.config import ServerSettings
+from live_server import LiveServer
 from pydantic import BaseModel
 from sqlalchemy import text
 from test_candles import add_ticks, add_trades, refresh
@@ -195,14 +193,6 @@ async def seed(url: str) -> dict[str, str]:
         await engine.dispose()
 
 
-def free_port() -> int:
-    import socket
-
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
-
-
 class World:
     def __init__(self, url: str, tokens: dict[str, str], profile_pin_dir: Path) -> None:
         self.url, self.tokens, self.dir = url, tokens, profile_pin_dir
@@ -216,38 +206,13 @@ class World:
 def world(migrated_db_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
     """The real API over TLS on a loopback port, and a profile that pins its certificate."""
     tokens = asyncio.run(seed(migrated_db_url))
-    certs = tmp_path / "certs"
-    certs.mkdir()
-    tls.write_certificate(certs, ["localhost"], ["127.0.0.1"])
-    port = free_port()
     app = create_app(ServerSettings(db_url=migrated_db_url))
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app,
-            host="127.0.0.1",
-            port=port,
-            log_level="warning",
-            ssl_certfile=str(certs / tls.CERT_FILE),
-            ssl_keyfile=str(certs / tls.KEY_FILE),
-        )  # fmt: skip
-    )
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    deadline = time.monotonic() + 20
-    while not server.started and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert server.started, "the API did not start"
-    monkeypatch.setenv("KTERM_CONFIG_DIR", str(tmp_path / "config"))
-    url = f"https://127.0.0.1:{port}"
-    store = ProfileStore()
-    store.add("srv", url)
-    pem = (certs / tls.CERT_FILE).read_bytes()
-    store.save_pin("srv", pem, fingerprint_of_pem(pem))
-    try:
-        yield World(url, tokens, certs)
-    finally:
-        server.should_exit = True
-        thread.join(15)
+    with LiveServer(app, tmp_path / "certs") as server:
+        monkeypatch.setenv("KTERM_CONFIG_DIR", str(tmp_path / "config"))
+        store = ProfileStore()
+        store.add("srv", server.url)
+        store.save_pin("srv", server.pem, fingerprint_of_pem(server.pem))
+        yield World(server.url, tokens, tmp_path / "certs")
 
 
 @pytest.fixture

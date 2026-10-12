@@ -1270,11 +1270,52 @@ analytics values exact. Verified on the live dev server: a rule refused until th
 watched, then created; the real analyzers and evaluator fired it; the library read the analytics,
 the alert (value 0.997), acknowledged it twice, raised the threshold (re-armed) and cleaned up.
 
+**5.3 as built.** `StreamClient` (`stream.py`; `for_profile` or explicit URL / token / TLS context):
+`async for event in stream` yields **each market event and each alert exactly once, in order,
+across reconnects**. *Two cursors, never mixed:* `cursor` (market data) and `alert_cursor`
+(alerts); they advance when an event is handed to the caller and on the server's `heartbeat` and
+`caught_up` / `alerts_caught_up` messages (sent only when everything up to that point was delivered
+or filtered). A reconnect resubscribes with `since` / `alerts_since` set to them, so the server
+replays exactly what was missed; as a safety net any event whose cursor is not strictly greater
+than the last delivered is dropped and counted (`stats.duplicates_suppressed`), except orderbook
+`replay` events (no cursor). *Backpressure:* the socket is read only when the caller asks for the
+next event. *Resync:* `gap` (`cursor_too_old`) or a cursor from the future (a restored server)
+yields `Resync` (state built from the stream, i.e. orderbooks, is stale) and resubscribes from now
+so fresh books follow; the alerts cursor is kept, so no alert is lost; trades and ticks in the
+gap must be fetched over REST if they matter; a server that keeps refusing a cursor is given up
+on. *Reconnects:* dropped connections, silence for `idle_timeout` (default 45 s; the server's
+heartbeat is 15 s by default, but its pump wakes once a second, so the real period is at least
+1 s), close codes 1013 / 4429 / "too many connections" and failed connects retry after
+`min(cap, 0.5 x 2^n)` s with jitter (50-100%), restarting after a connection that subscribed;
+`Disconnected` says why and when. *Fatal, never looped:* unauthorized (4401 or an error frame),
+a refused subscription (`InvalidRequest` with the server's code), a client the server cannot parse
+(4400 / 1009), a message that does not fit its model (names fields, never values), and a
+certificate problem (`CertificateChanged` / the same explanations as REST; the TLS diagnosis is now
+shared). *Close wait:* a clean close waits for the server's reply, which a dead network never
+sends; websockets' default of 10 s would delay noticing an outage by that much, so
+`close_timeout` is 2 s (found by the blackhole test). Events: `TradeEvent`, `TickerEvent`,
+`BookSnapshotEvent`, `BookDeltaEvent`, `AlertEvent`, and the control events `Connected`
+(`resumed`), `CaughtUp`, `Resync`, `Disconnected`, `WatchlistChanged`, `UnknownEvent` (a newer
+server's message type is kept, not dropped). `BookTracker` (`book.py`) keeps exact `Decimal`
+orderbooks from snapshots and deltas (ignores deltas already in the snapshot by `sid` / `seq`,
+flags a removal larger than the book as `inconsistent`; `reset()` on `Resync`). *Tests:* 32 unit
+tests on a scripted socket (every protocol path), 7 for `BookTracker`, and 8 integration tests on
+the real server over real TLS through a TCP proxy that can sever, refuse or blackhole: market
+data, alerts, and both together survive repeated cuts exactly once and in order with zero
+suppressed duplicates (server-side exactness), an orderbook rebuilt from the stream equals the
+server's REST book, a replay-horizon overrun yields one `Resync` and a fresh book, wrong token and
+changed certificate raise without retrying, and heartbeats keep a quiet connection alive while a
+blackholed one is noticed. Sabotaging the resume (never sending `since`) fails all three
+exactly-once tests. *Verified live:* ingest running, three busy markets streamed, the API process
+killed and restarted: 7 retries over 6.8 s, `resumed=True`, **119 events delivered = 119 rows in
+the database for those markets over the cursor range, 57 of them committed while the API was
+down**, no repeats.
+
 | # | Slice |
 |---|---|
 | 5.1 — done | API client foundation: `ServerClient` (pinned TLS, token, connection reuse, timeouts, retries for GETs, the error taxonomy of `connection.py`, pagination iterators) and typed models + methods for `me`, `status`, markets (list / search / get), events, candles, trades, ticks, orderbook and gaps; contract tests against the real server; `kterm server status` moves onto it |
 | 5.2 — done | The rest of the API in the client: watchlist, analytics (market latest / history, event, arbitrage) and alerts (metrics, rules create / list / change / delete, alerts list / acknowledge), with contract tests |
-| 5.3 | Live stream client: `StreamClient` (pinned `wss`, header auth, reconnect with backoff, heartbeat timeout detection, `since` / `alerts_since` resume with exactly-once delivery, `gap` handling), a `BookTracker` that keeps an orderbook from `book_snapshot` / `book_delta` events; tested against the real server over a real socket with forced disconnects (no duplicates, no gaps) |
+| 5.3 — done | Live stream client: `StreamClient` (pinned `wss`, header auth, reconnect with backoff, heartbeat timeout detection, `since` / `alerts_since` resume with exactly-once delivery, `gap` handling), a `BookTracker` that keeps an orderbook from `book_snapshot` / `book_delta` events; tested against the real server over a real socket with forced disconnects (no duplicates, no gaps) |
 | 5.4 | CLI data views: `kterm markets`, `market`, `candles`, `trades`, `book`, `analytics`, `arbitrage` (tables and `--json`) |
 | 5.5 | CLI account and live views: `watchlist`, `alerts` (rules, list, acknowledge), `watch` (live tickers / trades / book) and `alerts watch`; an end-to-end check against a live server |
 | deferred | CSV export, a local response cache or offline mode, persisted stream cursors, shell completion: parking lot. Trading is Phase 6 and the browser UI Phase 7 |
