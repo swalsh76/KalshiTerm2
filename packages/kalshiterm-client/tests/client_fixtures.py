@@ -48,6 +48,8 @@ def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Memory
     monkeypatch.setenv("KTERM_CONFIG_DIR", str(tmp_path / "config"))
     for var in ("KTERM_TOKEN", "KTERM_PROFILE"):
         monkeypatch.delenv(var, raising=False)
+    # keep the retries (they are behaviour) but not their real waiting time
+    monkeypatch.setattr("kalshiterm_client.client.RETRY_DELAYS", (0.0, 0.0, 0.0))
     backend = MemoryKeyring()
     previous = keyring.get_keyring()
     keyring.set_keyring(backend)

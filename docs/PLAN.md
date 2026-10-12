@@ -1224,9 +1224,32 @@ other way round.
    exactly once. Persisting cursors across CLI runs is not needed (parking lot).
 5. **CLI output:** `rich` tables for people, `--json` on every command for scripts; no CSV yet.
 
+**5.1 as built.** `kalshiterm_client.client.ServerClient` (async; one `httpx` connection pool per
+client) with `for_profile(profile)` (token from the keyring or `KTERM_TOKEN`; https needs a pinned
+certificate and trusts only that one, so the token never reaches an untrusted or changed server;
+loopback `http` needs no pin). Methods: `me`, `status`, `markets_page` / `iter_markets`, `market`,
+`event`, `candles_page` / `iter_candles`, `trades_page` / `iter_trades`, `ticks_page` /
+`iter_ticks`, `orderbook`, `gaps`; the iterators follow `next_cursor`, and the "latest N" forms
+(no `start`) are a single page. `models.py` holds the pydantic models (`Decimal` prices and
+counts parsed from the server's strings, aware datetimes, unknown fields ignored); `errors.py` the
+taxonomy (`ConnectionProblem`, `CertificateChanged`, `ApiProblem` with `NotFound` / `Unauthorized` /
+`Forbidden` / `InvalidRequest` / `RateLimited` / `ServerError`, each carrying the server's `code`
+and extra detail). **Retries:** GETs only, on network errors and 5xx, after 0.5 / 1 / 2 s; a 429 is
+waited out only if `Retry-After` is at most 5 s, otherwise reported at once; a certificate failure
+is never retried; writes go through `_request(..., retry=False)` and are never retried. An answer
+that is not JSON, or does not fit the model, becomes a `ConnectionProblem` that names the fields
+but never echoes values. Naive datetimes are refused before any request. `kterm server status`
+now runs on this client with its messages unchanged, and the old synchronous `connection.py` is
+gone. **Contract tests** (`test_client_contract.py`, in the server suite because it needs the
+database): the real app over real TLS with a pinned certificate and seeded data; every endpoint's
+JSON must validate against the client's models and a walker fails on any server field the models
+do not have (checked by removing a field: the test names it, e.g. `markets.yes_label`).
+Verified on the live dev server: markets paged, a market's detail, ticks, an hourly bar and the
+gap log fetched through a pinned connection.
+
 | # | Slice |
 |---|---|
-| 5.1 | API client foundation: `ServerClient` (pinned TLS, token, connection reuse, timeouts, retries for GETs, the error taxonomy of `connection.py`, pagination iterators) and typed models + methods for `me`, `status`, markets (list / search / get), events, candles, trades, ticks, orderbook and gaps; contract tests against the real server; `kterm server status` moves onto it |
+| 5.1 — done | API client foundation: `ServerClient` (pinned TLS, token, connection reuse, timeouts, retries for GETs, the error taxonomy of `connection.py`, pagination iterators) and typed models + methods for `me`, `status`, markets (list / search / get), events, candles, trades, ticks, orderbook and gaps; contract tests against the real server; `kterm server status` moves onto it |
 | 5.2 | The rest of the API in the client: watchlist, analytics (market latest / history, event, arbitrage) and alerts (metrics, rules create / list / change / delete, alerts list / acknowledge), with contract tests |
 | 5.3 | Live stream client: `StreamClient` (pinned `wss`, header auth, reconnect with backoff, heartbeat timeout detection, `since` / `alerts_since` resume with exactly-once delivery, `gap` handling), a `BookTracker` that keeps an orderbook from `book_snapshot` / `book_delta` events; tested against the real server over a real socket with forced disconnects (no duplicates, no gaps) |
 | 5.4 | CLI data views: `kterm markets`, `market`, `candles`, `trades`, `book`, `analytics`, `arbitrage` (tables and `--json`) |
