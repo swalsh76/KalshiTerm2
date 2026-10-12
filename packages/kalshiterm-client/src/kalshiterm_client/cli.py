@@ -1,12 +1,13 @@
 """``kterm``: the KalshiTerm client's command line (grows with later slices)."""
 
+import asyncio
 import json
 import sys
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
-from kalshiterm_client import connection, discovery, pinning, secrets, status_view
+from kalshiterm_client import client, discovery, pinning, secrets, status_view
 from kalshiterm_client.profiles import (
     PROFILE_ENV,
     Profile,
@@ -272,8 +273,13 @@ def server_status(
 ) -> None:
     """Storage, ingest freshness, gaps, jobs and backups (needs an admin token)."""
     profile = current_profile()
+
+    async def fetch() -> dict[str, Any]:
+        async with client.ServerClient.for_profile(profile) as api:
+            return (await api.status()).data
+
     try:
-        report = connection.request(profile, "/v1/status")
+        report = asyncio.run(fetch())
     except ProfileError as exc:
         raise fail(str(exc)) from exc
     typer.echo(json.dumps(report, indent=2) if as_json else status_view.render(report))

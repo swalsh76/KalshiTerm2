@@ -215,7 +215,7 @@ def test_plain_http_to_this_machine_needs_no_pin_and_has_no_certificate_to_trust
 def test_problems_make_status_exit_nonzero_and_json_is_raw(servers: list[FakeServer]) -> None:
     server = trusted(servers)
     server.body = {
-        "time": "t",
+        "time": "2026-10-12T12:00:00+00:00",
         "problems": ["storage at 91% of budget"],
         "storage": {"used_bytes": 91 * 1024**3, "budget_bytes": 100 * 1024**3, "percent": 91,
                     "mode": "shedding"},
