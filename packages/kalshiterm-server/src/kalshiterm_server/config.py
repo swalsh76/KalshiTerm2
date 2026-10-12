@@ -48,3 +48,8 @@ class ServerSettings(BaseSettings):
     backup_keep_daily: int = 7
     backup_keep_weekly: int = 4
     backup_retry_minutes: float = 30.0
+
+    # Analytics (PLAN §10.5, Phase 4)
+    analyzers_disabled: str = ""  # comma-separated analyzer names to leave out
+    analyze_max_results: int = 50_000  # per run; more fails the run
+    analyze_retry_minutes: float = 5.0  # after a failed run, retry this soon (at most the interval)

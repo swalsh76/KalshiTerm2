@@ -311,7 +311,8 @@ extra scale digits do (a universal 10⁻⁶ scale for counts was 25.2 B/row), he
     prices don't sum to ~100¢
   - Price / volume move alerts
 - Publishes new results via Postgres `NOTIFY` for live push to clients.
-- Hosts the **storage governor** (§9).
+- ~~Hosts the storage governor (§9).~~ **Decided 2026-10-10: the governor stays in the ingest
+  process** (it works and is tested there); `kterm-server analyze serve` runs analyzers only.
 
 ### 5.4 API
 
@@ -621,6 +622,7 @@ windows are worth lengthening; raising any of them is a plan change.
 | Trades (30 days raw; markets ever watched: forever, in `trades_watchlist`) | Compressed after 1 day | 1-min / 1-hour candles forever |
 | Tickers (ordinary markets) | 14 days, compressed after 1 day | 1-hour aggregates (`ticker_1h`) kept forever; **1-minute aggregates (`ticker_1m`) 30 days** (decided 2026-10-07: ~7,400 rows/min, ~10.7 M/day, too big to keep forever) |
 | Multivariate (combo) markets — decision 17 | **No per-combo rows.** Per-minute universe counters (`combo_stats_1m`: creations, determinations, settlements, tickers, trades, contracts, taker dollars; kept forever, ~1 row per minute per family) and a log of individual combo trades with ≥ $500 taker dollars (`combo_large_trades`, ≈15 k rows/day, 365 days). | No candles for combo markets |
+| Analysis results (`analysis_results`, slice 4.1) | 30 days, compressed after 1 day; volume depends on the analyzers installed, re-check with the first real analyzer (4.2) | Dropped |
 | Orderbook deltas (watchlist only) | 14 days | Dropped |
 | Orderbook snapshots (watchlist, every 300 s by default) | **365 days** (at the default interval they already are the 5-minute downsample; a shorter interval would need a real downsample step) | Dropped |
 | Markets / events (incl. outcomes) — decision 15 | Age counts from `settlement_ts`; unsettled rows never expire. **0–30 days: full row. 30–90 days: slimmed to an outcome-only row** (rules text and sub-titles dropped; ticker, event, status, result, settlement, times and strikes kept). **After 90 days: deleted, except markets that are watched (ever, see decision 12) or pinned.** Events follow their markets; series are kept (≈15k rows). | — |
@@ -1026,6 +1028,28 @@ discovery and cross-checking the fingerprint a server advertises.
 
 ### 10.5 Phase 4 slices (analytics)
 
+**4.1 as built.** Migration 0018: `analysis_results` (hypertable, 1-day chunks, compressed after 1
+day, dropped after 30; the CHECK allows exactly one of `market_id` / `event_ticker`) and
+`analyzer_runs`. `kalshiterm_server.analytics`: `base` (the `Analyzer` protocol: `name`,
+`interval` 10 s-1 day, `timeout`, `async run(ctx) -> list[Result]`; `Result` carries `value_e6`,
+an `int`, and floats, bools and out-of-range values are rejected), `registry` (entry-point group
+`kalshiterm.analyzers`; an entry point may name an instance, a class or a factory, and its name
+must equal the analyzer's; a plugin that fails to import or breaks the rules is reported and
+skipped, never fatal) and `runner` (one loop per analyzer; a restart does not re-run before the
+interval has passed; a failed run retries after `min(interval, 5 min)`). A run records itself in
+`analyzer_runs`, and its results, the `NOTIFY kterm_analysis` (`<analyzer>:<count>`) and its final
+status are one transaction, so a rejected result means nothing is stored. A per-analyzer
+advisory lock keeps two processes from running the same analyzer; a run left `running` by a
+dead process is marked interrupted. Commands: `kterm-server analyze list|run NAME|serve`
+(settings `KTERM_ANALYZERS_DISABLED`, `KTERM_ANALYZE_MAX_RESULTS`, `KTERM_ANALYZE_RETRY_MINUTES`);
+the `analyze` Compose service has no route to the internet and no Kalshi key. `status` lists each
+analyzer and raises a problem for a failed or timed-out last run, a plugin that did not load, or
+no success within three intervals (at least 10 minutes); no analyzers at all is not a problem.
+Verified with a throwaway plugin installed only through an entry point, against stored tickers.
+**Trust:** plugins run in the analytics process with its database credentials, so installing one
+is trusting it. Getting a plugin into the container is a custom image layer (`pip install` on top
+of `kalshiterm-server`); sandboxing stays parked. No built-in analyzers yet: 4.2 adds the first.
+
 Measured first (dev database, 2026-10-10): tickers carry `yes_bid`, `yes_ask` and their sizes,
 so spread and top-of-book liquidity need no orderbook. Of 6,205 mutually exclusive events,
 2,337 had every active market quoted in the last hour. Summing the latest quotes: 27 events had
@@ -1049,7 +1073,7 @@ if the event is also *exhaustive*, which Kalshi does not flag (most of the 70 ar
 
 | # | Slice |
 |---|---|
-| 4.1 | Framework: migration (`analysis_results`, `analyzer_runs`), the `Analyzer` interface and registry (entry points `kalshiterm.analyzers`; built-ins are registered the same way), `kterm-server analyze` runner (per-analyzer interval, per-run timeout, failures isolated and recorded), `NOTIFY` on new results, an `analyze` Compose service, `status` shows each analyzer's last run and problems; tested with a fake third-party plugin installed through an entry point |
+| 4.1 — done | Framework: migration (`analysis_results`, `analyzer_runs`), the `Analyzer` interface and registry (entry points `kalshiterm.analyzers`; built-ins are registered the same way), `kterm-server analyze` runner (per-analyzer interval, per-run timeout, failures isolated and recorded), `NOTIFY` on new results, an `analyze` Compose service, `status` shows each analyzer's last run and problems; tested with a fake third-party plugin installed through an entry point |
 | 4.2 | Market metrics: spread and top-of-book liquidity, realized volatility, price and volume change over windows, for markets that ticked recently; results stored per 4.1 |
 | 4.3 | Cross-market arbitrage (bid side): simultaneous-quote window, sizes, executable size, fee model, one result per event; the fee schedule is checked against Kalshi's published one at the start of the slice |
 | 4.4 | Alerts: per-user rules (price move, volume spike, spread, arbitrage profit) with per-user limits and cooldown, evaluator in `analyze`, `alerts` table, REST to create/list/acknowledge |
