@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from kalshiterm_server import db
-from kalshiterm_server.api import errors, markets, rawdata, stream, v1, watchlist
+from kalshiterm_server.api import alerts, errors, markets, rawdata, stream, v1, watchlist
 from kalshiterm_server.auth import FailureThrottle
 from kalshiterm_server.config import ServerSettings
 
@@ -58,6 +58,7 @@ def create_app(
     app.include_router(markets.router)
     app.include_router(rawdata.router)
     app.include_router(watchlist.router)
+    app.include_router(alerts.router)
     app.include_router(stream.router)
 
     @app.get("/healthz", include_in_schema=False)

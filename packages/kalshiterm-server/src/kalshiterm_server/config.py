@@ -53,3 +53,7 @@ class ServerSettings(BaseSettings):
     analyzers_disabled: str = ""  # comma-separated analyzer names to leave out
     analyze_max_results: int = 50_000  # per run; more fails the run
     analyze_retry_minutes: float = 5.0  # after a failed run, retry this soon (at most the interval)
+
+    # Alerts (PLAN §10.5, slice 4.4)
+    alert_rules_max_per_user: int = 50
+    alert_min_cooldown_seconds: int = 300  # the shortest gap between two firings of one rule
