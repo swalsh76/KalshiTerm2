@@ -1247,10 +1247,33 @@ do not have (checked by removing a field: the test names it, e.g. `markets.yes_l
 Verified on the live dev server: markets paged, a market's detail, ticks, an hourly bar and the
 gap log fetched through a pinned connection.
 
+**5.2 as built.** `ServerClient` gains: `watchlist()`, `watch(ticker)` / `unwatch(ticker)` (True if the
+list changed); analytics `market_results`, `market_history_page` / `iter_market_history`,
+`event_results`, `arbitrage(min_profit=...)`; alerts `alert_metrics`, `create_alert_rule`,
+`alert_rules`, `alert_rule`, `update_alert_rule`, `delete_alert_rule`, `alerts_page` /
+`iter_alerts`, `acknowledge_alert`. Models: `Watchlist`, `AnalyticsValue`, `MarketResults`,
+`EventResults`, `MetricHistory`, `Opportunity`, `AlertMetric`, `AlertRule`, `Alert`, `AlertPage`.
+**Writes are never retried** (watch, unwatch, create / update / delete rule, acknowledge go
+through `_request(..., retry=False)`; a test fails each of the six against a 500, a 503 and a
+dropped connection and requires exactly one request): if an answer is lost the caller looks and
+decides, because a retried create could make the rule twice. **Numbers are never floats:**
+thresholds and `min_profit` take a `Decimal` or a string; a `float` (or a bool, int or None) is a
+`TypeError`, more than six decimal places or NaN / infinity a `ValueError`, both before any request;
+numbers are sent in plain notation (`Decimal("1E+2")` goes out as `100`). `update_alert_rule` sends
+only the fields given (so `enabled=False` is sent, `None` is not). The server's reason for a
+refusal is kept: `InvalidRequest.code` / `.extra` (`not_watched` with the ticker,
+`cooldown_too_short` with the minimum). Contract tests grew to 16 (real server, real TLS): the
+walker now covers watchlist, analytics, catalog, rules and alerts (each new model checked by removing
+a field and seeing the test name it), plus the full lifecycles: watchlist, rule create / change /
+delete with the server's refusals, alert paging and acknowledgement scoped to the owner,
+analytics values exact. Verified on the live dev server: a rule refused until the market was
+watched, then created; the real analyzers and evaluator fired it; the library read the analytics,
+the alert (value 0.997), acknowledged it twice, raised the threshold (re-armed) and cleaned up.
+
 | # | Slice |
 |---|---|
 | 5.1 — done | API client foundation: `ServerClient` (pinned TLS, token, connection reuse, timeouts, retries for GETs, the error taxonomy of `connection.py`, pagination iterators) and typed models + methods for `me`, `status`, markets (list / search / get), events, candles, trades, ticks, orderbook and gaps; contract tests against the real server; `kterm server status` moves onto it |
-| 5.2 | The rest of the API in the client: watchlist, analytics (market latest / history, event, arbitrage) and alerts (metrics, rules create / list / change / delete, alerts list / acknowledge), with contract tests |
+| 5.2 — done | The rest of the API in the client: watchlist, analytics (market latest / history, event, arbitrage) and alerts (metrics, rules create / list / change / delete, alerts list / acknowledge), with contract tests |
 | 5.3 | Live stream client: `StreamClient` (pinned `wss`, header auth, reconnect with backoff, heartbeat timeout detection, `since` / `alerts_since` resume with exactly-once delivery, `gap` handling), a `BookTracker` that keeps an orderbook from `book_snapshot` / `book_delta` events; tested against the real server over a real socket with forced disconnects (no duplicates, no gaps) |
 | 5.4 | CLI data views: `kterm markets`, `market`, `candles`, `trades`, `book`, `analytics`, `arbitrage` (tables and `--json`) |
 | 5.5 | CLI account and live views: `watchlist`, `alerts` (rules, list, acknowledge), `watch` (live tickers / trades / book) and `alerts watch`; an end-to-end check against a live server |

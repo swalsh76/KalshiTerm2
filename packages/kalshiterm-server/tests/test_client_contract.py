@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, get_args
 
@@ -14,7 +15,7 @@ import pytest
 import uvicorn
 from kalshiterm_client import models
 from kalshiterm_client.client import ServerClient
-from kalshiterm_client.errors import Forbidden, NotFound
+from kalshiterm_client.errors import Forbidden, InvalidRequest, NotFound
 from kalshiterm_client.pinning import fingerprint_of_pem
 from kalshiterm_client.profiles import ProfileStore
 from kalshiterm_server import auth, db, tls
@@ -118,6 +119,77 @@ async def seed(url: str) -> dict[str, str]:
         for name, role in (("alice", "read"), ("root", "admin")):
             await auth.add_user(engine, name)
             tokens[name] = (await auth.create_token(engine, name, role))[1]
+        now = datetime.now(UTC)
+        async with engine.begin() as conn:
+            market = (
+                await conn.execute(text("select id from markets where ticker = :t"), {"t": A})
+            ).scalar_one()
+            results: list[tuple[datetime, str, str, int, int | None, str | None]] = [
+                (now - timedelta(seconds=30), "market_quotes", "spread", 20_000, market, None),
+                (now - timedelta(seconds=90), "market_quotes", "spread", 30_000, market, None),
+                (
+                    now - timedelta(seconds=30),
+                    "market_quotes",
+                    "bid_size",
+                    12_340_000,
+                    market,
+                    None,
+                ),
+            ]
+            results += [
+                (
+                    now - timedelta(minutes=10 + n),
+                    "market_volatility",
+                    "volatility_1h",
+                    10_000 * (n + 1),
+                    market,
+                    None,
+                )
+                for n in range(5)
+            ]
+            results += [
+                (now - timedelta(seconds=20), "arbitrage_bid", metric, value, None, "KX-E1")
+                for metric, value in (
+                    ("bid_sum", 1_050_000),
+                    ("edge", 50_000),
+                    ("size", 10_000_000),
+                    ("fees", 480_000),
+                    ("profit", 20_000),
+                    ("legs", 3_000_000),
+                    ("legs_total", 4_000_000),
+                    ("oldest_quote_age", 45_000_000),
+                )
+            ]
+            for ts, analyzer, metric, value, market_id, event_key in results:
+                await conn.execute(
+                    text(
+                        "INSERT INTO analysis_results (ts, analyzer, metric, market_id, "
+                        "event_ticker, value_e6) VALUES (:ts, :a, :m, :mk, :ev, :v)"
+                    ),
+                    {
+                        "ts": ts,
+                        "a": analyzer,
+                        "m": metric,
+                        "mk": market_id,
+                        "ev": event_key,
+                        "v": value,
+                    },
+                )
+            users = {n: i for n, i in await conn.execute(text("select name, id from users"))}
+            for owner, n in (("alice", 5), ("root", 2)):
+                for i in range(n):
+                    await conn.execute(
+                        text(
+                            "INSERT INTO alerts (user_id, fired_at, rule_name, analyzer, metric, "
+                            "event_ticker, op, threshold_e6, value_e6) VALUES (:u, :t, :n, "
+                            "'arbitrage_bid', 'profit', 'KX-E1', 'gt', 0, 20000)"
+                        ),
+                        {
+                            "u": users[owner],
+                            "t": now - timedelta(minutes=n - i),
+                            "n": f"{owner}-{i}",
+                        },
+                    )
         return tokens
     finally:
         await engine.dispose()
@@ -339,3 +411,146 @@ async def test_status_is_for_admins(world: World) -> None:
         report = await admin.status()
     assert report.data["database"]["revision"] == report.data["database"]["head"]
     assert isinstance(report.problems, list)
+
+
+# ------------------------------------------------------------------ watchlist, analytics, alerts
+
+
+async def test_the_models_cover_the_account_and_analytics_endpoints(api: ServerClient) -> None:
+    await api.watch(A)
+    rule = await api.create_alert_rule("market_quotes.spread", "gt", "0.05", ticker=A, name="wide")
+    event_rule = await api.create_alert_rule(
+        "arbitrage_bid.profit", "gt", "0", event_ticker="KX-E1", cooldown_seconds=600
+    )
+    cases: list[tuple[str, dict[str, Any] | None, type[BaseModel]]] = [
+        ("/v1/watchlist", None, models.Watchlist),
+        (f"/v1/analytics/markets/{A}", None, models.MarketResults),
+        (
+            f"/v1/analytics/markets/{A}/history",
+            {"metric": "market_volatility.volatility_1h"},
+            models.MetricHistory,
+        ),
+        ("/v1/analytics/events/KX-E1", None, models.EventResults),
+        ("/v1/analytics/arbitrage", None, models.Opportunities),
+        ("/v1/alert-metrics", None, models.AlertMetrics),
+        ("/v1/alert-rules", None, models.AlertRules),
+        (f"/v1/alert-rules/{rule.id}", None, models.AlertRule),
+        (f"/v1/alert-rules/{event_rule.id}", None, models.AlertRule),
+        ("/v1/alerts", None, models.AlertPage),
+    ]
+    for path, params, model in cases:
+        payload = await api._get(path, params)
+        assert uncovered(model, payload) == [], path
+        model.model_validate(payload)
+
+
+async def test_the_watchlist_round_trip(api: ServerClient) -> None:
+    assert (await api.watchlist()).markets == []
+    assert await api.watch(A) is True and await api.watch(A) is False  # idempotent
+    watchlist = await api.watchlist()
+    assert [m.ticker for m in watchlist.markets] == [A] and watchlist.limit == 50
+    assert (
+        watchlist.markets[0].capturing is False
+        and watchlist.markets[0].event_title == "The first event"
+    )
+    assert await api.unwatch(A) is True and await api.unwatch(A) is False
+    with pytest.raises(NotFound):
+        await api.watch("KX-NOPE")
+
+
+async def test_analytics_values_are_typed_and_exact(api: ServerClient) -> None:
+    results = await api.market_results(A)
+    by_metric = {r.metric: r for r in results.results}
+    assert by_metric["market_quotes.spread"].value == Decimal("0.020000")  # the newer of two
+    assert by_metric["market_quotes.bid_size"].value == Decimal("12.340000")
+    assert by_metric["market_quotes.bid_size"].unit == "contracts"
+    assert 20 <= by_metric["market_quotes.spread"].age_seconds <= 90
+    history = [
+        p async for p in api.iter_market_history(A, "market_volatility.volatility_1h", limit=2)
+    ]
+    assert [str(p.value) for p in history] == [
+        "0.010000",
+        "0.020000",
+        "0.030000",
+        "0.040000",
+        "0.050000",
+    ]
+    assert [p.time for p in history] == sorted((p.time for p in history), reverse=True)
+    event = await api.event_results("KX-E1")
+    assert {r.metric: r.value for r in event.results}["arbitrage_bid.profit"] == Decimal("0.020000")
+    with pytest.raises(NotFound):
+        await api.market_results("KX-NOPE")
+    with pytest.raises(InvalidRequest) as bad:
+        await api.market_results(A, max_age_seconds=0)
+    assert bad.value.code == "invalid_parameter" and bad.value.extra["fields"] == [
+        "max_age_seconds"
+    ]
+
+
+async def test_arbitrage_opportunities_and_the_profit_filter(api: ServerClient) -> None:
+    found = await api.arbitrage()
+    [opportunity] = found.opportunities
+    assert opportunity.event_ticker == "KX-E1" and opportunity.profit == Decimal("0.020000")
+    assert opportunity.legs == 3 and opportunity.legs_total == 4 and found.total == 1
+    assert (await api.arbitrage(min_profit=Decimal("0.02"))).total == 1
+    assert (await api.arbitrage(min_profit="0.03")).opportunities == []
+
+
+async def test_alert_rules_through_their_whole_life(api: ServerClient) -> None:
+    catalog = await api.alert_metrics()
+    spread = next(m for m in catalog.metrics if m.metric == "market_quotes.spread")
+    assert spread.subject == "market" and spread.unit == "dollars" and spread.ops == ["gt", "lt"]
+
+    with pytest.raises(InvalidRequest) as unwatched:  # a market rule needs the market watched
+        await api.create_alert_rule("market_quotes.spread", "gt", "0.05", ticker=A)
+    assert unwatched.value.code == "not_watched" and unwatched.value.extra == {"ticker": A}
+    await api.watch(A)
+    with pytest.raises(InvalidRequest) as short:
+        await api.create_alert_rule(
+            "market_quotes.spread", "gt", "0.05", ticker=A, cooldown_seconds=60
+        )
+    assert short.value.code == "cooldown_too_short" and short.value.extra == {"minimum": 300}
+    with pytest.raises(InvalidRequest) as wrong_op:
+        await api.create_alert_rule("market_quotes.spread", "abs_gt", "0.05", ticker=A)
+    assert wrong_op.value.code == "invalid_comparison"
+
+    rule = await api.create_alert_rule(
+        "market_quotes.spread", "gt", Decimal("0.05"), ticker=A, name="wide"
+    )
+    assert rule.threshold == Decimal("0.050000") and rule.cooldown_seconds == 900
+    assert (rule.enabled, rule.active, rule.ticker, rule.event_ticker) == (True, False, A, None)
+    assert [r.id for r in (await api.alert_rules()).rules] == [rule.id]
+
+    changed = await api.update_alert_rule(rule.id, threshold=Decimal("0.2"), enabled=False)
+    assert changed.threshold == Decimal("0.200000") and changed.enabled is False
+    assert changed.name == "wide" and changed.cooldown_seconds == 900  # untouched
+    assert (await api.alert_rule(rule.id)).enabled is False
+
+    await api.delete_alert_rule(rule.id)
+    with pytest.raises(NotFound):
+        await api.alert_rule(rule.id)
+    with pytest.raises(NotFound):
+        await api.delete_alert_rule(rule.id)
+
+
+async def test_alerts_page_acknowledge_and_belong_to_their_owner(world: World) -> None:
+    async with world.client("alice") as alice, world.client("root") as root:
+        mine = [a async for a in alice.iter_alerts(limit=2)]
+        assert [a.rule_name for a in mine] == [
+            "alice-4",
+            "alice-3",
+            "alice-2",
+            "alice-1",
+            "alice-0",
+        ]
+        assert mine[0].value == Decimal("0.020000") and mine[0].event_ticker == "KX-E1"
+        assert mine[0].rule_id is None and mine[0].acknowledged_at is None
+        assert len([a async for a in root.iter_alerts()]) == 2  # not alice's
+        await alice.acknowledge_alert(mine[0].id)
+        await alice.acknowledge_alert(mine[0].id)  # idempotent
+        open_ones = [a.id async for a in alice.iter_alerts(unacknowledged=True)]
+        assert open_ones == [a.id for a in mine[1:]]
+        with pytest.raises(NotFound):  # another user's alert looks like no alert at all
+            await root.acknowledge_alert(mine[1].id)
+        acked = (await alice.alerts_page(limit=1)).alerts[0]
+        assert acked.acknowledged_at is not None

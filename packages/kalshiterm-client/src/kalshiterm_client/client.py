@@ -10,6 +10,7 @@ import asyncio
 import ssl
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
@@ -29,16 +30,25 @@ from kalshiterm_client.errors import (
     Unauthorized,
 )
 from kalshiterm_client.models import (
+    AlertMetrics,
+    AlertPage,
+    AlertRule,
+    AlertRules,
     CandlePage,
     Event,
+    EventResults,
     Gap,
     MarketDetail,
     MarketPage,
+    MarketResults,
     Me,
+    MetricHistory,
+    Opportunities,
     OrderBook,
     StatusReport,
     TickPage,
     TradePage,
+    Watchlist,
 )
 from kalshiterm_client.pinning import fetch_certificate, fingerprint_of_pem, trusting
 from kalshiterm_client.profiles import Profile, ProfileError
@@ -75,6 +85,29 @@ def _wire(params: dict[str, Any] | None) -> dict[str, str]:
         else:
             out[key] = str(value)
     return out
+
+
+def _present(body: dict[str, Any]) -> dict[str, Any]:
+    """A request body without the fields that were not given."""
+    return {k: v for k, v in body.items() if v is not None}
+
+
+def decimal_text(name: str, value: Decimal | str) -> str:
+    """A number for the wire, exactly. Floats are refused: a float is already not the number you
+    meant (0.1), and the server would have to guess. At most six decimal places."""
+    if isinstance(value, bool) or not isinstance(value, Decimal | str):  # (a float is neither)
+        raise TypeError(
+            f"{name}: give a Decimal or a string like '0.25', not {type(value).__name__}"
+        )
+    try:
+        number = Decimal(value)
+    except InvalidOperation as exc:
+        raise ValueError(f"{name}: {value!r} is not a number") from exc
+    if not number.is_finite():
+        raise ValueError(f"{name}: must be a finite number")
+    if number != number.quantize(Decimal("0.000001")):
+        raise ValueError(f"{name}: at most six decimal places")
+    return format(number, "f")
 
 
 class ServerClient:
@@ -360,6 +393,163 @@ class ServerClient:
         """Periods the live stream may have missed, newest first."""
         data = await self._get("/v1/gaps", {"start": start, "end": end, "limit": limit})
         return [self._model(Gap, g) for g in data["gaps"]]
+
+    # ------------------------------------------------------------------ your watchlist
+
+    async def watchlist(self) -> Watchlist:
+        return self._model(Watchlist, await self._get("/v1/watchlist"))
+
+    async def watch(self, ticker: str) -> bool:
+        """Put a market on your list (the server then captures its orderbook). True if it was
+        added, False if it was already there. Not retried if the connection drops."""
+        data = await self._request("PUT", f"/v1/watchlist/{ticker}")
+        return bool(data["added"])
+
+    async def unwatch(self, ticker: str) -> bool:
+        """Take a market off your list. True if it was there."""
+        data = await self._request("DELETE", f"/v1/watchlist/{ticker}")
+        return bool(data["removed"])
+
+    # ------------------------------------------------------------------ analytics
+
+    async def market_results(
+        self, ticker: str, *, max_age_seconds: int | None = None
+    ) -> MarketResults:
+        """The newest value of every metric computed for a market (watched markets only)."""
+        params = {"max_age_seconds": max_age_seconds}
+        return self._model(
+            MarketResults, await self._get(f"/v1/analytics/markets/{ticker}", params)
+        )
+
+    async def market_history_page(
+        self,
+        ticker: str,
+        metric: str,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> MetricHistory:
+        """One metric (``"analyzer.metric"``) over time, newest first."""
+        params = {
+            "metric": metric,
+            "since": since,
+            "until": until,
+            "limit": limit,
+            "cursor": cursor,
+        }
+        return self._model(
+            MetricHistory, await self._get(f"/v1/analytics/markets/{ticker}/history", params)
+        )
+
+    async def iter_market_history(self, ticker: str, metric: str, **kw: Any) -> AsyncIterator[Any]:
+        async for page in self._pages(
+            lambda **p: self.market_history_page(ticker, metric, **p), kw
+        ):
+            for point in page.points:
+                yield point
+
+    async def event_results(
+        self, event_ticker: str, *, max_age_seconds: int | None = None
+    ) -> EventResults:
+        params = {"max_age_seconds": max_age_seconds}
+        return self._model(
+            EventResults, await self._get(f"/v1/analytics/events/{event_ticker}", params)
+        )
+
+    async def arbitrage(
+        self,
+        *,
+        min_profit: Decimal | str | None = None,
+        max_age_seconds: int | None = None,
+        limit: int | None = None,
+    ) -> Opportunities:
+        """Events whose YES bids sum to more than $1 right now, best profit first. ``profit`` is
+        after Kalshi's taker fees and is often negative: pass ``min_profit=Decimal(0)`` to see only
+        the ones that would make money. An indication, not an order book."""
+        params = {
+            "min_profit": None if min_profit is None else decimal_text("min_profit", min_profit),
+            "max_age_seconds": max_age_seconds,
+            "limit": limit,
+        }
+        return self._model(Opportunities, await self._get("/v1/analytics/arbitrage", params))
+
+    # ------------------------------------------------------------------ alerts
+
+    async def alert_metrics(self) -> AlertMetrics:
+        """What alert rules can be set on, with units and the comparisons each allows."""
+        return self._model(AlertMetrics, await self._get("/v1/alert-metrics"))
+
+    async def create_alert_rule(
+        self,
+        metric: str,
+        op: str,
+        threshold: Decimal | str,
+        *,
+        ticker: str | None = None,
+        event_ticker: str | None = None,
+        cooldown_seconds: int | None = None,
+        name: str = "",
+    ) -> AlertRule:
+        """A rule on ``"analyzer.metric"`` of a market (``ticker``, which must be on your
+        watchlist) or an event (``event_ticker``). ``threshold`` is in the metric's unit. Not
+        retried if the connection drops: check ``alert_rules()`` before trying again."""
+        body = {
+            "metric": metric,
+            "op": op,
+            "threshold": decimal_text("threshold", threshold),
+            "ticker": ticker,
+            "event_ticker": event_ticker,
+            "cooldown_seconds": cooldown_seconds,
+            "name": name,
+        }
+        data = await self._request("POST", "/v1/alert-rules", json=_present(body))
+        return self._model(AlertRule, data)
+
+    async def alert_rules(self) -> AlertRules:
+        return self._model(AlertRules, await self._get("/v1/alert-rules"))
+
+    async def alert_rule(self, rule_id: int) -> AlertRule:
+        return self._model(AlertRule, await self._get(f"/v1/alert-rules/{rule_id}"))
+
+    async def update_alert_rule(
+        self,
+        rule_id: int,
+        *,
+        enabled: bool | None = None,
+        threshold: Decimal | str | None = None,
+        cooldown_seconds: int | None = None,
+        name: str | None = None,
+    ) -> AlertRule:
+        """Change only what is given. A new threshold, or enabling a rule, re-arms it."""
+        body = {
+            "enabled": enabled,
+            "threshold": None if threshold is None else decimal_text("threshold", threshold),
+            "cooldown_seconds": cooldown_seconds,
+            "name": name,
+        }
+        data = await self._request("PATCH", f"/v1/alert-rules/{rule_id}", json=_present(body))
+        return self._model(AlertRule, data)
+
+    async def delete_alert_rule(self, rule_id: int) -> None:
+        await self._request("DELETE", f"/v1/alert-rules/{rule_id}")
+
+    async def alerts_page(
+        self, *, unacknowledged: bool = False, limit: int | None = None, cursor: str | None = None
+    ) -> AlertPage:
+        """Your alerts, newest first."""
+        params = {"unacknowledged": unacknowledged or None, "limit": limit, "cursor": cursor}
+        return self._model(AlertPage, await self._get("/v1/alerts", params))
+
+    async def iter_alerts(self, **kw: Any) -> AsyncIterator[Any]:
+        async for page in self._pages(self.alerts_page, kw):
+            for alert in page.alerts:
+                yield alert
+
+    async def acknowledge_alert(self, alert_id: int) -> None:
+        """Idempotent: acknowledging twice keeps the first time."""
+        await self._request("POST", f"/v1/alerts/{alert_id}/acknowledge")
 
     # ------------------------------------------------------------------ paging
 
