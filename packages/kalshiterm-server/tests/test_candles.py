@@ -181,6 +181,7 @@ async def test_every_aggregate_has_a_refresh_policy_and_the_raw_tables_have_rete
         "where proc_name = 'policy_retention' order by 1",
     )
     assert retention == [
+        ("analysis_results", "30 days"),
         ("combo_large_trades", "365 days"),
         ("orderbook_deltas", "14 days"),
         ("orderbook_snapshots", "365 days"),

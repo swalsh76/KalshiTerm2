@@ -132,6 +132,25 @@ services:
     stop_grace_period: 20s
     logging: *logging
 
+  # Runs the analyzers (built in and any installed plugins) on their schedules and writes the
+  # results to the database. No route to the internet, no Kalshi key: it only reads stored data.
+  analyze:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: kalshiterm-server:local
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["kterm-server", "analyze", "serve"]
+    environment:
+      KTERM_DB_URL: ${KTERM_DB_URL:?run kterm-server init first}
+      KTERM_ANALYZERS_DISABLED: ${KTERM_ANALYZERS_DISABLED:-}
+    networks: [internal]
+    restart: unless-stopped
+    stop_grace_period: 20s
+    logging: *logging
+
   # Nightly backup of the database to a directory on another machine (PLAN §10.4). Enabled by
   # COMPOSE_PROFILES=backup, which `kterm-server init --backup-dir` writes into .env. It has no
   # route to the internet and holds only the database password.

@@ -33,6 +33,7 @@ STALE_STREAM = timedelta(minutes=2)  # trades and tickers arrive many times a se
 STALE_SAMPLE = timedelta(minutes=30)  # the governor samples every 10 minutes by default
 STALE_DISCOVERY = timedelta(days=2)
 STALE_BACKUP = timedelta(hours=36)  # one a day, plus slack for a retry
+STALE_ANALYZER = timedelta(minutes=10)  # floor for 'three intervals' on fast analyzers
 STALE_HOST_CHECK = timedelta(minutes=5)  # the host script runs every minute
 
 
@@ -61,6 +62,7 @@ async def collect_status(
     report["discovery"] = await _discovery(engine, now, problems)
     report["watchlist"] = await _watchlist(engine)
     report["backup"] = await _backup(engine, now, backup_configured, problems)
+    report["analyzers"] = await _analyzers(engine, now, problems)
     return report
 
 
@@ -350,6 +352,45 @@ async def _backup(
     return out
 
 
+async def _analyzers(
+    engine: AsyncEngine, now: datetime, problems: list[str]
+) -> list[dict[str, Any]]:
+    """The latest run of each analyzer. None installed (or no analytics service) is not a
+    problem; an analyzer that fails, or has not succeeded for three intervals, is."""
+    rows = await _rows(
+        engine,
+        "SELECT DISTINCT ON (analyzer) analyzer, status, started_at, finished_at, results, "
+        "interval_seconds, error FROM analyzer_runs ORDER BY analyzer, started_at DESC",
+    )
+    out = []
+    for row in rows:
+        last_ok = await _query_one(
+            engine,
+            "SELECT max(started_at) FROM analyzer_runs WHERE analyzer = :a AND status = 'ok'",
+            a=row["analyzer"],
+        )
+        entry = {
+            "analyzer": row["analyzer"],
+            "status": row["status"],
+            "started_at": row["started_at"].isoformat(),
+            "results": row["results"],
+            "error": row["error"],
+            "last_ok_age_seconds": None if last_ok is None else (now - last_ok).total_seconds(),
+        }
+        out.append(entry)
+        name = row["analyzer"]
+        if row["status"] == "load_failed":
+            problems.append(f"analyzer {name} did not load: {row['error'][:200]}")
+        elif row["status"] in ("failed", "timeout"):
+            problems.append(f"analyzer {name} {row['status']}: {row['error'][:200]}")
+        elif last_ok is None or now - last_ok > max(
+            3 * timedelta(seconds=row["interval_seconds"]), STALE_ANALYZER
+        ):
+            age = "never" if last_ok is None else f"{_age(now - last_ok)} ago"
+            problems.append(f"analyzer {name} last completed a run {age}")
+    return out
+
+
 # ------------------------------------------------------------------ rendering
 
 
@@ -459,6 +500,14 @@ def render(report: dict[str, Any]) -> str:
         f"{w['ever_watched']} ever; {w['users_with_lists']} user(s) with lists wanting "
         f"{w['markets_wanted_by_users']}"
     )
+    analyzers = report.get("analyzers") or []
+    if analyzers:
+        lines.append("Analyzers:")
+        for entry in analyzers:
+            age = entry["last_ok_age_seconds"]
+            when = "never succeeded" if age is None else f"ok {_age(timedelta(seconds=age))} ago"
+            name, state = entry["analyzer"], entry["status"]
+            lines.append(f"  {name:<24}{state:<12}{when}, {entry['results']} result(s)")
     backup = report["backup"]
     ok = backup["last_ok"]
     if ok:
