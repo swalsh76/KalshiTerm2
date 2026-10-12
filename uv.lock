@@ -841,6 +841,7 @@ dependencies = [
     { name = "keyring" },
     { name = "platformdirs" },
     { name = "typer" },
+    { name = "websockets" },
     { name = "zeroconf" },
 ]
 
@@ -852,6 +853,7 @@ requires-dist = [
     { name = "keyring", specifier = ">=25" },
     { name = "platformdirs", specifier = ">=4.2" },
     { name = "typer", specifier = ">=0.12" },
+    { name = "websockets", specifier = ">=14" },
     { name = "zeroconf", specifier = ">=0.132" },
 ]
 
