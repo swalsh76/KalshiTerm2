@@ -1133,12 +1133,39 @@ Ticker messages are never partial (0 nulls in 145,444 ticks). The 4 events check
 (8 legs) matched Kalshi's order book exactly in price and size. **Result: 14 events had a positive
 gross edge (bids summing to 100.1-102c), and every one lost money after fees** (for example 198
 contracts, $1.98 gross, $6.93 of fees), i.e. no arbitrage in a liquid market after Kalshi's fees.
+**4.4 as built.** Migration 0019: `alert_rules` and `alerts`. A rule is "when `<analyzer>.<metric>`
+of this market or event is `gt` / `lt` / `abs_gt` a threshold" (`abs_gt` = further from zero
+either way, for price moves). It is checked against the **latest analyzer results**, nothing is
+recomputed. `analytics/catalog.py` lists the alertable metrics (price level, 15 m / 1 h / 24 h
+change, 1 h / 24 h volume, spread, top-of-book sizes, volatility, arbitrage `profit` and `edge`),
+with unit, allowed comparisons and freshness (three of the analyzer's intervals; volatility 15
+minutes); plugin metrics are not alertable yet (parking lot), so a typo cannot create a rule that
+never fires. **A market rule requires the market on the caller's own watchlist** (`not_watched`
+otherwise), because analytics only cover watched markets; event rules are for arbitrage and need a
+mutually exclusive event. Thresholds are decimal strings with at most six places, exactly.
+*Firing:* the `alert_evaluator` analyzer (every 30 s, so it has the runner's lock, timeout and
+`status` line) fires a rule when its condition **becomes** true (edge-triggered), at most once per
+`cooldown_seconds` (default 900; the server minimum, `KTERM_ALERT_MIN_COOLDOWN_SECONDS`, is 300);
+a missing or stale result counts as "not met" and re-arms the rule, which is what makes arbitrage
+rules work (their result only exists while an edge does). A condition that returns inside the
+cooldown fires when it ends, if still true. An alert is written with the rule update and a
+`NOTIFY kterm_alerts` (`<user_id>:<alert_id>`) in one transaction, guarded so overlapping runs
+cannot double-fire; it keeps a copy of what fired it, so it survives the rule being edited or
+deleted. Alerts are pruned after 90 days. *Limits:* 50 rules per user (checked under a per-user
+advisory lock; `KTERM_ALERT_RULES_MAX_PER_USER`). *REST (all per-user; another user's rule or
+alert is a 404):* `GET /v1/alert-metrics`; `POST|GET /v1/alert-rules`,
+`GET|PATCH|DELETE /v1/alert-rules/{id}` (a new threshold or re-enabling re-arms); `GET /v1/alerts`
+(newest first, `unacknowledged`, `limit`, `next_cursor`); `POST /v1/alerts/{id}/acknowledge`
+(idempotent). Pushing alerts live over `/v1/stream` is 4.5. Verified end to end through the real API
+over TLS (rule refused until the market was watched, fired once at the stored price of $0.997, not
+again on a second evaluation, acknowledged).
+
 | # | Slice |
 |---|---|
 | 4.1 — done | Framework: migration (`analysis_results`, `analyzer_runs`), the `Analyzer` interface and registry (entry points `kalshiterm.analyzers`; built-ins are registered the same way), `kterm-server analyze` runner (per-analyzer interval, per-run timeout, failures isolated and recorded), `NOTIFY` on new results, an `analyze` Compose service, `status` shows each analyzer's last run and problems; tested with a fake third-party plugin installed through an entry point |
 | 4.2 — done | Market metrics: spread and top-of-book liquidity, realized volatility, price and volume change over windows, for markets that ticked recently; results stored per 4.1 |
 | 4.3 — done | Cross-market arbitrage (bid side): simultaneous-quote window, sizes, executable size, fee model, one result per event; the fee schedule is checked against Kalshi's published one at the start of the slice |
-| 4.4 | Alerts: per-user rules (price move, volume spike, spread, arbitrage profit) with per-user limits and cooldown, evaluator in `analyze`, `alerts` table, REST to create/list/acknowledge |
+| 4.4 — done | Alerts: per-user rules (price move, volume spike, spread, arbitrage profit) with per-user limits and cooldown, evaluator in `analyze`, `alerts` table, REST to create/list/acknowledge |
 | 4.5 | API and push: `/v1/analytics/...` result queries, alerts pushed to their owner over `/v1/stream` with the existing cursor and resume rules, analyzer state in `/v1/status` |
 | deferred | Alert delivery outside the client (email, mobile push), the ask-side arbitrage check, plugin sandboxing: parking lot |
 
@@ -1238,4 +1265,5 @@ Ideas raised but **not** in scope. Not to be built until promoted into a phase.
 - Alert delivery outside the client (email, mobile push, webhooks). Raised 2026-10-10 with the Phase 4 breakdown; alerts reach clients over the stream only.
 - Ask-side arbitrage (buy every YES leg when asks sum under 100¢): needs a reliable "exhaustive event" signal Kalshi does not provide. Raised 2026-10-10.
 - Sandboxing or resource limits for third-party analyzers beyond a per-run timeout. Raised 2026-10-10.
+- Alerts on plugin-provided metrics (today only the built-in catalog is alertable), "any watched market" wildcard rules, and relative volume-spike rules (volume against the market's own baseline). Raised 2026-10-12 with slice 4.4.
 - Exclude the fast crypto 15-minute books from the auto top-N (they made 58% of orderbook deltas in the 2.7a sample). Raised 2026-10-07; deferred until the storage governor (2.8) shows whether it is needed.

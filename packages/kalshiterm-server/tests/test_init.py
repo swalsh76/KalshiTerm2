@@ -65,8 +65,12 @@ def test_init_writes_private_files_and_a_starter_watchlist(deploy: Path, key_fil
 
 
 def test_the_written_env_configures_both_the_server_and_the_kalshi_client(
-    deploy: Path, key_file: Path
+    deploy: Path, key_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # A real environment variable beats the .env file; developers have these set (CLAUDE.md).
+    for name in ("KTERM_DB_URL", "KTERM_STORAGE_BUDGET_GB", "KTERM_HOST_STATE_FILE",
+                 "KALSHI_ENV", "KALSHI_KEY_ID", "KALSHI_PRIVATE_KEY_PATH"):  # fmt: skip
+        monkeypatch.delenv(name, raising=False)
     init(deploy, key_file, "--budget-gb", "450")
     env = deploy / ".env"
     values = dotenv_values(env)

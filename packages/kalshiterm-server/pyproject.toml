@@ -30,6 +30,7 @@ market_quotes = "kalshiterm_server.analytics.builtin.market_metrics:MarketQuotes
 market_moves = "kalshiterm_server.analytics.builtin.market_metrics:MarketMoves"
 market_volatility = "kalshiterm_server.analytics.builtin.market_metrics:MarketVolatility"
 arbitrage_bid = "kalshiterm_server.analytics.builtin.arbitrage:ArbitrageBid"
+alert_evaluator = "kalshiterm_server.analytics.builtin.alert_evaluator:AlertEvaluator"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kalshiterm_server"]
