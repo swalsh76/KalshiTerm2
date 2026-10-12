@@ -1103,11 +1103,41 @@ the first comparison showed 18 differences, all ticks that arrived between the a
 and the check. Runs are snapshots "as of the run's start": a tick stamped before that moment can
 still be written a few seconds later.
 
+**4.3 as built.** `arbitrage_bid` (60 s) in `analytics/builtin/arbitrage.py`; fee arithmetic in
+`analytics/fees.py`. For each mutually exclusive event, the legs are the active markets whose
+newest ticker has a positive bid and size, is newer than `max_quote_age` (default 600 s) and is
+after `covered_since`; a leg without such a quote is left out, which can only lower the sum
+(selling YES on any subset S is a worst case of `sum(bids in S) - 1`). Results per event (subject =
+event ticker), only when `edge > min_edge`: `bid_sum`, `edge` (per set, before fees), `size` (the
+smallest top-of-book size among the used legs), `fees`, `profit` = `size x edge - fees` (negative
+when fees win), `legs`, `legs_total`, `oldest_quote_age`. It scans every market that ticked in the
+window, not only watched ones (about 125 ms), and stores only positive-edge events.
+*Fee model, from Kalshi's own documentation (API "Fee Rounding" and series `fee_type`, read
+2026-10-12; the fee-schedule PDF itself rate-limited the fetch):* taker fee =
+`ceil_6dp(M x 0.07 x C x P x (1 - P))` per fill, then Kalshi aligns the balance to $0.0001 (direct
+members) or $0.01 (non-direct members) and rebates the overpayment across an order's fills. The
+analyzer rounds each leg's order up to `KTERM_ARBITRAGE_FEE_ROUND_E6` (default 10000 = $0.01, the
+conservative reading). `quadratic`, `quadratic_with_maker_fees` and
+`quadratic_with_combo_maker_fees` all charge the taker formula to orders that take liquidity
+(maker coefficients 0.25 / 0.5 only apply to resting orders); `flat` and the margin-program type
+are not modelled, and their events produce no result. The multiplier comes from the stored
+`series.fee_multiplier_e6` (the data holds 1.0, 0.5 and 0.0). Kalshi's worked example (1 contract
+at $0.055 -> model fee $0.00363825, trade fee $0.003639) is a test. Not verified: whether
+settlement itself is fee-free (assumed, as in the fee documentation's trade-only wording).
+*Measured on live data (2026-10-12):* a stored-vs-live check of 400 markets whose Kalshi quote
+and ours did not change across the read: 362 matched exactly (bid, ask, size), 14 matched in price,
+24 differed, and for the differing ones Kalshi's order book sided with our ticker 14 times to 5 for
+Kalshi's `/markets` object (the rest had moved). So the stored quote is the better view, but not
+exact: **the output is an indication; the live book must be re-read before any trade** (Phase 6).
+Ticker messages are never partial (0 nulls in 145,444 ticks). The 4 events checked by hand
+(8 legs) matched Kalshi's order book exactly in price and size. **Result: 14 events had a positive
+gross edge (bids summing to 100.1-102c), and every one lost money after fees** (for example 198
+contracts, $1.98 gross, $6.93 of fees), i.e. no arbitrage in a liquid market after Kalshi's fees.
 | # | Slice |
 |---|---|
 | 4.1 — done | Framework: migration (`analysis_results`, `analyzer_runs`), the `Analyzer` interface and registry (entry points `kalshiterm.analyzers`; built-ins are registered the same way), `kterm-server analyze` runner (per-analyzer interval, per-run timeout, failures isolated and recorded), `NOTIFY` on new results, an `analyze` Compose service, `status` shows each analyzer's last run and problems; tested with a fake third-party plugin installed through an entry point |
 | 4.2 — done | Market metrics: spread and top-of-book liquidity, realized volatility, price and volume change over windows, for markets that ticked recently; results stored per 4.1 |
-| 4.3 | Cross-market arbitrage (bid side): simultaneous-quote window, sizes, executable size, fee model, one result per event; the fee schedule is checked against Kalshi's published one at the start of the slice |
+| 4.3 — done | Cross-market arbitrage (bid side): simultaneous-quote window, sizes, executable size, fee model, one result per event; the fee schedule is checked against Kalshi's published one at the start of the slice |
 | 4.4 | Alerts: per-user rules (price move, volume spike, spread, arbitrage profit) with per-user limits and cooldown, evaluator in `analyze`, `alerts` table, REST to create/list/acknowledge |
 | 4.5 | API and push: `/v1/analytics/...` result queries, alerts pushed to their owner over `/v1/stream` with the existing cursor and resume rules, analyzer state in `/v1/status` |
 | deferred | Alert delivery outside the client (email, mobile push), the ask-side arbitrage check, plugin sandboxing: parking lot |

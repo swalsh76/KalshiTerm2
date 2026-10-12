@@ -15,7 +15,7 @@ from kalshiterm_server.analytics.base import (
 )
 from kalshiterm_server.analytics.registry import discover
 
-BUILTIN = {"market_quotes", "market_moves", "market_volatility"}
+BUILTIN = {"market_quotes", "market_moves", "market_volatility", "arbitrage_bid"}
 
 
 def test_the_built_in_analyzers_come_through_the_same_entry_points_as_plugins() -> None:
