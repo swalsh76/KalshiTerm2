@@ -15,9 +15,11 @@ connection or a 5xx, the order may or may not exist, so ``create_order`` looks i
 ``client_order_id`` it always sends (listing orders since just before the attempt). It returns
 the order if found and otherwise raises ``WriteOutcomeUnknown``: the caller must reconcile and
 must never reuse that id. A 429 means Kalshi rejected the request unprocessed, so it is the one
-case retried for every write (bounded, with backoff). Cancels and transfers are idempotent
-(a cancel's end state is the same; a transfer carries ``client_transfer_id``), so they are also
-retried after ambiguous failures.
+case retried for every write (bounded, with backoff). Cancels are idempotent (the end state is
+the same), so they are also retried after ambiguous failures. **Transfers are not**: Kalshi does
+not deduplicate on ``client_transfer_id`` (measured live 2026-10-13: the identical request sent
+twice moved the money twice), so an unclear transfer is never resent; it raises
+``WriteOutcomeUnknown`` and the caller reads the balance.
 
 Money is exact: prices and counts are ``Decimal`` (a ``float`` is a ``TypeError``) and are sent
 as fixed-point strings; more decimal places than Kalshi accepts is a ``ValueError``, never a
@@ -475,7 +477,8 @@ class KalshiTradingClient:
         self, *, source_shard: int, destination_shard: int, amount_e6: int, transfer_id: str
     ) -> str:
         """Move ``amount_e6`` (millionths of a dollar, a whole number of centicents) between two
-        exchange shards of this account. ``transfer_id`` makes a retry safe. Returns Kalshi's id."""
+        exchange shards of this account. Sent at most once: ``transfer_id`` is passed on but Kalshi
+        does not treat a repeat as a duplicate. Returns Kalshi's id for the transfer."""
         if source_shard == destination_shard:
             raise ValueError("source and destination shard are the same")
         if amount_e6 <= 0 or amount_e6 % 100:
@@ -488,11 +491,14 @@ class KalshiTradingClient:
             "source_exchange_shard": source_shard,
             "destination_exchange_shard": destination_shard,
         }
-        resp = await self._send(
-            "POST",
-            "/portfolio/intra_exchange_instance_transfer",
-            cost=DEFAULT_COST,
-            json=body,
-            idempotent=True,
-        )
+        try:
+            resp = await self._send(
+                "POST",
+                "/portfolio/intra_exchange_instance_transfer",
+                cost=DEFAULT_COST,
+                json=body,
+                idempotent=False,
+            )
+        except _Ambiguous:
+            raise WriteOutcomeUnknown("transfer", transfer_id) from None
         return str(resp.json()["transfer_id"])

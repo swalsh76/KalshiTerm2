@@ -58,6 +58,8 @@ log = logging.getLogger("kalshiterm_client.orders")
 E6 = 1_000_000
 TRADABLE_STATUSES = frozenset({"active", "open"})
 KILL_PASSES = 10
+FUNDING_POLLS = 20
+FUNDING_POLL_SECONDS = 0.5
 GUARD_INTERVAL = 5.0
 
 
@@ -336,22 +338,28 @@ class OrderService:
         current = tracked_from_order(await self._rest.order(order_id))
         if not current.is_resting:
             raise OrderNotFound(f"order {order_id} is {current.status}, not resting")
-        total = count if count is not None else Decimal(current.initial_e2) / 100
+        if count is not None and current.fill_e2 > 0:
+            raise ValueError(
+                "this order has partly filled, and whether Kalshi's count includes the filled "
+                "part is unverified: change the price only, or cancel and place a new order"
+            )
+        total = count if count is not None else Decimal(current.total_e2) / 100
         remaining_e2 = to_e2(total, "count") - current.fill_e2
         if remaining_e2 <= 0:
             raise ValueError("the new count must be more than what has already filled; cancel it")
-        own_price_e6 = to_e6(price, "price") if price is not None else current.own_price_e6
-        outcome = Outcome(current.outcome_side)
+        # The price is on the YES book, as `kterm orders` shows it: a bid is a buy of YES, an
+        # ask a sell of YES (the same as a buy of NO at 1 - price).
+        yes_price_e6 = to_e6(price, "price") if price is not None else current.yes_price_e6
         request = OrderRequest(
             current.ticker,
             current.action,
-            outcome,
+            Outcome.YES,
             Decimal(remaining_e2) / 100,
-            Decimal(own_price_e6) / E6,
+            Decimal(yes_price_e6) / E6,
         )
         market = await self.market_info(current.ticker)
         intent = intent_from(request, market)
-        side, yes_price = to_v2(outcome, current.action, own_price_e6)
+        side, yes_price = to_v2(Outcome.YES, current.action, yes_price_e6)
         verdict = await self._verdict(intent, market, order_id)
         return Prepared(request, market, intent, verdict, side, yes_price, order_id, total)
 
@@ -374,15 +382,32 @@ class OrderService:
         approved = fresh.approved
         assert approved is not None
         if fresh.funding:
+            approved = await self._await_funding(prepared)
+        return approved, fresh.funding
+
+    async def _await_funding(self, prepared: Prepared) -> ApprovedOrder:
+        """Wait for the transfers to show in the balance, then check once more.
+
+        Kalshi's balance lags a transfer by a moment (seen live: the very next read still showed
+        the old shard balance). An order is refused at once for any real reason (a halt, a
+        limit); only "the shard still needs funding" is waited on, for about ten seconds.
+        """
+        for _ in range(FUNDING_POLLS):
             after = await self._verdict(prepared.intent, prepared.market, prepared.replaces)
-            if not after.ok or after.funding:
+            if not after.ok:
                 raise FundingShort(
-                    "the shard does not hold what the order needs after the transfers: "
+                    "the order is no longer allowed after the transfers: "
                     + "; ".join(r.message for r in after.refusals)
                 )
-            approved = after.approved
-            assert approved is not None
-        return approved, fresh.funding
+            if not after.funding:
+                assert after.approved is not None
+                return after.approved
+            await self._sleep(FUNDING_POLL_SECONDS)
+        raise FundingShort(
+            "the transfer has not shown up in the shard balance after "
+            f"{FUNDING_POLLS * FUNDING_POLL_SECONDS:.0f} seconds. It is recorded as made: check "
+            "`kterm balance`, then run the order again."
+        )
 
     async def execute(self, prepared: Prepared) -> Placement:
         if prepared.replaces is not None:

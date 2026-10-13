@@ -90,13 +90,21 @@ def to_e2(value: Decimal | None, what: str = "count") -> int:
 
 @dataclass
 class TrackedOrder:
+    """A resting (or finished) order as Kalshi's YES book holds it.
+
+    Only ``book_side`` (bid or ask) and the YES price are used for risk: the orderbook confirmed
+    (2026-10-13) that a YES bid is "buy YES" and a YES ask is "sell YES", which is the same thing
+    as "buy NO at 1 - price". Kalshi's ``action`` / ``outcome_side`` labels on the same order are
+    NOT dependable (a buy of NO is labelled "sell, no, ask"), so they are kept only for display.
+    """
+
     order_id: str
     client_order_id: str
     ticker: str
     exchange_index: int
     status: str
-    outcome_side: str  # yes / no
-    book_side: str  # bid / ask
+    outcome_side: str  # Kalshi's label, display only
+    book_side: str  # bid / ask on the YES book
     yes_price_e6: int
     initial_e2: int
     fill_e2: int
@@ -109,18 +117,23 @@ class TrackedOrder:
 
     @property
     def action(self) -> Action:
-        """In the outcome's own book a bid is a buy and an ask a sell (checked on Kalshi's data)."""
+        """On the YES book a bid buys YES and an ask sells YES."""
         return Action.BUY if self.book_side == "bid" else Action.SELL
 
     @property
     def own_price_e6(self) -> int:
-        return self.yes_price_e6 if self.outcome_side == "yes" else E6 - self.yes_price_e6
+        """The price of the YES contract this order trades."""
+        return self.yes_price_e6
 
     @property
     def adds_yes(self) -> bool:
-        """Filling it moves the net position towards YES. True for a bid on YES or an ask on NO,
-        which also holds when the order is expressed on the YES book alone."""
-        return (self.book_side == "bid") == (self.outcome_side == "yes")
+        """Filling a bid moves the net position towards YES, filling an ask towards NO."""
+        return self.book_side == "bid"
+
+    @property
+    def total_e2(self) -> int:
+        """Filled plus still resting (Kalshi leaves ``initial_count`` alone after an amend)."""
+        return self.fill_e2 + self.remaining_e2
 
 
 @dataclass
@@ -362,28 +375,31 @@ class AccountTracker:
         old order's exposure counted twice."""
         if self.balance_at is None or not self.synced_event.is_set():
             return None
+        resting = self.resting_orders(exclude_order)
         resting_yes: dict[str, int] = {}
         resting_no: dict[str, int] = {}
+        reserved: dict[int, int] = {}
         resting_cost = 0
-        resting = self.resting_orders(exclude_order)
         for order in resting:
             if order.remaining_e2 <= 0:
                 continue
             side = resting_yes if order.adds_yes else resting_no
             side[order.ticker] = side.get(order.ticker, 0) + order.remaining_e2
             position = self.positions.get(order.ticker, TrackedPosition()).position_e2
-            resting_cost += collateral_e6(
+            cost = collateral_e6(
                 OrderIntent(
                     order.ticker,
                     order.exchange_index,
                     order.action,
-                    Outcome(order.outcome_side),
+                    Outcome.YES,
                     order.remaining_e2,
-                    min(max(order.own_price_e6, 1), E6 - 1),
+                    min(max(order.yes_price_e6, 1), E6 - 1),
                     None,
                 ),
                 position,
             )
+            resting_cost += cost
+            reserved[order.exchange_index] = reserved.get(order.exchange_index, 0) + cost
         markets = {
             ticker: MarketState(
                 self.positions.get(ticker, TrackedPosition()).position_e2,
@@ -395,7 +411,10 @@ class AccountTracker:
         shards = {}
         for index, balance in self.balances_e6.items():
             trading, transfers = self.shard_flags.get(index, (False, False))
-            shards[index] = ShardState(index, balance, trading, transfers)
+            # Kalshi's balance is gross cash (a resting order does not reduce it, measured live),
+            # so what is free to use is the balance less what resting orders may need.
+            free = max(balance - reserved.get(index, 0), 0)
+            shards[index] = ShardState(index, free, trading, transfers)
         exposure = sum(p.exposure_e6 for p in self.positions.values()) + resting_cost
         return AccountSnapshot(
             as_of=datetime.fromtimestamp(self.balance_at, UTC),

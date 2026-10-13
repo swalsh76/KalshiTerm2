@@ -353,6 +353,86 @@ async def test_transfers_that_do_not_arrive_stop_the_order(tmp_path: Path) -> No
         await service._tracker.stop()
 
 
+async def test_a_balance_that_catches_up_slowly_after_a_transfer_still_gets_the_order_placed(
+    tmp_path: Path,
+) -> None:
+    """Seen live 2026-10-13: the read right after a transfer still showed the old shard balance."""
+    service, rest, trading, state = await build(tmp_path)
+    try:
+        prepared = await service.prepare(buy("KXT-1", count="1", price="0.01"))
+        moved: dict[str, int | None] = {"reads_since": None}
+        real_balance = rest.balance
+        new_balance: dict[str, Any] = {}
+
+        async def lagging_transfer(**kw: Any) -> str:
+            trading.calls.append(("transfer", kw))
+            new_balance["value"] = balance("10.3290", "0.0000", "0.0000", "0.0200")
+            moved["reads_since"] = 0
+            return "ok"
+
+        async def lagging_read(**params: Any) -> Any:
+            if moved["reads_since"] is not None:
+                moved["reads_since"] += 1
+                if moved["reads_since"] > 3:  # three stale reads, then the truth
+                    rest.balance_value = new_balance["value"]
+            return await real_balance(**params)
+
+        trading.transfer = lagging_transfer  # type: ignore[method-assign]
+        rest.balance = lagging_read  # type: ignore[method-assign]
+        pauses: list[float] = []
+
+        async def record(seconds: float) -> None:
+            pauses.append(seconds)
+
+        service._sleep = record
+        placement = await service.execute(prepared)
+        assert trading.names() == ["transfer", "create"]
+        assert (moved["reads_since"] or 0) > 3  # it really did wait out stale reads
+        assert pauses == [0.5, 0.5, 0.5]  # a pause between polls, not a spin
+        assert placement.transfers and state.transferred_e6 > 0
+    finally:
+        await service._tracker.stop()
+
+
+async def test_a_transfer_that_never_shows_in_the_balance_stops_the_order_with_advice(
+    tmp_path: Path,
+) -> None:
+    service, rest, trading, state = await build(tmp_path)
+    try:
+        prepared = await service.prepare(buy("KXT-1"))
+
+        async def never_arrives(**kw: Any) -> str:
+            trading.calls.append(("transfer", kw))
+            return "ok"
+
+        trading.transfer = never_arrives  # type: ignore[method-assign]
+        with pytest.raises(FundingShort, match="has not shown up.*kterm balance"):
+            await service.execute(prepared)
+        assert trading.names() == ["transfer"] and state.transferred_e6 > 0  # still counted
+    finally:
+        await service._tracker.stop()
+
+
+async def test_an_order_that_became_disallowed_while_waiting_is_refused_not_waited_on(
+    tmp_path: Path,
+) -> None:
+    service, rest, trading, state = await build(tmp_path)
+    try:
+        prepared = await service.prepare(buy("KXT-1"))
+
+        async def transfer_then_halt(**kw: Any) -> str:
+            trading.calls.append(("transfer", kw))
+            state.halt("kill switch")
+            return "ok"
+
+        trading.transfer = transfer_then_halt  # type: ignore[method-assign]
+        with pytest.raises(FundingShort, match="no longer allowed.*halted"):
+            await service.execute(prepared)
+        assert "create" not in trading.names()
+    finally:
+        await service._tracker.stop()
+
+
 async def test_an_order_with_no_clear_answer_is_remembered_by_its_id(tmp_path: Path) -> None:
     service, rest, trading, state = await build(tmp_path)
     try:
@@ -613,23 +693,50 @@ async def test_an_amend_that_would_break_a_limit_is_refused_and_sends_nothing(
         await service._tracker.stop()
 
 
-async def test_a_price_only_amend_keeps_the_total_and_a_no_order_stays_on_its_own_side(
-    tmp_path: Path,
-) -> None:
-    # a resting buy of NO at 30c is, on the YES book, an ask at 70c
-    rest = one_resting(outcome="no", book="bid", yes_price="0.7000")
+async def test_amending_a_buy_of_no_stays_an_ask_and_never_becomes_a_bid(tmp_path: Path) -> None:
+    """Seen live 2026-10-13: a buy of NO at 1c is held as 'sell, no, ask, yes 0.99' (a NO bid).
+    Rebuilding it from those labels sent a BID at 0.99, which crosses the book and buys YES."""
+    rest = one_resting(outcome="no", book="ask", yes_price="0.9900")
     service, _, trading, _ = await build(tmp_path, rest=rest)
     try:
-        prepared = await service.prepare_amend("o-1", price=Decimal("0.35"))
+        prepared = await service.prepare_amend("o-1", price=Decimal("0.98"))
+        assert (prepared.side, prepared.price) == (Side.ASK, Decimal("0.98"))
         assert prepared.total_count == Decimal("2")
-        assert (prepared.side, prepared.price) == (Side.ASK, Decimal("0.65"))
+        assert prepared.request.outcome is Outcome.YES and prepared.intent.outcome is Outcome.YES
+        assert prepared.request.action is Action.SELL  # an ask sells YES, whatever Kalshi labels it
         await service.execute_amend(prepared)
         sent = trading.calls[0][1][1]
-        assert (sent["side"], sent["price"], sent["count"]) == (
-            Side.ASK,
-            Decimal("0.65"),
-            Decimal(2),
-        )
+        assert (sent["side"], sent["price"], sent["count"]) == (Side.ASK, Decimal("0.98"), 2)
+    finally:
+        await service._tracker.stop()
+
+
+async def test_an_amended_orders_current_total_is_filled_plus_remaining(tmp_path: Path) -> None:
+    rest = one_resting()
+    # amended from 1 to 2 contracts: Kalshi leaves initial_count at 1
+    rest.orders[0] = rest.orders[0].model_copy(
+        update={"initial_count_fp": Decimal("1.00"), "remaining_count_fp": Decimal("2.00")}
+    )
+    service, *_ = await build(tmp_path, rest=rest)
+    try:
+        prepared = await service.prepare_amend("o-1", price=Decimal("0.45"))
+        assert prepared.total_count == Decimal("2") and prepared.intent.count_e2 == 200
+    finally:
+        await service._tracker.stop()
+
+
+async def test_a_partly_filled_order_may_change_price_but_not_count(tmp_path: Path) -> None:
+    rest = one_resting()
+    rest.orders[0] = rest.orders[0].model_copy(
+        update={"fill_count_fp": Decimal("1.00"), "remaining_count_fp": Decimal("1.00")}
+    )
+    service, _, trading, _ = await build(tmp_path, rest=rest)
+    try:
+        with pytest.raises(ValueError, match="partly filled"):
+            await service.prepare_amend("o-1", count=Decimal("3"))
+        prepared = await service.prepare_amend("o-1", price=Decimal("0.45"))
+        assert prepared.total_count == Decimal("2") and prepared.intent.count_e2 == 100
+        assert trading.calls == []
     finally:
         await service._tracker.stop()
 

@@ -272,7 +272,9 @@ def register(app: typer.Typer) -> None:
     @app.command("amend")
     def amend(
         order_id: Annotated[str, typer.Argument(help="The resting order to change.")],
-        price: Annotated[str | None, typer.Option(help="New limit price in dollars.")] = None,
+        price: Annotated[
+            str | None, typer.Option(help="New YES price in dollars, as `kterm orders` shows it.")
+        ] = None,
         count: Annotated[str | None, typer.Option(help="New TOTAL count.")] = None,
         dry_run: DryRunOption = False,
         yes: YesOption = False,
@@ -441,6 +443,8 @@ def register(app: typer.Typer) -> None:
         if as_json:
             return emit_json(shown)
         show(trade_views.orders_table(shown))
+        if shown:
+            typer.echo(trade_views.ORDERS_NOTE)
 
     @app.command("fills")
     def fills(
@@ -458,3 +462,5 @@ def register(app: typer.Typer) -> None:
         if as_json:
             return emit_json(shown)
         show(trade_views.fills_table(shown))
+        if shown:
+            typer.echo(trade_views.ORDERS_NOTE)

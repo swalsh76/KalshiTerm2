@@ -89,11 +89,6 @@ class Order(KalshiModel):
     expiration_time: datetime | None = None
 
     @property
-    def price_dollars(self) -> Decimal:
-        """The limit price of the outcome being traded (the user's own side)."""
-        return self.yes_price_dollars if self.outcome_side == "yes" else self.no_price_dollars
-
-    @property
     def is_resting(self) -> bool:
         return self.status == "resting"
 

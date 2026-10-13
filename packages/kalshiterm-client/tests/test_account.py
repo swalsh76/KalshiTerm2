@@ -59,20 +59,30 @@ def test_exact_conversions_refuse_finer_precision() -> None:
 
 
 @pytest.mark.parametrize(
-    ("book", "outcome", "adds_yes", "action"),
+    ("book", "label", "adds_yes", "action"),
     [
         ("bid", "yes", True, Action.BUY),
-        ("ask", "no", True, Action.SELL),  # selling NO is bullish on YES
-        ("bid", "no", False, Action.BUY),
+        ("bid", "no", True, Action.BUY),  # Kalshi's outcome label is ignored: a bid is a bid
         ("ask", "yes", False, Action.SELL),
+        # Observed live 2026-10-13: a BUY of NO at 1c is reported as "sell, no, ask, yes 0.99"
+        # and sits in the book as a NO bid, so it pushes the position towards NO.
+        ("ask", "no", False, Action.SELL),
     ],
 )
 def test_which_way_a_resting_order_pushes_the_position(
-    book: str, outcome: str, adds_yes: bool, action: Action
+    book: str, label: str, adds_yes: bool, action: Action
 ) -> None:
-    t = TrackedOrder("o", "c", "T", 0, "resting", outcome, book, 400_000, 200, 0, 200, 0)
+    t = TrackedOrder("o", "c", "T", 0, "resting", label, book, 400_000, 200, 0, 200, 0)
     assert t.adds_yes is adds_yes and t.action is action
-    assert t.own_price_e6 == (400_000 if outcome == "yes" else 600_000)
+    assert t.own_price_e6 == 400_000  # always the YES price
+    assert t.total_e2 == 200
+
+
+def test_an_amended_orders_total_is_filled_plus_remaining_not_the_original_count() -> None:
+    t = TrackedOrder("o", "c", "T", 0, "resting", "yes", "bid", 20_000, 100, 0, 200, 0)
+    assert t.total_e2 == 200  # Kalshi leaves the initial count (1) alone after an amend to 2
+    partly = TrackedOrder("o", "c", "T", 0, "resting", "yes", "bid", 20_000, 300, 100, 200, 0)
+    assert partly.total_e2 == 300
 
 
 async def test_nothing_is_reported_before_the_first_full_read(tmp_path: Path) -> None:
@@ -99,8 +109,9 @@ async def test_start_subscribes_reads_everything_and_builds_an_exact_snapshot(
         assert ws.subscribed == ["fill", "user_orders", "market_positions"]
         snap = tracker.snapshot()
         assert snap is not None and snap.stream_ok and not snap.halted
+        # shard 0 holds 10.349 in cash, of which 0.80 + 0.70 may be needed by the resting orders
         assert {i: s.balance_e6 for i, s in snap.shards.items()} == {
-            0: 10_349_000,
+            0: 8_849_000,
             1: 0,
             2: 0,
             3: 2_500_000,
@@ -111,10 +122,11 @@ async def test_start_subscribes_reads_everything_and_builds_an_exact_snapshot(
         assert snap.markets["KXA-1"].position_e2 == 300
         assert snap.markets["KXA-1"].resting_yes_e2 == 200  # a bid on YES
         assert snap.markets["KXB-1"].position_e2 == -100
-        assert snap.markets["KXB-1"].resting_yes_e2 == 100  # an ask on NO pushes towards YES
-        # exposure: positions 1.20 + 0.40, plus resting buy 2 x 0.40 and a NO sell of 1 held-NO
-        # contract (closes the long NO: no new collateral)
-        assert snap.exposure_e6 == 1_200_000 + 400_000 + 800_000
+        assert snap.markets["KXB-1"].resting_yes_e2 == 0
+        assert snap.markets["KXB-1"].resting_no_e2 == 100  # an ask pushes towards NO
+        # exposure: positions 1.20 + 0.40, the bid 2 x 0.40, and the ask at 0.30 (selling YES that
+        # is not held, so (1 - 0.30) of collateral)
+        assert snap.exposure_e6 == 1_200_000 + 400_000 + 800_000 + 700_000
         assert snap.as_of == datetime.fromtimestamp(T0, UTC)
     finally:
         await tracker.stop()

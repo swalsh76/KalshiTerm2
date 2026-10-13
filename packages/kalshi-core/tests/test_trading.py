@@ -461,26 +461,55 @@ async def test_amend_and_decrease_are_never_resent_after_a_lost_answer() -> None
 
 
 @respx.mock
-async def test_a_transfer_is_in_centicents_and_safe_to_retry_with_its_id() -> None:
+async def test_a_transfer_is_in_centicents() -> None:
     route = respx.post(f"{BASE}/portfolio/intra_exchange_instance_transfer")
-    route.side_effect = [httpx.Response(503), httpx.Response(200, json={"transfer_id": "t-9"})]
+    route.side_effect = [httpx.Response(200, json={"transfer_id": "t-9"})]
     async with client(Pauses()) as c:
         tid = await c.transfer(
             source_shard=0, destination_shard=3, amount_e6=2_500_100, transfer_id="tr-1"
         )
-    assert tid == "t-9" and route.call_count == 2
-    assert (
-        body(route, 0)
-        == body(route, 1)
-        == {
-            "source": "event_contract",
-            "destination": "event_contract",
-            "amount": 25_001,
-            "client_transfer_id": "tr-1",
-            "source_exchange_shard": 0,
-            "destination_exchange_shard": 3,
-        }
-    )
+    assert tid == "t-9"
+    assert body(route) == {
+        "source": "event_contract",
+        "destination": "event_contract",
+        "amount": 25_001,
+        "client_transfer_id": "tr-1",
+        "source_exchange_shard": 0,
+        "destination_exchange_shard": 3,
+    }
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "failure", [httpx.Response(503), httpx.Response(500), httpx.ReadTimeout("x")]
+)
+async def test_a_transfer_with_no_clear_answer_is_never_sent_again(failure: Any) -> None:
+    """Measured live: the same client_transfer_id sent twice moved the money twice."""
+    route = respx.post(f"{BASE}/portfolio/intra_exchange_instance_transfer")
+    route.side_effect = [failure, httpx.Response(200, json={"transfer_id": "t-9"})]
+    async with client(Pauses()) as c:
+        with pytest.raises(WriteOutcomeUnknown) as info:
+            await c.transfer(
+                source_shard=0, destination_shard=3, amount_e6=1_000_000, transfer_id="tr-1"
+            )
+    assert info.value.kind == "transfer" and info.value.ref == "tr-1"
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_a_refused_transfer_is_an_api_error_and_a_rate_limit_is_waited_out() -> None:
+    route = respx.post(f"{BASE}/portfolio/intra_exchange_instance_transfer")
+    route.side_effect = [httpx.Response(429), httpx.Response(200, json={"transfer_id": "t-1"})]
+    async with client(Pauses()) as c:
+        assert (
+            await c.transfer(source_shard=0, destination_shard=1, amount_e6=100, transfer_id="a")
+            == "t-1"
+        )
+    route.side_effect = [httpx.Response(400, json={"error": "no"})]
+    route.reset()
+    async with client(Pauses()) as c:
+        with pytest.raises(KalshiAPIError):
+            await c.transfer(source_shard=0, destination_shard=1, amount_e6=100, transfer_id="b")
 
 
 async def test_bad_transfers_are_refused_before_the_network() -> None:

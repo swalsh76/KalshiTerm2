@@ -192,13 +192,14 @@ async def test_positions_orders_fills_settlements_parse_and_follow_cursors() -> 
     assert settlements[0].yes_count_fp == 4 and settlements[0].revenue == 0
 
 
-def test_an_order_reports_the_users_own_side_not_the_books() -> None:
-    order = Order.model_validate(ORDER)  # a sell of NO at 0.99, stored on the YES book
-    assert order.side == "yes" and order.outcome_side == "no"
-    assert order.price_dollars == Decimal("0.9900")  # the NO price, not the 0.0100 YES price
+def test_an_order_keeps_both_prices_and_is_resting_only_while_resting() -> None:
+    order = Order.model_validate(ORDER)
+    assert order.yes_price_dollars == Decimal("0.0100") and order.no_price_dollars == Decimal(
+        "0.9900"
+    )
     assert order.is_resting
-    yes = Order.model_validate({**ORDER, "outcome_side": "yes", "status": "executed"})
-    assert yes.price_dollars == Decimal("0.0100") and not yes.is_resting
+    done = Order.model_validate({**ORDER, "status": "executed"})
+    assert not done.is_resting
 
 
 @respx.mock
