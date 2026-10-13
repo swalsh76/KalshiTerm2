@@ -19,6 +19,7 @@ dependencies = [
     "cryptography>=43",
     "zeroconf>=0.132",
     "websockets>=14",
+    "rich>=13",
 ]
 
 [project.scripts]

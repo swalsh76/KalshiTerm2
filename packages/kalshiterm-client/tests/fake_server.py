@@ -75,6 +75,8 @@ class FakeServer:
         self.requests: list[tuple[str, str | None]] = []  # (path, Authorization header)
         self.status = 200
         self.body: Any = {"time": "2026-10-09T12:00:00+00:00", "problems": []}
+        # path (no query) -> a body, a (status, body) pair, or a function of the query parameters
+        self.routes: dict[str, Any] = {}
         self._server: _Quiet | None = None
         self._dir = tempfile.TemporaryDirectory()
 
@@ -89,12 +91,20 @@ class FakeServer:
             def do_GET(self) -> None:
                 outer.requests.append((self.path, self.headers.get("Authorization")))
                 import json
+                from urllib.parse import parse_qs, urlsplit
 
-                payload = json.dumps(outer.body).encode()
-                self.send_response(outer.status)
+                parts = urlsplit(self.path)
+                reply = outer.routes.get(parts.path, outer.body)
+                status = outer.status
+                if callable(reply):
+                    reply = reply({k: v[0] for k, v in parse_qs(parts.query).items()})
+                if isinstance(reply, tuple):
+                    status, reply = reply
+                payload = json.dumps(reply).encode()
+                self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
-                if outer.status == 429:
+                if status == 429:
                     self.send_header("Retry-After", "42")
                 self.end_headers()
                 self.wfile.write(payload)

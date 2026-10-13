@@ -1311,12 +1311,36 @@ killed and restarted: 7 retries over 6.8 s, `resumed=True`, **119 events deliver
 the database for those markets over the cursor range, 57 of them committed while the API was
 down**, no repeats.
 
+**5.4 as built.** Seven top-level commands, thin consumers of `ServerClient`, each with `--json`:
+`kterm markets [QUERY] [--status --event --series --limit]` (follows pages up to `--limit`, at most
+5,000: the server holds ~800,000 markets and the CLI never tries to fetch them all),
+`market TICKER [--rules]` (detail, last quote and analytics; the optional pieces may fail without
+failing the command), `candles TICKER [--interval --source --limit --start --end]`, `trades TICKER`,
+`book TICKER [--at --depth]` (warns when the server says the book may be incomplete, with the reasons),
+`analytics [TICKER | --event E] [--metric analyzer.metric]`, `arbitrage [--min-profit]`. Code:
+`cli_common.py` (profile, `run_with_api`, console, JSON), `views.py` (pure model -> `rich` functions),
+`data_cli.py` (commands). **Rules that matter:** numbers are rendered from `Decimal`, never rounded
+(`0.560000` shows as `0.56`, `0.123456` stays whole; prices keep at least two decimals); every string
+from the server goes through `rich.text.Text`, so a title such as `Will [bold]X[/bold] win?` cannot
+change the display (tested); times are UTC and labelled, and a time typed without an offset is read
+as UTC; the console is 120 columns wide when piped (rich assumes 80), so tickers are never cut;
+`--json` is the typed models with decimals as exact strings (a test compares it with the server's
+REST answer field by field). Bad options are refused before any request (exit 2), server and
+network problems are one line (exit 1), and the token never appears in output. *Tests:* 25 on the
+formatting and rendering, 32 on the commands against a scripted HTTPS server (including the
+requests each command sends), 6 on the real server over TLS. Removing the stop-at-limit check makes
+the list command loop forever on an endless server, i.e. the guard is exercised; reading a naive
+time as local time fails two tests. *Verified live on the dev server:* the real `kterm` printed a
+market list, a market's detail and last quote, hourly candles, trades, a 5-level book (with the
+server's incompleteness warning, correct because ingest had restarted after the snapshot),
+analytics, arbitrage and a not-found error.
+
 | # | Slice |
 |---|---|
 | 5.1 — done | API client foundation: `ServerClient` (pinned TLS, token, connection reuse, timeouts, retries for GETs, the error taxonomy of `connection.py`, pagination iterators) and typed models + methods for `me`, `status`, markets (list / search / get), events, candles, trades, ticks, orderbook and gaps; contract tests against the real server; `kterm server status` moves onto it |
 | 5.2 — done | The rest of the API in the client: watchlist, analytics (market latest / history, event, arbitrage) and alerts (metrics, rules create / list / change / delete, alerts list / acknowledge), with contract tests |
 | 5.3 — done | Live stream client: `StreamClient` (pinned `wss`, header auth, reconnect with backoff, heartbeat timeout detection, `since` / `alerts_since` resume with exactly-once delivery, `gap` handling), a `BookTracker` that keeps an orderbook from `book_snapshot` / `book_delta` events; tested against the real server over a real socket with forced disconnects (no duplicates, no gaps) |
-| 5.4 | CLI data views: `kterm markets`, `market`, `candles`, `trades`, `book`, `analytics`, `arbitrage` (tables and `--json`) |
+| 5.4 — done | CLI data views: `kterm markets`, `market`, `candles`, `trades`, `book`, `analytics`, `arbitrage` (tables and `--json`) |
 | 5.5 | CLI account and live views: `watchlist`, `alerts` (rules, list, acknowledge), `watch` (live tickers / trades / book) and `alerts watch`; an end-to-end check against a live server |
 | deferred | CSV export, a local response cache or offline mode, persisted stream cursors, shell completion: parking lot. Trading is Phase 6 and the browser UI Phase 7 |
 
