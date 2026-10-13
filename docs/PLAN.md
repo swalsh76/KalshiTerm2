@@ -1481,7 +1481,7 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
 | # | Slice |
 |---|---|
 | 6.1 — done | Measure first: a read-only look at the demo's order, position, balance and fill shapes (with the existing dev key, GET only) plus a re-check of the docs facts above; write the as-built models and the open questions into this section. No write code |
-| 6.2 | Risk layer: `RiskPolicy` (per-shard balances, funding plan, transfer caps), `risk.toml` loading and validation, `check` as a pure function, `ApprovedOrder`, fail-closed rules, worst-case fee/notional math; exhaustive tests including property tests (no order that exceeds a limit is ever approved) |
+| 6.2 — done | Risk layer: `RiskPolicy` (per-shard balances, funding plan, transfer caps), `risk.toml` loading and validation, `check` as a pure function, `ApprovedOrder`, fail-closed rules, worst-case fee/notional math; exhaustive tests including property tests (no order that exceeds a limit is ever approved) |
 | 6.3 | Account read side: `kalshi-core` portfolio models + GET methods (balance, positions, orders, fills, settlements, queue positions), trading key loading and permission check; production stays read-only |
 | 6.4 | Write transport: `TradingCapability`, write token bucket, create / cancel / batch cancel / amend / decrease with idempotent `client_order_id` recovery, and the shard transfer call with `client_transfer_id` recovery (decision 14); the guard test is rewritten to prove writes need the capability and production is refused |
 | 6.5 | Private WebSocket channels and `AccountTracker` (fill, user_orders, market_positions; reconnect, reconcile, exactly-once) and the order service tying risk, snapshot and transport together |
@@ -1516,6 +1516,35 @@ settlements present. Shapes:
   `no_count_fp`, `*_total_cost_dollars`, `fee_cost`, `market_result`, `revenue` / `value` as int cents.
 - Money mixes int cents and 4 / 6-decimal strings across endpoints; the models parse every one into
   fixed-point (`*_e6`) without rounding, per the one-representation rule.
+
+**6.2 as built.** `kalshiterm_client.risk` (pure, no I/O): `check(intent, snapshot, policy, now=,
+production=)` returns a `Verdict` (all refusal reasons at once, each with a `Code` and a message
+naming the numbers; the worst-case fee and cost; the funding plan; `trip_kill`). Approval yields an
+`ApprovedOrder` that raises `TypeError` if constructed anywhere else. `kalshiterm_client.risk_config`
+loads `risk.toml` (config directory): money as strings of dollars, counts as strings or ints,
+floats / negatives / unknown keys refused with the key named; no file means the tiny defaults
+(5 contracts and $1.00 per order, 10 contracts per market, $3.00 exposure, $2.00 daily loss, 3 open
+orders, $2.00 per transfer, $5.00 transfers per day, snapshots at most 10 s old, production off).
+The fee model moved from the server package to `kalshi_core.fees` (the server re-exports it).
+Behaviour worth knowing:
+- **Cost** = collateral + worst-case fee. A buy locks `count x limit`; a sell first closes what is
+  held and the rest is a short (the other side at `1 - limit`). The fee is taken at the worst fill
+  price the limit allows (it peaks at 0.50) and rounded up to a cent, so a 1-contract order at 0.50
+  costs $0.52 in the check although the fee is $0.0175. Conservative on purpose.
+- **Netting is not credited**: buying NO against a held YES still counts the full cash cost (Kalshi's
+  real behaviour is checked in 6.7), but the *position* limit does net (it uses the resulting
+  position, resting orders included, on the side the order pushes).
+- **Fail closed** on: no snapshot, snapshot older than the limit or dated in the future, private stream
+  down, unknown or non-trading shard, unknown fee multiplier. Production is refused unless
+  `production_enabled`.
+- **Daily loss** refuses all new orders once realized loss reaches the limit and sets `trip_kill`
+  (closing orders are refused too; use the kill switch or Kalshi's own app to flatten).
+- **Funding** takes from the shards with the most free balance first, in whole centicents, only from
+  and to shards with transfers active, bounded per order and per day.
+Tests: 46 (30 for the checks, 16 for the file) including a 20,000-case seeded fuzz that re-derives every
+limit independently for each approved order, and nine deliberate sabotages of `risk.py` (position
+off by one, fee at the limit price, open-order off by one, future-dated snapshots, funding order,
+production switch, stream check, centicent rounding, short-sale collateral) each caught by a test.
 
 **Decided after 6.1 (2026-10-13).** (1) Live account, not demo, for every verification step
 (decision 6). **You will need to create a production API key with trade scope** (Kalshi account
