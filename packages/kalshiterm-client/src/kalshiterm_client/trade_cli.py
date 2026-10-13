@@ -237,7 +237,7 @@ def register(app: typer.Typer) -> None:
             for line in trade_views.placement_lines(placement):
                 typer.echo(line)
 
-        run_trading("trade", work)
+        run_trading("preview" if dry_run else "trade", work)
 
     @app.command("buy")
     def buy(
@@ -308,7 +308,7 @@ def register(app: typer.Typer) -> None:
             for line in trade_views.amendment_lines(amendment):
                 typer.echo(line)
 
-        run_trading("trade", work)
+        run_trading("preview" if dry_run else "trade", work)
 
     # ------------------------------------------------------------------ getting out
 
