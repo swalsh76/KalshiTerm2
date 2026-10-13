@@ -25,9 +25,11 @@ packages/kalshi-core/tests/test_live.py -s` (read-only; skipped by default and i
 - **Trades go client → Kalshi directly, never through the server.** The trading key never
   leaves the workstation; the server has its own data-only key.
 - **Demo environment is the default** in code and config. Production use is explicit
-  opt-in (`KALSHI_ENV=production`) and **read-only until Phase 6** (read-only key, no
-  write code, GET-only transport guard; PLAN.md §4). Production trading requires the
-  user's sign-off and every order passes the client risk layer.
+  opt-in (`KALSHI_ENV=production`) and **read-only until Phase 6 builds the write path**
+  (read-only key, no write code, GET-only transport guard; PLAN.md §4). The user decided on
+  2026-10-13 to verify trading on the live (~$10) account instead of the demo: production
+  writes still need the explicit opt-in flags, tiny risk limits (PLAN.md §10.7), and the
+  user's go-ahead for each live order; every order passes the client risk layer.
 - Client runs natively (Windows/macOS), not in Docker.
 - Server deploys **only via Docker Compose** on a remote LAN host; API is the only exposed
   port; self-signed TLS with trust-on-first-use pinning.
