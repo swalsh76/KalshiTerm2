@@ -539,10 +539,9 @@ def test_who_may_act_on_production(mode: str, enabled: bool, allowed: bool) -> N
 def test_trading_works_with_the_kalshiterm_server_unreachable_and_never_touches_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Phase 6 deliverable: every trading command runs with the server gone. The server client,
-    the profile store and the network blow up if anything so much as reaches for them."""
-    import socket
-
+    """Phase 6 deliverable: every trading command runs with the server gone. The server client
+    and the profile store blow up if anything so much as reaches for them. (Sockets are not
+    patched: Windows asyncio opens a local socket pair itself, and the fakes use no network.)"""
     from kalshiterm_client.client import ServerClient
     from kalshiterm_client.profiles import ProfileStore
 
@@ -559,7 +558,6 @@ def test_trading_works_with_the_kalshiterm_server_unreachable_and_never_touches_
     monkeypatch.setattr(ServerClient, "for_profile", classmethod(touched))
     monkeypatch.setattr(ProfileStore, "resolve", touched)
     monkeypatch.setattr(ProfileStore, "__init__", touched)
-    monkeypatch.setattr(socket.socket, "connect", touched)
 
     commands = [
         ("balance",),
