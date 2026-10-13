@@ -7,10 +7,10 @@ from typing import Annotated, Any
 
 import typer
 
-from kalshiterm_client import client, discovery, pinning, secrets, status_view
+from kalshiterm_client import client, data_cli, discovery, pinning, secrets, status_view
+from kalshiterm_client.cli_common import State, current_profile, fail
 from kalshiterm_client.profiles import (
     PROFILE_ENV,
-    Profile,
     ProfileError,
     ProfileStore,
     check_name,
@@ -23,10 +23,7 @@ config_app = typer.Typer(no_args_is_help=True, help="Servers (profiles) and thei
 app.add_typer(config_app, name="config")
 server_app = typer.Typer(no_args_is_help=True, help="The server you are connected to.")
 app.add_typer(server_app, name="server")
-
-
-class State:
-    profile: str | None = None
+data_cli.register(app)
 
 
 @app.callback()
@@ -37,19 +34,6 @@ def main(
     ] = None,
 ) -> None:
     State.profile = profile
-
-
-def fail(message: str) -> typer.Exit:
-    typer.echo(f"error: {message}", err=True)
-    return typer.Exit(code=1)
-
-
-def current_profile() -> Profile:
-    """The profile commands should act on; later slices (status, markets) start here."""
-    try:
-        return ProfileStore().resolve(State.profile)
-    except ProfileError as exc:
-        raise fail(str(exc)) from exc
 
 
 def _read_token(from_stdin: bool) -> str:
