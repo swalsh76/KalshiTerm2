@@ -863,7 +863,7 @@ Each phase ends with passing tests and CI green.
 | **3b. LAN features** | zeroconf discovery, client profiles, TOFU cert pinning, `cert rotate`, `kterm server status`, backup/restore — **done** (slices 3b.1-3b.4 in §10.4) |
 | **4. Analytics** | Plugin framework + built-in analyzers + alerts — **done** (slices 4.1-4.5 in §10.5) |
 | **5. Client data side** | Server API client, CLI data views — **done** (slices 5.1-5.5 in §10.6) |
-| **6. Client trading** | Risk layer first, order management, private WS channels; **demo-only until sign-off**; test proving trading works with server offline |
+| **6. Client trading** | Risk layer first, order management, private WS channels; **demo-only until sign-off**; test proving trading works with server offline (slices 6.1-6.8 in §10.7, awaiting approval) |
 | **7. Terminal UI** | Bloomberg-style UI per §7 decision (local backend, panels, grids, charts, command bar, order entry) |
 | **8. Packaging** | Frontend build bundled into client wheel, install docs, tagged v0.1.0 |
 
@@ -1380,6 +1380,80 @@ parking lot: CSV export, a local cache / offline mode, persisted stream cursors,
 | 5.4 — done | CLI data views: `kterm markets`, `market`, `candles`, `trades`, `book`, `analytics`, `arbitrage` (tables and `--json`) |
 | 5.5 — done | CLI account and live views: `watchlist`, `alerts` (rules, list, acknowledge), `watch` (live tickers / trades / book) and `alerts watch`; an end-to-end check against a live server |
 | deferred | CSV export, a local response cache or offline mode, persisted stream cursors, shell completion: parking lot. Trading is Phase 6 and the browser UI Phase 7 |
+
+### 10.7 Phase 6 slices (client trading)
+
+**What exists:** the typed data client (Phase 5), `kalshi-core` with signed REST, public WebSocket
+channels and a read-only transport guard (`ReadOnlyViolation`), a read token bucket only, and a key
+loader that accepts only unencrypted Ed25519 PEM. **No write code exists.** Trading goes client ->
+Kalshi directly, works with the server offline, defaults to demo, and production stays read-only
+until the user signs off (CLAUDE.md non-negotiables).
+
+**Facts from Kalshi's docs (2026-10-13; slice 6.1 re-verifies each against the demo before it is
+relied on).** Create Order V2 takes `ticker`, `side` (`bid` / `ask`, not yes / no), `count` and
+`price` as fixed-point strings, `time_in_force` (`fill_or_kill`, `good_till_canceled`,
+`immediate_or_cancel`), `self_trade_prevention_type` (`taker_at_cross` / `maker`), and optionally
+`client_order_id` (idempotency), `expiration_time`, `post_only`, `reduce_only` (requires IOC),
+`cancel_order_on_pause`, `subaccount`, `order_group_id`; it costs 10 tokens. Also V2: batch create,
+cancel, batch cancel, amend, decrease, queue positions. `DELETE /portfolio/events/orders` cancels
+every resting order (2 tokens) and **"newly placed orders may also be cancelled during the minute
+after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `realized_pnl_dollars`,
+`fees_paid_dollars`. Balance: `balance` (cents) and `balance_dollars`, `portfolio_value`.
+
+**Decisions (recommended defaults; say if you disagree).**
+1. **Risk layer first, as a pure component**: `RiskPolicy` + `check(order, snapshot)` with no I/O,
+   fully tested before any order code exists. Every write path takes an `ApprovedOrder` that only
+   the risk layer can construct, so an order cannot bypass it by construction.
+2. **Fail closed**: if the position or balance snapshot is missing, stale (default 10 s) or the
+   private WebSocket is down, orders are refused (cancels and the kill switch are never refused).
+3. **Limits (all in a local `risk.toml`, conservative defaults)**: max contracts per order, max
+   contracts per market, max notional per order (price x count incl. worst-case fee), max daily
+   loss (realized P&L today plus open-order exposure), max open orders; a limit can only be
+   loosened by editing the file, never by a CLI flag.
+4. **Money is `Decimal` / fixed-point end to end**; prices and counts are sent as Kalshi's strings,
+   never floats (the Phase 5 rule). Fees come from `kalshi-core`'s fee model for the worst case.
+5. **Write transport**: the GET-only guard is replaced, not deleted, by an explicit
+   `TradingCapability` object: only `kalshiterm-client`'s order service can mint one, a plain
+   `KalshiRestClient` stays GET-only, and a test fails any write without the capability. A
+   separate **write token bucket** (default 100 tokens/s x 0.9 margin, costs per endpoint) is
+   added. Writes are never retried blindly: a lost answer is resolved by looking up the
+   `client_order_id`, which is always set (UUID) so a retry cannot double-order.
+6. **Environment gating**: demo is the default. Production writes need `KALSHI_ENV=production`
+   **and** `trading.production_enabled = true` in `risk.toml` **and** a per-order typed
+   confirmation (ticker + side + count + price). Until you sign off, the second flag is refused by
+   the code itself (a constant removed in the last slice), not just defaulted off.
+7. **Trading key**: a separate key from the data key, never on the server, stored outside the repo
+   (`~/.kalshiterm/kalshi_trading_key.pem`, mode 600, checked on load). The unencrypted-PEM-only
+   loader stays: encrypted-key + keyring-passphrase support (PLAN §6.2) is deferred to the
+   parking lot unless you want it now.
+8. **Dry-run** (`--dry-run`, and a profile default) runs the full pipeline (risk, rounding,
+   signing-free payload build) and prints the order that would be sent; it makes no request.
+9. **Kill switch** (`kterm kill`): cancel-all then verify by listing resting orders and re-cancel
+   until none remain for the "next minute" window the docs warn about; also tripped automatically
+   when the daily-loss limit is hit.
+10. **Private channels** (`fill`, `user_orders`, `market_positions`) feed an in-memory
+    `AccountTracker` (orders, positions, balance) seeded from REST and reconciled on every
+    reconnect, with the same exactly-once-by-id discipline as `StreamClient`.
+11. **Interface**: Typer CLI only (`kterm buy|sell|cancel|amend|orders|positions|balance|fills|kill`);
+    the browser UI is Phase 7. Order commands print the risk verdict before sending.
+12. **Testing**: scripted fake Kalshi (REST + private WS) for logic and the offline test; a
+    **server-offline test** (no server process, profile unreachable) places, amends and cancels
+    on the fake; live demo checks are opt-in (`KALSHI_INTEGRATION=1`, demo only, demo key).
+    Production live checks remain read-only until sign-off.
+
+| # | Slice |
+|---|---|
+| 6.1 | Measure first: a read-only look at the demo's order, position, balance and fill shapes (with the existing dev key, GET only) plus a re-check of the docs facts above; write the as-built models and the open questions into this section. No write code |
+| 6.2 | Risk layer: `RiskPolicy`, `risk.toml` loading and validation, `check` as a pure function, `ApprovedOrder`, fail-closed rules, worst-case fee/notional math; exhaustive tests including property tests (no order that exceeds a limit is ever approved) |
+| 6.3 | Account read side: `kalshi-core` portfolio models + GET methods (balance, positions, orders, fills, settlements, queue positions), trading key loading and permission check; production stays read-only |
+| 6.4 | Write transport: `TradingCapability`, write token bucket, create / cancel / batch cancel / amend / decrease with idempotent `client_order_id` recovery; the guard test is rewritten to prove writes need the capability and production is refused |
+| 6.5 | Private WebSocket channels and `AccountTracker` (fill, user_orders, market_positions; reconnect, reconcile, exactly-once) and the order service tying risk, snapshot and transport together |
+| 6.6 | CLI: `buy`, `sell`, `cancel`, `amend`, `orders`, `positions`, `balance`, `fills`, `kill`, `--dry-run`, risk verdict output, production confirmation prompt |
+| 6.7 | Demo end to end: opt-in live demo test (place, rest, amend, fill or cancel, kill switch) and the **server-offline trading test**; Phase 6 as-built notes |
+| 6.8 | **Production sign-off gate (needs your explicit go-ahead)**: remove the production refusal constant, a production read-only dress rehearsal, then (only if you decide) a first minimal real order under the smallest limits |
+
+Slices 6.1-6.7 touch demo only. Parked, not planned: order groups, subaccounts, RFQ / communications
+channel, encrypted trading keys, trading from the browser (Phase 7), strategies or automation.
 
 ## 11. Risks & Notes
 
