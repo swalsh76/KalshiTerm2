@@ -154,5 +154,5 @@ def test_the_trading_key_defaults_to_a_file_outside_the_repo(
     monkeypatch.chdir(tmp_path)  # no .env here
     monkeypatch.delenv("KALSHI_TRADING_KEY_ID", raising=False)
     settings = KalshiSettings()
-    assert str(settings.trading_private_key_path) == "~/.kalshiterm/kalshi_trading_key.pem"
+    assert settings.trading_private_key_path == Path("~/.kalshiterm/kalshi_trading_key.pem")
     assert settings.trading_key_id is None
