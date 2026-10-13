@@ -353,17 +353,20 @@ class AccountTracker:
     def realized_total_e6(self) -> int:
         return sum(p.realized_e6 for p in self.positions.values())
 
-    def resting_orders(self) -> list[TrackedOrder]:
-        return [o for o in self.orders.values() if o.is_resting]
+    def resting_orders(self, exclude: str | None = None) -> list[TrackedOrder]:
+        return [o for o in self.orders.values() if o.is_resting and o.order_id != exclude]
 
-    def snapshot(self) -> AccountSnapshot | None:
-        """The state for ``risk.check``, or None before the first full read."""
+    def snapshot(self, exclude_order: str | None = None) -> AccountSnapshot | None:
+        """The state for ``risk.check``, or None before the first full read. ``exclude_order``
+        leaves one resting order out, so an amend is checked as its replacement without the
+        old order's exposure counted twice."""
         if self.balance_at is None or not self.synced_event.is_set():
             return None
         resting_yes: dict[str, int] = {}
         resting_no: dict[str, int] = {}
         resting_cost = 0
-        for order in self.resting_orders():
+        resting = self.resting_orders(exclude_order)
+        for order in resting:
             if order.remaining_e2 <= 0:
                 continue
             side = resting_yes if order.adds_yes else resting_no
@@ -398,7 +401,7 @@ class AccountTracker:
             as_of=datetime.fromtimestamp(self.balance_at, UTC),
             shards=shards,
             markets=markets,
-            open_orders=len(self.resting_orders()),
+            open_orders=len(resting),
             exposure_e6=exposure,
             realized_pnl_today_e6=self.state.realized_today_e6(self.realized_total_e6()),
             transferred_today_e6=self.state.transferred_e6,

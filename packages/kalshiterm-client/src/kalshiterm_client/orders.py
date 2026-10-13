@@ -26,8 +26,10 @@ from typing import Any, Protocol
 
 from kalshi_core.fees import QUADRATIC_FAMILY, taker_multiplier
 from kalshi_core.models import Event, Market, Series
+from kalshi_core.portfolio import Order
 from kalshi_core.rest import KalshiAPIError
 from kalshi_core.trading import (
+    AmendedOrder,
     CancelledOrder,
     CancelTarget,
     CreatedOrder,
@@ -37,7 +39,7 @@ from kalshi_core.trading import (
     WriteOutcomeUnknown,
 )
 
-from kalshiterm_client.account import AccountTracker, to_e2, to_e6
+from kalshiterm_client.account import AccountTracker, to_e2, to_e6, tracked_from_order
 from kalshiterm_client.risk import (
     Action,
     ApprovedOrder,
@@ -98,11 +100,22 @@ class MarketRest(Protocol):
     async def market(self, ticker: str) -> Market: ...
     async def event(self, event_ticker: str) -> Event: ...
     async def series(self, series_ticker: str) -> Series: ...
+    async def order(self, order_id: str) -> Order: ...
     def iter_orders(self, **params: Any) -> Any: ...
 
 
 class TradingApi(Protocol):
     async def create_order(self, order: CreateOrder) -> CreatedOrder: ...
+    async def amend_order(
+        self,
+        order_id: str,
+        *,
+        ticker: str,
+        side: Side,
+        price: Decimal,
+        count: Decimal,
+        exchange_index: int,
+    ) -> AmendedOrder: ...
     async def cancel_order(self, target: CancelTarget) -> CancelledOrder: ...
     async def cancel_orders(self, targets: list[CancelTarget]) -> list[CancelledOrder]: ...
     async def cancel_all(self) -> None: ...
@@ -144,6 +157,16 @@ class Prepared:
     verdict: Verdict
     side: Side
     price: Decimal  # on the YES book, as Create Order V2 wants it
+    replaces: str | None = None  # an amend: the resting order this replaces
+    total_count: Decimal | None = None  # an amend: the order's new total count
+
+
+@dataclass(frozen=True)
+class Amendment:
+    result: AmendedOrder
+    order_id: str
+    approved: ApprovedOrder
+    transfers: tuple[Transfer, ...]
 
 
 @dataclass(frozen=True)
@@ -273,11 +296,13 @@ class OrderService:
             ticker, market.exchange_index, self._multipliers[market.event_ticker], market.status
         )
 
-    async def _verdict(self, intent: OrderIntent, market: MarketInfo) -> Verdict:
+    async def _verdict(
+        self, intent: OrderIntent, market: MarketInfo, replaces: str | None = None
+    ) -> Verdict:
         await self._tracker.refresh_balance()
         verdict = check(
             intent,
-            self._tracker.snapshot(),
+            self._tracker.snapshot(replaces),
             self._policy,
             now=self._clock(),
             production=self._production,
@@ -298,12 +323,45 @@ class OrderService:
         verdict = await self._verdict(intent, market)
         return Prepared(request, market, intent, verdict, side, price)
 
+    async def prepare_amend(
+        self, order_id: str, *, price: Decimal | None = None, count: Decimal | None = None
+    ) -> Prepared:
+        """Read-only. Checks the order as it would be after the amend, with the old one left out
+        of the account so its exposure is not counted twice. ``count`` is the new TOTAL count (what
+        Kalshi's amend takes); the risk check uses what would still be unfilled."""
+        if price is None and count is None:
+            raise ValueError("give a new price, a new count, or both")
+        if isinstance(price, float) or isinstance(count, float):
+            raise TypeError("price and count must be Decimal, not float")
+        current = tracked_from_order(await self._rest.order(order_id))
+        if not current.is_resting:
+            raise OrderNotFound(f"order {order_id} is {current.status}, not resting")
+        total = count if count is not None else Decimal(current.initial_e2) / 100
+        remaining_e2 = to_e2(total, "count") - current.fill_e2
+        if remaining_e2 <= 0:
+            raise ValueError("the new count must be more than what has already filled; cancel it")
+        own_price_e6 = to_e6(price, "price") if price is not None else current.own_price_e6
+        outcome = Outcome(current.outcome_side)
+        request = OrderRequest(
+            current.ticker,
+            current.action,
+            outcome,
+            Decimal(remaining_e2) / 100,
+            Decimal(own_price_e6) / E6,
+        )
+        market = await self.market_info(current.ticker)
+        intent = intent_from(request, market)
+        side, yes_price = to_v2(outcome, current.action, own_price_e6)
+        verdict = await self._verdict(intent, market, order_id)
+        return Prepared(request, market, intent, verdict, side, yes_price, order_id, total)
+
     # --- acting -------------------------------------------------------------------------------
 
-    async def execute(self, prepared: Prepared) -> Placement:
+    async def _authorize(self, prepared: Prepared) -> tuple[ApprovedOrder, tuple[Transfer, ...]]:
+        """Re-check with fresh data and fund the shard. Returns the proof and the transfers made."""
         if not prepared.verdict.ok:
             raise OrderRefused(prepared.verdict)
-        fresh = await self._verdict(prepared.intent, prepared.market)
+        fresh = await self._verdict(prepared.intent, prepared.market, prepared.replaces)
         await self._trip_if_needed(fresh)
         if not fresh.ok:
             raise OrderRefused(fresh)
@@ -316,7 +374,7 @@ class OrderService:
         approved = fresh.approved
         assert approved is not None
         if fresh.funding:
-            after = await self._verdict(prepared.intent, prepared.market)
+            after = await self._verdict(prepared.intent, prepared.market, prepared.replaces)
             if not after.ok or after.funding:
                 raise FundingShort(
                     "the shard does not hold what the order needs after the transfers: "
@@ -324,7 +382,27 @@ class OrderService:
                 )
             approved = after.approved
             assert approved is not None
-        return await self._place(prepared, approved, fresh.funding)
+        return approved, fresh.funding
+
+    async def execute(self, prepared: Prepared) -> Placement:
+        if prepared.replaces is not None:
+            raise ValueError("this is an amend: use execute_amend")
+        approved, funding = await self._authorize(prepared)
+        return await self._place(prepared, approved, funding)
+
+    async def execute_amend(self, prepared: Prepared) -> Amendment:
+        if prepared.replaces is None or prepared.total_count is None:
+            raise ValueError("this is not an amend: use execute")
+        approved, funding = await self._authorize(prepared)
+        result = await self._trading.amend_order(
+            prepared.replaces,
+            ticker=prepared.request.ticker,
+            side=prepared.side,
+            price=prepared.price,
+            count=prepared.total_count,
+            exchange_index=prepared.intent.exchange_index,
+        )
+        return Amendment(result, prepared.replaces, approved, funding)
 
     async def _move(self, transfer: Transfer) -> None:
         transfer_id = self._new_id()
@@ -454,3 +532,36 @@ class OrderService:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._guard
             self._guard = None
+
+
+@dataclass(frozen=True)
+class CancelOutcome:
+    order_id: str
+    ok: bool
+    message: str
+
+
+async def cancel_by_ids(
+    rest: MarketRest, trading: TradingApi, order_ids: list[str]
+) -> list[CancelOutcome]:
+    """Cancel named orders using Kalshi's own record of each (shard and market), so it needs no
+    live tracker and works while halted. One failing id does not stop the others."""
+    outcomes: list[CancelOutcome] = []
+    for order_id in order_ids:
+        try:
+            order = await rest.order(order_id)
+            if order.status != "resting":
+                outcomes.append(CancelOutcome(order_id, False, f"already {order.status}"))
+                continue
+            result = await trading.cancel_order(
+                CancelTarget(order_id, order.exchange_index, order.ticker)
+            )
+        except KalshiAPIError as exc:
+            outcomes.append(CancelOutcome(order_id, False, f"Kalshi said {exc.status}"))
+        except WriteOutcomeUnknown:
+            outcomes.append(
+                CancelOutcome(order_id, False, "no clear answer; look at `kterm orders`")
+            )
+        else:
+            outcomes.append(CancelOutcome(order_id, True, f"cancelled {result.reduced_by} left"))
+    return outcomes

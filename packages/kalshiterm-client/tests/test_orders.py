@@ -10,8 +10,6 @@ from kalshi_core.rest import KalshiAPIError
 from kalshi_core.trading import (
     CancelledOrder,
     CancelTarget,
-    CreatedOrder,
-    CreateOrder,
     Side,
     TimeInForce,
     WriteOutcomeUnknown,
@@ -25,6 +23,7 @@ from kalshiterm_client.orders import (
     PlanChanged,
     TransferFailed,
     TransferUnknown,
+    cancel_by_ids,
     describe,
     multiplier_e6,
     to_v2,
@@ -34,6 +33,7 @@ from kalshiterm_client.trading_state import TradingState
 from trading_fakes import (
     T0,
     FakeRest,
+    FakeTrading,
     balance,
     make,
     market,
@@ -42,70 +42,6 @@ from trading_fakes import (
 )
 
 NOW = datetime.fromtimestamp(T0, UTC)
-
-
-class FakeTrading:
-    """Records every write, and moves money / orders in the fake exchange like Kalshi would."""
-
-    def __init__(self, rest: FakeRest, state: TradingState) -> None:
-        self.rest = rest
-        self.state = state
-        self.calls: list[tuple[str, Any]] = []
-        self.transfer_error: Exception | None = None
-        self.create_error: Exception | None = None
-        self.cancel_all_error: Exception | None = None
-        self.halted_when_cancel_all: bool | None = None
-        self.late_orders: list[Any] = []  # appear after the first cancel-all
-        self.cancel_all_clears = True
-
-    async def transfer(
-        self, *, source_shard: int, destination_shard: int, amount_e6: int, transfer_id: str
-    ) -> str:
-        self.calls.append(("transfer", (source_shard, destination_shard, amount_e6, transfer_id)))
-        if self.transfer_error:
-            raise self.transfer_error
-        rows = {
-            r.exchange_index: Decimal(str(r.balance))
-            for r in self.rest.balance_value.balance_breakdown
-        }
-        rows[source_shard] -= Decimal(amount_e6) / 1_000_000
-        rows[destination_shard] += Decimal(amount_e6) / 1_000_000
-        self.rest.balance_value = balance(*(f"{rows[i]:.4f}" for i in sorted(rows)))
-        return "tr-ok"
-
-    async def create_order(self, order_: CreateOrder) -> CreatedOrder:
-        self.calls.append(("create", order_))
-        if self.create_error:
-            raise self.create_error
-        return CreatedOrder(
-            order_id="o-new",
-            client_order_id=order_.client_order_id,
-            fill_count=Decimal(0),
-            remaining_count=order_.count,
-        )
-
-    async def cancel_order(self, target: CancelTarget) -> CancelledOrder:
-        self.calls.append(("cancel", target))
-        return CancelledOrder(order_id=target.order_id, reduced_by=Decimal(1))
-
-    async def cancel_orders(self, targets: list[CancelTarget]) -> list[CancelledOrder]:
-        self.calls.append(("cancel_batch", [t.order_id for t in targets]))
-        gone = {t.order_id for t in targets}
-        self.rest.orders = [o for o in self.rest.orders if o.order_id not in gone]
-        return [CancelledOrder(order_id=t.order_id) for t in targets]
-
-    async def cancel_all(self) -> None:
-        self.halted_when_cancel_all = self.state.halted
-        self.calls.append(("cancel_all", None))
-        if self.cancel_all_error:
-            raise self.cancel_all_error
-        if self.cancel_all_clears:
-            self.rest.orders = []
-        self.rest.orders += self.late_orders
-        self.late_orders = []
-
-    def names(self) -> list[str]:
-        return [name for name, _ in self.calls]
 
 
 async def no_sleep(_: float) -> None:
@@ -618,3 +554,156 @@ async def test_the_background_guard_can_be_started_and_stopped(tmp_path: Path) -
         await service.stop_guard()  # harmless twice
     finally:
         await service._tracker.stop()
+
+
+# --- amend ------------------------------------------------------------------------------------
+
+
+def one_resting(
+    ticker: str = "KXA-1", *, outcome: str = "yes", book: str = "bid", yes_price: str = "0.4000"
+) -> FakeRest:
+    rest = FakeRest()
+    rest.balance_value = balance("10.3490", "0.0000", "0.0000", "0.0000")
+    rest.orders = [order("o-1", ticker, outcome=outcome, book=book, yes_price=yes_price)]
+    return rest
+
+
+async def test_an_amend_is_checked_as_the_replacement_without_counting_the_old_order(
+    tmp_path: Path,
+) -> None:
+    rest = one_resting()
+    service, _, trading, _ = await build(tmp_path, rest=rest, policy=RiskPolicy(max_open_orders=1))
+    try:
+        fresh_order = await service.prepare(buy())
+        assert Code.TOO_MANY_ORDERS in {r.code for r in fresh_order.verdict.refusals}
+        prepared = await service.prepare_amend("o-1", price=Decimal("0.45"))
+        assert prepared.verdict.ok  # the one open order is the one being replaced
+        assert (prepared.replaces, prepared.total_count) == ("o-1", Decimal("2"))
+        assert prepared.intent.count_e2 == 200 and prepared.intent.price_e6 == 450_000
+        amendment = await service.execute_amend(prepared)
+        assert trading.names() == ["amend"]
+        assert trading.calls[0][1] == (
+            "o-1",
+            {
+                "ticker": "KXA-1",
+                "side": Side.BID,
+                "price": Decimal("0.45"),
+                "count": Decimal("2"),
+                "exchange_index": 0,
+            },
+        )
+        assert amendment.order_id == "o-1" and amendment.transfers == ()
+    finally:
+        await service._tracker.stop()
+
+
+async def test_an_amend_that_would_break_a_limit_is_refused_and_sends_nothing(
+    tmp_path: Path,
+) -> None:
+    service, _, trading, _ = await build(tmp_path, rest=one_resting())
+    try:
+        prepared = await service.prepare_amend("o-1", price=Decimal("0.90"), count=Decimal("5"))
+        assert Code.ORDER_TOO_LARGE in {r.code for r in prepared.verdict.refusals} or (
+            Code.NOTIONAL_TOO_LARGE in {r.code for r in prepared.verdict.refusals}
+        )
+        with pytest.raises(OrderRefused):
+            await service.execute_amend(prepared)
+        assert trading.calls == []
+    finally:
+        await service._tracker.stop()
+
+
+async def test_a_price_only_amend_keeps_the_total_and_a_no_order_stays_on_its_own_side(
+    tmp_path: Path,
+) -> None:
+    # a resting buy of NO at 30c is, on the YES book, an ask at 70c
+    rest = one_resting(outcome="no", book="bid", yes_price="0.7000")
+    service, _, trading, _ = await build(tmp_path, rest=rest)
+    try:
+        prepared = await service.prepare_amend("o-1", price=Decimal("0.35"))
+        assert prepared.total_count == Decimal("2")
+        assert (prepared.side, prepared.price) == (Side.ASK, Decimal("0.65"))
+        await service.execute_amend(prepared)
+        sent = trading.calls[0][1][1]
+        assert (sent["side"], sent["price"], sent["count"]) == (
+            Side.ASK,
+            Decimal("0.65"),
+            Decimal(2),
+        )
+    finally:
+        await service._tracker.stop()
+
+
+async def test_an_amend_on_an_unfunded_shard_funds_it_first(tmp_path: Path) -> None:
+    rest = one_resting("KXT-1")
+    service, _, trading, _ = await build(tmp_path, rest=rest)
+    try:
+        prepared = await service.prepare_amend("o-1", count=Decimal("2"), price=Decimal("0.45"))
+        assert prepared.verdict.funding
+        await service.execute_amend(prepared)
+        assert trading.names() == ["transfer", "amend"]
+    finally:
+        await service._tracker.stop()
+
+
+async def test_bad_amends_are_refused_before_anything_is_sent(tmp_path: Path) -> None:
+    rest = one_resting()
+    rest.orders.append(order("o-done", "KXA-1", status_="executed"))
+    service, _, trading, _ = await build(tmp_path, rest=rest)
+    try:
+        with pytest.raises(ValueError, match="new price"):
+            await service.prepare_amend("o-1")
+        with pytest.raises(OrderNotFound):
+            await service.prepare_amend("o-done", price=Decimal("0.5"))
+        with pytest.raises(ValueError, match="cancel"):
+            await service.prepare_amend("o-1", count=Decimal("0"))
+        bad: Any = 0.5
+        with pytest.raises(TypeError):
+            await service.prepare_amend("o-1", price=bad)
+        plain = await service.prepare(buy())
+        with pytest.raises(ValueError, match="not an amend"):
+            await service.execute_amend(plain)
+        amend = await service.prepare_amend("o-1", count=Decimal("1"))
+        with pytest.raises(ValueError, match="use execute_amend"):
+            await service.execute(amend)
+        assert trading.calls == []
+    finally:
+        await service._tracker.stop()
+
+
+async def test_an_amend_with_no_clear_answer_is_reported_unknown(tmp_path: Path) -> None:
+    service, _, trading, _ = await build(tmp_path, rest=one_resting())
+    try:
+        trading.amend_error = WriteOutcomeUnknown("amend_order", "o-1")
+        prepared = await service.prepare_amend("o-1", count=Decimal("1"))
+        with pytest.raises(WriteOutcomeUnknown):
+            await service.execute_amend(prepared)
+    finally:
+        await service._tracker.stop()
+
+
+# --- cancelling by id -------------------------------------------------------------------------
+
+
+async def test_cancel_by_ids_uses_kalshis_record_and_one_failure_does_not_stop_the_rest(
+    tmp_path: Path,
+) -> None:
+    rest = FakeRest()
+    rest.orders = [
+        order("o-1", "KXT-1"),
+        order("o-done", "KXA-1", status_="executed"),
+        order("o-2", "KXA-1"),
+    ]
+    trading = FakeTrading(rest, TradingState(tmp_path / "s.json"))
+    outcomes = await cancel_by_ids(rest, trading, ["o-1", "o-done", "o-missing", "o-2"])
+    assert [(o.order_id, o.ok) for o in outcomes] == [
+        ("o-1", True),
+        ("o-done", False),
+        ("o-missing", False),
+        ("o-2", True),
+    ]
+    assert outcomes[1].message == "already executed" and "404" in outcomes[2].message
+    assert [c[1] for c in trading.calls] == [
+        CancelTarget("o-1", 0, "KXT-1"),
+        CancelTarget("o-2", 0, "KXA-1"),
+    ]

@@ -8,7 +8,15 @@ from pathlib import Path
 from typing import Any
 
 from kalshi_core.models import Event, ExchangeStatus, Market, Series
-from kalshi_core.portfolio import Balance, MarketPosition, Order
+from kalshi_core.portfolio import Balance, Fill, MarketPosition, Order
+from kalshi_core.rest import KalshiAPIError
+from kalshi_core.trading import (
+    AmendedOrder,
+    CancelledOrder,
+    CancelTarget,
+    CreatedOrder,
+    CreateOrder,
+)
 from kalshi_core.ws_models import WsMessage
 from kalshiterm_client.account import AccountTracker
 from kalshiterm_client.trading_state import TradingState
@@ -104,6 +112,7 @@ class FakeRest:
         self.status_value = status()
         self.positions: list[MarketPosition] = []
         self.orders: list[Order] = []
+        self.fills: list[Fill] = []
         self.balance_calls = 0
         self.fail_next = 0
         self.markets: dict[str, Market] = {
@@ -118,6 +127,12 @@ class FakeRest:
     async def market(self, ticker: str) -> Market:
         self.market_calls += 1
         return self.markets[ticker]
+
+    async def order(self, order_id: str) -> Order:
+        for o in self.orders:
+            if o.order_id == order_id:
+                return o
+        raise KalshiAPIError(404, "not found")
 
     async def event(self, event_ticker: str) -> Event:
         return Event.model_validate(
@@ -155,6 +170,10 @@ class FakeRest:
     async def iter_positions(self, **params: Any) -> AsyncIterator[MarketPosition]:
         for p in self.positions:
             yield p
+
+    async def iter_fills(self, **params: Any) -> AsyncIterator[Fill]:
+        for f in self.fills:
+            yield f
 
     async def iter_orders(self, **params: Any) -> AsyncIterator[Order]:
         for o in self.orders:
@@ -207,3 +226,74 @@ def make(
 async def settle() -> None:
     for _ in range(20):
         await asyncio.sleep(0)
+
+
+class FakeTrading:
+    """Records every write, and moves money / orders in the fake exchange like Kalshi would."""
+
+    def __init__(self, rest: FakeRest, state: TradingState) -> None:
+        self.rest = rest
+        self.state = state
+        self.calls: list[tuple[str, Any]] = []
+        self.transfer_error: Exception | None = None
+        self.create_error: Exception | None = None
+        self.amend_error: Exception | None = None
+        self.cancel_all_error: Exception | None = None
+        self.halted_when_cancel_all: bool | None = None
+        self.late_orders: list[Any] = []  # appear after the first cancel-all
+        self.cancel_all_clears = True
+
+    async def transfer(
+        self, *, source_shard: int, destination_shard: int, amount_e6: int, transfer_id: str
+    ) -> str:
+        self.calls.append(("transfer", (source_shard, destination_shard, amount_e6, transfer_id)))
+        if self.transfer_error:
+            raise self.transfer_error
+        rows = {
+            r.exchange_index: Decimal(str(r.balance))
+            for r in self.rest.balance_value.balance_breakdown
+        }
+        rows[source_shard] -= Decimal(amount_e6) / 1_000_000
+        rows[destination_shard] += Decimal(amount_e6) / 1_000_000
+        self.rest.balance_value = balance(*(f"{rows[i]:.4f}" for i in sorted(rows)))
+        return "tr-ok"
+
+    async def create_order(self, order_: CreateOrder) -> CreatedOrder:
+        self.calls.append(("create", order_))
+        if self.create_error:
+            raise self.create_error
+        return CreatedOrder(
+            order_id="o-new",
+            client_order_id=order_.client_order_id,
+            fill_count=Decimal(0),
+            remaining_count=order_.count,
+        )
+
+    async def amend_order(self, order_id: str, **kw: Any) -> AmendedOrder:
+        self.calls.append(("amend", (order_id, kw)))
+        if self.amend_error:
+            raise self.amend_error
+        return AmendedOrder(order_id=order_id, remaining_count=kw["count"])
+
+    async def cancel_order(self, target: CancelTarget) -> CancelledOrder:
+        self.calls.append(("cancel", target))
+        return CancelledOrder(order_id=target.order_id, reduced_by=Decimal(1))
+
+    async def cancel_orders(self, targets: list[CancelTarget]) -> list[CancelledOrder]:
+        self.calls.append(("cancel_batch", [t.order_id for t in targets]))
+        gone = {t.order_id for t in targets}
+        self.rest.orders = [o for o in self.rest.orders if o.order_id not in gone]
+        return [CancelledOrder(order_id=t.order_id) for t in targets]
+
+    async def cancel_all(self) -> None:
+        self.halted_when_cancel_all = self.state.halted
+        self.calls.append(("cancel_all", None))
+        if self.cancel_all_error:
+            raise self.cancel_all_error
+        if self.cancel_all_clears:
+            self.rest.orders = []
+        self.rest.orders += self.late_orders
+        self.late_orders = []
+
+    def names(self) -> list[str]:
+        return [name for name, _ in self.calls]
