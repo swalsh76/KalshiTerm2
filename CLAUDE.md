@@ -10,10 +10,11 @@ architecture, packaging, deployment, and build order. Update it when decisions c
 Phases 0 (scaffolding), 1 (`kalshi-core`), 2 (server storage and ingestion), 3 (server API),
 3b (LAN features: backup/restore, client profiles with keyring tokens, TOFU certificate
 pinning, mDNS discovery) and 4 (analytics: plugin framework, market metrics, arbitrage, per-user
-alerts, analytics REST and alert push) and 5 (client data side: typed API and stream client, CLI
-data and account views) are complete and merged to `main`. Remaining hardware/measurement work
+alerts, analytics REST and alert push), 5 (client data side: typed API and stream client, CLI
+data and account views) and 6 (client trading: risk layer, orders, kill switch, shard funding, CLI;
+verified live) are complete and merged to `main`. Remaining hardware/measurement work
 (2.10b steps 3-6) is tracked in PLAN.md §10.2 and does **not** block later phases; the 48-hour
-calibration (2.10a) was dropped. Next: Phase 6 (client trading). Decisions made: web UI + Typer CLI, manual trading
+calibration (2.10a) was dropped. Next: Phase 7 (terminal UI). Decisions made: web UI + Typer CLI, manual trading
 first, multi-user server, MIT license, no PyPI publishing, public GitHub repository (since 2026-10-08), multivariate markets kept,
 read-only production key for dev. No **[OPEN]** items remain in PLAN.md §12.
 
@@ -25,11 +26,13 @@ packages/kalshi-core/tests/test_live.py -s` (read-only; skipped by default and i
 - **Trades go client → Kalshi directly, never through the server.** The trading key never
   leaves the workstation; the server has its own data-only key.
 - **Demo environment is the default** in code and config. Production use is explicit
-  opt-in (`KALSHI_ENV=production`) and **read-only until Phase 6 builds the write path**
-  (read-only key, no write code, GET-only transport guard; PLAN.md §4). The user decided on
-  2026-10-13 to verify trading on the live (~$10) account instead of the demo: production
-  writes still need the explicit opt-in flags, tiny risk limits (PLAN.md §10.7), and the
-  user's go-ahead for each live order; every order passes the client risk layer.
+  opt-in (`KALSHI_ENV=production`). `KalshiRestClient` stays GET-only (guard and test); the
+  write path (Phase 6) is a separate `KalshiTradingClient` that needs the separate trading key,
+  refuses production unless `production_enabled = true` in `risk.toml`, and can only reach a fixed
+  list of order routes. The user decided on 2026-10-13 to verify trading on the live (~$10)
+  account instead of the demo. Every order passes the client risk layer (tiny limits in
+  `risk.toml`, PLAN.md §10.7) and, in production, a typed confirmation; get the user's go-ahead
+  before sending any real order yourself.
 - Client runs natively (Windows/macOS), not in Docker.
 - Server deploys **only via Docker Compose** on a remote LAN host; API is the only exposed
   port; self-signed TLS with trust-on-first-use pinning.

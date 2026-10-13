@@ -863,7 +863,7 @@ Each phase ends with passing tests and CI green.
 | **3b. LAN features** | zeroconf discovery, client profiles, TOFU cert pinning, `cert rotate`, `kterm server status`, backup/restore — **done** (slices 3b.1-3b.4 in §10.4) |
 | **4. Analytics** | Plugin framework + built-in analyzers + alerts — **done** (slices 4.1-4.5 in §10.5) |
 | **5. Client data side** | Server API client, CLI data views — **done** (slices 5.1-5.5 in §10.6) |
-| **6. Client trading** | Risk layer first, order management, private WS channels; verified on the live account under tiny limits (decided 2026-10-13); test proving trading works with server offline (slices 6.1-6.8 in §10.7) |
+| **6. Client trading** | Risk layer, order management, private WS channels, CLI; verified on the live account under tiny limits; works with the server offline — **done** (slices 6.1-6.8 in §10.7) |
 | **7. Terminal UI** | Bloomberg-style UI per §7 decision (local backend, panels, grids, charts, command bar, order entry) |
 | **8. Packaging** | Frontend build bundled into client wheel, install docs, tagged v0.1.0 |
 
@@ -1488,7 +1488,7 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
 | 6.5 — done | Private WebSocket channels and `AccountTracker` (fill, user_orders, market_positions; reconnect, reconcile, exactly-once) and the order service tying risk, snapshot and transport together |
 | 6.6 — done | CLI: `buy`, `sell` (both fund the shard automatically; no manual transfer command), `cancel`, `amend`, `orders`, `positions`, `balance`, `fills`, `kill`, `--dry-run`, risk verdict output, production confirmation prompt |
 | 6.7 — done | Live end to end on the real account under the tiny limits: place far-from-market resting orders, amend, cancel, kill switch (no fills needed), then one deliberate minimal fill to check fills / positions / fees; the **server-offline trading test**; Phase 6 as-built notes. Needs the production trading key (see below) |
-| 6.8 | Close-out: review of what the live checks showed, risk defaults revisited with you, docs. (Replaces the earlier separate sign-off slice; the sign-off is per order, in 6.7) |
+| 6.8 — done | Close-out: review of what the live checks showed, risk defaults revisited with you, docs. (Replaces the earlier separate sign-off slice; the sign-off is per order, in 6.7) |
 
 **6.1 as built (measured 2026-10-13 with the read-only production dev key, GET only through the
 guarded client; no code added to the repo, probe scripts were throwaway).** Account: balance
@@ -1748,6 +1748,18 @@ partial fill, so **amend refuses to change the count of a partly filled order** 
 cancel and re-place). Real fees match the model: $0.0014 at 0.02 and $0.0007 at 0.01 (Kalshi aligns
 to $0.0001); the check's cent-rounded worst case is deliberately above them.
 
+**6.8 close-out (2026-10-13).** Decisions with the user: the risk limits stay at the shipped tiny
+defaults ($1.00 and 5 contracts per order, 10 contracts per market, $3.00 exposure, $2.00 daily loss,
+3 open orders, $2.00 per transfer and $5.00 transfers per day); the amend-count question is parked
+(§13); Phase 7 follows as planned. **Phase 6 is complete.** State left on the user's machine: the
+trading key and `KALSHI_TRADING_KEY_ID`, `risk.toml` with `production_enabled = true`, and
+`trading_state.json`; every production order still needs the typed confirmation and passes the risk
+layer, and `kterm kill` / `cancel` work regardless. Summary of Phase 6: pure risk layer
+(`risk.py`, `risk_config.py`), account reads and trading-key loading (`portfolio.py`, `auth.py`),
+write transport with a route allowlist (`trading.py`), live account tracker and order service
+(`account.py`, `orders.py`, `trading_state.py`), and the CLI (`trade_cli.py`, `trade_views.py`,
+`trade_runtime.py`); 1,323 tests in the suite, live-verified for $0.0121.
+
 **Decided after 6.1 (2026-10-13).** (1) Live account, not demo, for every verification step
 (decision 6). **You will need to create a production API key with trade scope** (Kalshi account
 settings, API keys; save the private key to `~/.kalshiterm/kalshi_trading_key.pem`, mode 600, and
@@ -1856,4 +1868,6 @@ Ideas raised but **not** in scope. Not to be built until promoted into a phase.
 - Sandboxing or resource limits for third-party analyzers beyond a per-run timeout. Raised 2026-10-10.
 - Alerts on plugin-provided metrics (today only the built-in catalog is alertable), "any watched market" wildcard rules, and relative volume-spike rules (volume against the market's own baseline). Raised 2026-10-12 with slice 4.4.
 - Client: CSV export of series (candles, history), a local response cache / offline mode, persisted stream cursors across CLI runs, and shell completion. Raised 2026-10-12 with the Phase 5 breakdown.
+- Trading: whether Kalshi's amend `count` includes already-filled contracts (it needs a partial fill to test, so amend refuses to change the count of a partly filled order for now). Raised 2026-10-13 with the Phase 6 close-out; test when a real partial fill happens.
+- Trading: fill-or-kill orders, order groups, subaccounts, the RFQ / communications channels, encrypted trading keys (keyring passphrase), a manual `kterm transfer` command, scripted (non-interactive) production orders, and a daily-loss day that is not the UTC day. Raised 2026-10-13 with the Phase 6 breakdown and close-out.
 - Exclude the fast crypto 15-minute books from the auto top-N (they made 58% of orderbook deltas in the 2.7a sample). Raised 2026-10-07; deferred until the storage governor (2.8) shows whether it is needed.
