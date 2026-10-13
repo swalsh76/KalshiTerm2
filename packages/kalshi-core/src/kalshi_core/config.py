@@ -40,6 +40,8 @@ class KalshiSettings(BaseSettings):
     trading_private_key_path: Path = Path("~/.kalshiterm/kalshi_trading_key.pem")
     # Kalshi read budget in tokens/second for the account tier (Basic = 200).
     read_tokens_per_second: float = Field(default=200, gt=0)
+    # Kalshi write budget in tokens/second (Basic = 100; GET /account/limits is authoritative).
+    write_tokens_per_second: float = Field(default=100, gt=0)
     # Fraction of the budget we actually use; the rest is margin against clock/jitter.
     rate_limit_margin: float = Field(default=0.9, gt=0, le=1)
 

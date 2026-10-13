@@ -57,3 +57,9 @@ def read_bucket(settings: KalshiSettings) -> TokenBucket:
     """Bucket for read requests: tier budget scaled by the safety margin."""
     budget = settings.read_tokens_per_second * settings.rate_limit_margin
     return TokenBucket(rate=budget, capacity=budget)
+
+
+def write_bucket(settings: KalshiSettings) -> TokenBucket:
+    """Bucket for order writes. Basic tier holds one second of budget (capacity 100)."""
+    budget = settings.write_tokens_per_second * settings.rate_limit_margin
+    return TokenBucket(rate=budget, capacity=budget)

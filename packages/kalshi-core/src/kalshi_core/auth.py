@@ -67,9 +67,10 @@ def load_trading_key(path: Path) -> PrivateKey:
 class KalshiSigner:
     """Builds the signed headers Kalshi requires on REST requests and the WS handshake."""
 
-    def __init__(self, key_id: str, private_key: PrivateKey) -> None:
+    def __init__(self, key_id: str, private_key: PrivateKey, *, purpose: str = "data") -> None:
         self._key_id = key_id
         self._key = private_key
+        self.purpose = purpose  # "trading" only for signers made by ``for_trading``
 
     @classmethod
     def from_settings(cls, settings: KalshiSettings) -> "KalshiSigner":
@@ -91,7 +92,7 @@ class KalshiSigner:
         data_path = settings.private_key_path
         if data_path is not None and path.resolve() == data_path.expanduser().resolve():
             raise AuthError("the trading key file must not be the data key file")
-        return cls(settings.trading_key_id, load_trading_key(path))
+        return cls(settings.trading_key_id, load_trading_key(path), purpose="trading")
 
     def sign(self, timestamp_ms: int, method: str, path: str) -> str:
         """Base64 signature over ``timestamp + METHOD + path`` (query string excluded)."""

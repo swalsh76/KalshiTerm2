@@ -1483,7 +1483,7 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
 | 6.1 — done | Measure first: a read-only look at the demo's order, position, balance and fill shapes (with the existing dev key, GET only) plus a re-check of the docs facts above; write the as-built models and the open questions into this section. No write code |
 | 6.2 — done | Risk layer: `RiskPolicy` (per-shard balances, funding plan, transfer caps), `risk.toml` loading and validation, `check` as a pure function, `ApprovedOrder`, fail-closed rules, worst-case fee/notional math; exhaustive tests including property tests (no order that exceeds a limit is ever approved) |
 | 6.3 — done | Account read side: `kalshi-core` portfolio models + GET methods (balance, positions, orders, fills, settlements, queue positions), trading key loading and permission check; production stays read-only |
-| 6.4 | Write transport: `TradingCapability`, write token bucket, create / cancel / batch cancel / amend / decrease with idempotent `client_order_id` recovery, and the shard transfer call with `client_transfer_id` recovery (decision 14); the guard test is rewritten to prove writes need the capability and production is refused |
+| 6.4 — done | Write transport: `KalshiTradingClient` (separate, route-allowlisted), write token bucket, create / cancel / batch cancel / amend / decrease with idempotent `client_order_id` recovery, and the shard transfer call with `client_transfer_id` recovery (decision 14); the guard test is rewritten to prove writes need the capability and production is refused |
 | 6.5 | Private WebSocket channels and `AccountTracker` (fill, user_orders, market_positions; reconnect, reconcile, exactly-once) and the order service tying risk, snapshot and transport together |
 | 6.6 | CLI: `buy`, `sell` (both fund the shard automatically; no manual transfer command), `cancel`, `amend`, `orders`, `positions`, `balance`, `fills`, `kill`, `--dry-run`, risk verdict output, production confirmation prompt |
 | 6.7 | Live end to end on the real account under the tiny limits: place far-from-market resting orders, amend, cancel, kill switch (no fills needed), then one deliberate minimal fill to check fills / positions / fees; the **server-offline trading test**; Phase 6 as-built notes. Needs the production trading key (see below) |
@@ -1566,6 +1566,48 @@ and whether the balance already excludes resting-order collateral; both are chec
 Tests: 20 new plus one opt-in live (field coverage for every model with a deliberate-drift check, cursor paging, the
 user-side price of a NO order, queue positions, five key-file modes, key separation) and four
 sabotages caught (mode mask, key-id equality, same-file check, order price side).
+
+**6.4 as built.** `kalshi_core.trading.KalshiTradingClient` is a **separate client** from
+`KalshiRestClient`, which is unchanged and still GET-only with its guard and test. (This replaces the
+planned `TradingCapability` object with something simpler that does the same job; PLAN decision 5's
+intent is kept.) Layers: it cannot be built without a signer from `KalshiSigner.for_trading` (the
+signer carries `purpose="trading"`); it refuses the production environment unless the caller passes
+`allow_production=True`; a request hook allows only the eight routes in `ROUTES` (create, cancel one /
+batch / all, amend, decrease, shard transfer, and the order listing used to find a lost order), so
+no other endpoint (legacy create, withdrawals, upgrade, subaccounts) can be sent however the code
+changes later. Methods: `create_order`, `cancel_order`, `cancel_orders`, `cancel_all`, `amend_order`,
+`decrease_order`, `transfer`, `find_order`. Prices and counts are `Decimal` only and go out as
+fixed-point strings (`float` is a `TypeError`; finer than 4 / 2 decimals is a `ValueError`, never
+rounded). **Outcome handling:** a create is never sent twice. After a timeout, a dropped
+connection or a 500 / 502 / 503 / 504 it lists orders since 5 s before the attempt and matches the
+always-present `client_order_id` (4 looks over about 3.5 s); found means the order is returned
+with `recovered=True`, not found raises `WriteOutcomeUnknown` carrying the id to reconcile by (an
+id that must never be reused). A 409 is looked up too; a 400 is final. Amend and decrease are never
+resent (`WriteOutcomeUnknown`). Cancels and transfers are retried (a cancel's end state is the same,
+a 404 after an ambiguous try means "already gone"; a transfer carries `client_transfer_id`). A 429
+means Kalshi did not process it, so every write retries it up to three times (0.5 / 1 / 2 s).
+**Write budget** (measured from the live `GET /account/limits` and `/account/endpoint_costs`,
+2026-10-13): Basic tier write bucket capacity 100, refill 100 per second (read: 600 and 200); cost 10
+per request by default and **2 for every cancel form (per order in a batch)**; the client bucket is
+`write_bucket` (100 x 0.9 margin, new setting `KALSHI_WRITE_TOKENS_PER_SECOND`). Request shapes are
+from the V2 docs: `POST /portfolio/events/orders` (`side` bid / ask, `count`, `price`, `time_in_force`,
+`self_trade_prevention_type`, `exchange_index`, `client_order_id`), `DELETE
+/portfolio/events/orders/{id}?exchange_index=&market_ticker=`, `DELETE .../batched`, `DELETE
+/portfolio/events/orders`, `POST .../{id}/amend`, `POST .../{id}/decrease`, `POST
+/portfolio/intra_exchange_instance_transfer` (amount in centicents).
+**Not yet known, checked in 6.7 on the live account:** (1) **how a V2 `bid` / `ask` maps to yes / no.**
+V2 has no outcome field, so it must be the YES book (buy YES = bid, buy NO = ask at 1 - price), but the
+orders Kalshi reports for a "sell NO" show `book_side=ask` beside `outcome_side=no`, so the mapping
+function in 6.5 stays one pure, separately tested function and is proved with a one-cent resting
+order read back from Kalshi before any other order is sent; (2) what Kalshi answers to a duplicate
+`client_order_id` (undocumented); (3) how it rejects an order on an unfunded shard.
+Tests: 48 against a scripted fake exchange (route allowlist rejects 10 other routes, exact request
+bodies and signatures, every lost-answer path including a stateful exchange that drops the answer
+and ends with exactly one order, 429 bounds, cancel / batch / amend / decrease / transfer, token
+costs against a fake clock) and twelve sabotages of `trading.py`, each caught (retry a create, remove
+the route guard, the trading-signer check, the production check, centicent conversion, batch
+cost, the lookback window, 429 retry, the already-gone rule, retry an amend, the 409 lookup, the
+lookup loop).
 
 **Decided after 6.1 (2026-10-13).** (1) Live account, not demo, for every verification step
 (decision 6). **You will need to create a production API key with trade scope** (Kalshi account
