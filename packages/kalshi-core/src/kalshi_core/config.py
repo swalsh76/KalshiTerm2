@@ -34,6 +34,10 @@ class KalshiSettings(BaseSettings):
     env: Environment = Environment.DEMO
     key_id: str | None = None
     private_key_path: Path | None = Field(default=None)
+    # The trading key is a separate key from the data key above (PLAN §10.7): it lives only on the
+    # workstation, outside the repo, and is used only by the client's order service.
+    trading_key_id: str | None = None
+    trading_private_key_path: Path = Path("~/.kalshiterm/kalshi_trading_key.pem")
     # Kalshi read budget in tokens/second for the account tier (Basic = 200).
     read_tokens_per_second: float = Field(default=200, gt=0)
     # Fraction of the budget we actually use; the rest is margin against clock/jitter.

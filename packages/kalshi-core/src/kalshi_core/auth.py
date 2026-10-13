@@ -1,6 +1,8 @@
 """Request signing for the Kalshi API. Ed25519 only: RSA-PSS is deliberately unsupported."""
 
 import base64
+import os
+import stat
 import time
 from pathlib import Path
 
@@ -38,6 +40,30 @@ def load_private_key(path: Path) -> PrivateKey:
     return key
 
 
+def check_key_file_private(path: Path) -> None:
+    """Refuse a key file that other users on this machine can read (POSIX only).
+
+    The fix is shown in the message so the user can act on it: ``chmod 600 <file>``.
+    """
+    if os.name != "posix":
+        return
+    target = path.expanduser()
+    try:
+        mode = stat.S_IMODE(target.stat().st_mode)
+    except OSError as exc:
+        raise AuthError(f"cannot read private key file {path}: {exc.strerror}") from exc
+    if mode & 0o077:
+        raise AuthError(
+            f"{path} is readable by other users (mode {mode:03o}); run: chmod 600 {path}"
+        )
+
+
+def load_trading_key(path: Path) -> PrivateKey:
+    """Load the trading key: like ``load_private_key`` but the file must be owner-only."""
+    check_key_file_private(path)
+    return load_private_key(path)
+
+
 class KalshiSigner:
     """Builds the signed headers Kalshi requires on REST requests and the WS handshake."""
 
@@ -50,6 +76,22 @@ class KalshiSigner:
         if not settings.key_id or settings.private_key_path is None:
             raise AuthError("KALSHI_KEY_ID and KALSHI_PRIVATE_KEY_PATH must both be set")
         return cls(settings.key_id, load_private_key(settings.private_key_path))
+
+    @classmethod
+    def for_trading(cls, settings: KalshiSettings) -> "KalshiSigner":
+        """The signer for orders. It must be a different key from the data key: the data key
+        also lives on the server host, the trading key never leaves this workstation."""
+        if not settings.trading_key_id:
+            raise AuthError("KALSHI_TRADING_KEY_ID is not set")
+        if settings.trading_key_id == settings.key_id:
+            raise AuthError(
+                "the trading key must be a different key from the data key (KALSHI_KEY_ID)"
+            )
+        path = settings.trading_private_key_path.expanduser()
+        data_path = settings.private_key_path
+        if data_path is not None and path.resolve() == data_path.expanduser().resolve():
+            raise AuthError("the trading key file must not be the data key file")
+        return cls(settings.trading_key_id, load_trading_key(path))
 
     def sign(self, timestamp_ms: int, method: str, path: str) -> str:
         """Base64 signature over ``timestamp + METHOD + path`` (query string excluded)."""

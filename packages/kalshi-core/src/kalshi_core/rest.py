@@ -37,6 +37,19 @@ from kalshi_core.models import (
     Trade,
     TradesPage,
 )
+from kalshi_core.portfolio import (
+    Balance,
+    Fill,
+    FillsPage,
+    MarketPosition,
+    Order,
+    OrdersPage,
+    PositionsPage,
+    QueuePosition,
+    QueuePositions,
+    Settlement,
+    SettlementsPage,
+)
 from kalshi_core.ratelimit import TokenBucket, read_bucket
 
 log = logging.getLogger("kalshi_core")
@@ -158,7 +171,7 @@ class KalshiRestClient:
     async def _iter_items(
         self,
         path: str,
-        page_model: type[MarketsPage] | type[EventsPage] | type[TradesPage],
+        page_model: type[Any],  # any model with a ``cursor``
         attr: str,
         params: Any,
     ) -> AsyncIterator[Any]:
@@ -210,3 +223,51 @@ class KalshiRestClient:
     async def orderbook(self, ticker: str, *, depth: int = 0) -> OrderBook:
         payload = await self._get(f"/markets/{ticker}/orderbook", {"depth": depth})
         return OrderBook.from_response(payload)
+
+    # --- account (portfolio) reads; these need a signer and the key's read scope -----------------
+
+    async def balance(self, **params: Any) -> Balance:
+        """Balance with a per-exchange-shard breakdown (``exchange_index=`` narrows it)."""
+        return Balance.model_validate(await self._get("/portfolio/balance", params))
+
+    async def positions_page(self, **params: Any) -> PositionsPage:
+        return PositionsPage.model_validate(await self._get("/portfolio/positions", params))
+
+    async def iter_positions(self, **params: Any) -> AsyncIterator[MarketPosition]:
+        """Market positions (unsettled by default); event positions are on ``positions_page``."""
+        async for position in self._iter_items(
+            "/portfolio/positions", PositionsPage, "market_positions", params
+        ):
+            yield position
+
+    async def orders_page(self, **params: Any) -> OrdersPage:
+        return OrdersPage.model_validate(await self._get("/portfolio/orders", params))
+
+    async def iter_orders(self, **params: Any) -> AsyncIterator[Order]:
+        async for order in self._iter_items("/portfolio/orders", OrdersPage, "orders", params):
+            yield order
+
+    async def order(self, order_id: str) -> Order:
+        payload = await self._get(f"/portfolio/orders/{order_id}")
+        return Order.model_validate(payload["order"])
+
+    async def fills_page(self, **params: Any) -> FillsPage:
+        return FillsPage.model_validate(await self._get("/portfolio/fills", params))
+
+    async def iter_fills(self, **params: Any) -> AsyncIterator[Fill]:
+        async for fill in self._iter_items("/portfolio/fills", FillsPage, "fills", params):
+            yield fill
+
+    async def settlements_page(self, **params: Any) -> SettlementsPage:
+        return SettlementsPage.model_validate(await self._get("/portfolio/settlements", params))
+
+    async def iter_settlements(self, **params: Any) -> AsyncIterator[Settlement]:
+        async for settlement in self._iter_items(
+            "/portfolio/settlements", SettlementsPage, "settlements", params
+        ):
+            yield settlement
+
+    async def queue_positions(self, **params: Any) -> list[QueuePosition]:
+        """Contracts ahead of each resting order; filter with ``market_tickers=`` (comma list)."""
+        payload = await self._get("/portfolio/orders/queue_positions", params)
+        return QueuePositions.model_validate(payload).queue_positions

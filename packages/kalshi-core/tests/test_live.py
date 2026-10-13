@@ -268,3 +268,51 @@ async def test_orderbook_feed_adds_and_removes_markets_live_without_false_gaps(
     print(f"  watching now: {len(watched)} markets; books held: {len(books)}; stale: {len(stale)}")
     assert not gaps
     assert set(watched) == set(busy[1:5]) and books == set(busy[1:5]) and not stale
+
+
+async def test_account_reads_parse_and_cover_every_field(
+    settings: KalshiSettings, signer: KalshiSigner
+) -> None:
+    """Typed account reads against the real account (GET only). Fails if Kalshi sends a field
+    the models lack, and prints what it found."""
+    from kalshi_core.portfolio import Balance, Fill, Order, Settlement
+
+    async with KalshiRestClient(settings, signer=signer) as rest:
+        raw_balance = await rest._get("/portfolio/balance")
+        balance = await rest.balance()
+        orders = [o async for o in rest.iter_orders(limit=200)]
+        fills = [f async for f in rest.iter_fills(limit=200)]
+        settlements = [s async for s in rest.iter_settlements(limit=200)]
+        positions = [p async for p in rest.iter_positions()]
+        raw_orders = (await rest._get("/portfolio/orders", {"limit": 200}))["orders"]
+        raw_fills = (await rest._get("/portfolio/fills", {"limit": 200}))["fills"]
+        raw_settlements = (await rest._get("/portfolio/settlements", {"limit": 200}))["settlements"]
+
+    print(f"\nbalance ${balance.balance_dollars} ({balance.balance} cents), shards:")
+    for row in balance.balance_breakdown:
+        print(f"  shard {row.exchange_index}: ${row.balance}")
+    print(
+        f"{len(positions)} positions, {len(orders)} orders, {len(fills)} fills, "
+        f"{len(settlements)} settlements"
+    )
+    for order in orders[:3]:
+        print(
+            f"  {order.ticker} {order.action} {order.outcome_side} {order.fill_count_fp}/"
+            f"{order.initial_count_fp} @ {order.price_dollars} {order.status}"
+        )
+
+    # the integer cents are the dollars truncated ($10.3490 is 1034 cents): use the dollars
+    assert int(balance.balance_dollars * 100) == balance.balance
+    assert sum(r.balance for r in balance.balance_breakdown) == balance.balance_dollars
+    for model, raws in (
+        (Balance, [raw_balance]),
+        (Order, raw_orders),
+        (Fill, raw_fills),
+        (Settlement, raw_settlements),
+    ):
+        for raw in raws:
+            assert set(raw) <= set(model.model_fields), (
+                model.__name__,
+                set(raw) - set(model.model_fields),
+            )
+    assert [o.order_id for o in orders] == [r["order_id"] for r in raw_orders]
