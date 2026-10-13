@@ -1449,18 +1449,43 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
     (694k vs 761k), so single-shard would have excluded half the activity. Every market has
     `exchange_index`; combos are shard 1. The risk layer therefore tracks balance, exposure and
     open orders **per shard**, with the daily-loss limit and kill switch **account-wide**; an order
-    is refused if its shard's balance cannot cover it (no automatic transfers between shards; a
-    transfer would be a new write endpoint and is parked). Tests run the fake exchange with all
-    four shards, including one where a shard has `trading_active` false.
+    is **funded automatically** (decision 14), so the user never thinks about shards. Tests run the
+    fake exchange with all four shards, including one where a shard has `trading_active` false.
+14. **Automatic shard funding (decided 2026-10-13).** Kalshi's own web / app does this; the API
+    does not ("programmatic traders must preallocate collateral on a given exchange shard"), so the
+    client does it. Mechanism: `POST /portfolio/intra_exchange_instance_transfer` (`amount` in
+    centicents, `source_exchange_shard`, `destination_exchange_shard`, `client_transfer_id` UUID
+    for idempotency). **Not** Kalshi's target-allocation setting: it is a persistent account
+    setting that also changes web behaviour and rebalances on a timer. Rules:
+    a. The risk layer's pure `check` returns, besides approve / refuse, a **funding plan**: the
+       smallest transfer(s) from shards with surplus (largest free balance first, never from a
+       shard that has resting orders needing it) so the target shard covers the order's worst-case
+       cost plus fee. No plan, no order: if total free balance cannot cover it the order is
+       refused with the shortfall.
+    b. The order service executes the plan, then places the order. A transfer never exceeds what
+       the order needs (plus nothing extra), is shown in the risk verdict and the confirmation
+       prompt ("will move $2.0000 from shard 0 to shard 3, then buy ..."), and is covered by the
+       same per-order confirmation; there is no separate prompt.
+    c. Money never leaves the account, but a transfer still counts as a write: it goes through
+       the risk layer, the write bucket, the audit log, and is refused when the order itself would
+       be. A transfer cap per order and per day (`risk.toml`) bounds a bug.
+    d. Failure handling: Kalshi documents cross-index transfers as non-atomic ("up to three
+       steps; completed steps are not undone"), so after any transfer error the service re-reads
+       balances and reconciles by `client_transfer_id` before doing anything else, and never
+       retries blindly. If the order then fails, funds simply stay on that shard; the next order
+       pulls them wherever needed. No sweep-back is built (the web app does none either).
+    e. Dry-run prints the plan and makes no request. The kill switch never needs funding.
+    f. Slice 6.7 checks on the live account that an unfunded shard rejects an order (how the
+       rejection looks is undocumented) and that a $0.01-scale transfer round-trips.
 
 | # | Slice |
 |---|---|
 | 6.1 — done | Measure first: a read-only look at the demo's order, position, balance and fill shapes (with the existing dev key, GET only) plus a re-check of the docs facts above; write the as-built models and the open questions into this section. No write code |
-| 6.2 | Risk layer: `RiskPolicy`, `risk.toml` loading and validation, `check` as a pure function, `ApprovedOrder`, fail-closed rules, worst-case fee/notional math; exhaustive tests including property tests (no order that exceeds a limit is ever approved) |
+| 6.2 | Risk layer: `RiskPolicy` (per-shard balances, funding plan, transfer caps), `risk.toml` loading and validation, `check` as a pure function, `ApprovedOrder`, fail-closed rules, worst-case fee/notional math; exhaustive tests including property tests (no order that exceeds a limit is ever approved) |
 | 6.3 | Account read side: `kalshi-core` portfolio models + GET methods (balance, positions, orders, fills, settlements, queue positions), trading key loading and permission check; production stays read-only |
-| 6.4 | Write transport: `TradingCapability`, write token bucket, create / cancel / batch cancel / amend / decrease with idempotent `client_order_id` recovery; the guard test is rewritten to prove writes need the capability and production is refused |
+| 6.4 | Write transport: `TradingCapability`, write token bucket, create / cancel / batch cancel / amend / decrease with idempotent `client_order_id` recovery, and the shard transfer call with `client_transfer_id` recovery (decision 14); the guard test is rewritten to prove writes need the capability and production is refused |
 | 6.5 | Private WebSocket channels and `AccountTracker` (fill, user_orders, market_positions; reconnect, reconcile, exactly-once) and the order service tying risk, snapshot and transport together |
-| 6.6 | CLI: `buy`, `sell`, `cancel`, `amend`, `orders`, `positions`, `balance`, `fills`, `kill`, `--dry-run`, risk verdict output, production confirmation prompt |
+| 6.6 | CLI: `buy`, `sell` (both fund the shard automatically; no manual transfer command), `cancel`, `amend`, `orders`, `positions`, `balance`, `fills`, `kill`, `--dry-run`, risk verdict output, production confirmation prompt |
 | 6.7 | Live end to end on the real account under the tiny limits: place far-from-market resting orders, amend, cancel, kill switch (no fills needed), then one deliberate minimal fill to check fills / positions / fees; the **server-offline trading test**; Phase 6 as-built notes. Needs the production trading key (see below) |
 | 6.8 | Close-out: review of what the live checks showed, risk defaults revisited with you, docs. (Replaces the earlier separate sign-off slice; the sign-off is per order, in 6.7) |
 
