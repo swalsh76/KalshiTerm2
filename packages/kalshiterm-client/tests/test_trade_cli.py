@@ -82,7 +82,7 @@ def install(
             ),
         )
         runtime = Runtime(settings, used, state, rest, service, tracker, trading)  # type: ignore[arg-type]
-        if mode == "trade":
+        if mode in ("trade", "preview"):
             await tracker.start()
         try:
             yield runtime
@@ -492,3 +492,45 @@ def test_on_a_narrow_terminal_the_order_id_is_still_whole() -> None:
     buffer = StringIO()
     Console(file=buffer, width=80, force_terminal=False).print(table)
     assert long_id in buffer.getvalue()  # other columns may be cut at the edge; the id never is
+
+
+def test_dry_runs_open_the_preview_runtime_and_real_orders_the_trade_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    h = install(monkeypatch, tmp_path)
+    run("buy", "KXA-1", "1", "0.30", "--dry-run")
+    run("buy", "KXA-1", "1", "0.30", "--yes")
+    run("sell", "KXA-1", "1", "0.30", "--dry-run", "--json")
+    assert h.modes == ["preview", "trade", "preview"]
+
+
+async def test_the_preview_client_cannot_send_anything() -> None:
+    from kalshi_core.trading import TradingRefused
+    from kalshiterm_client.trade_runtime import PreviewTrading
+
+    preview = PreviewTrading()
+    for call in (
+        preview.create_order(None),
+        preview.amend_order("o"),
+        preview.cancel_order(None),
+        preview.cancel_orders([]),
+        preview.cancel_all(),
+        preview.transfer(source_shard=0, destination_shard=1, amount_e6=100, transfer_id="t"),
+    ):
+        with pytest.raises(TradingRefused, match="dry run"):
+            await call
+
+
+@pytest.mark.parametrize(
+    ("mode", "enabled", "allowed"),
+    [
+        ("trade", False, False),  # sending orders needs the switch
+        ("trade", True, True),
+        ("exit", False, True),  # cancelling and the kill switch never do
+        ("exit", True, True),
+    ],
+)
+def test_who_may_act_on_production(mode: str, enabled: bool, allowed: bool) -> None:
+    from kalshiterm_client.trade_runtime import production_allowed
+
+    assert production_allowed(mode, RiskPolicy(production_enabled=enabled)) is allowed  # type: ignore[arg-type]

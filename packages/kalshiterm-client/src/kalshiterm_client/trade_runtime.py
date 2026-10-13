@@ -5,6 +5,9 @@ profile or a server token. Three shapes, from least to most privileged:
 
 * ``read``: only a REST client (balance, positions, orders, fills). It signs with the data key if
   one is configured, else the trading key.
+* ``preview``: for ``--dry-run``. Everything is read (tracker started) but the trading client is a
+  ``PreviewTrading`` that refuses every write, so a dry run cannot send anything, and it works
+  before production trading is enabled.
 * ``exit``: REST + trading client, with the tracker built but **not started**, so the kill switch
   never waits on a WebSocket or a full account read.
 * ``trade``: everything, with the tracker started (subscribed and fully read) before it is handed
@@ -14,12 +17,12 @@ profile or a server token. Three shapes, from least to most privileged:
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from kalshi_core.auth import AuthError, KalshiSigner
 from kalshi_core.config import KalshiSettings
 from kalshi_core.rest import KalshiRestClient
-from kalshi_core.trading import KalshiTradingClient
+from kalshi_core.trading import KalshiTradingClient, TradingRefused
 from kalshi_core.ws import KalshiWebSocket
 
 from kalshiterm_client.account import AccountTracker
@@ -28,7 +31,22 @@ from kalshiterm_client.risk import RiskPolicy
 from kalshiterm_client.risk_config import load_policy
 from kalshiterm_client.trading_state import TradingState
 
-Mode = Literal["read", "exit", "trade"]
+Mode = Literal["read", "preview", "exit", "trade"]
+
+
+class PreviewTrading:
+    """Stands in for the trading client in a dry run: any attempt to send raises."""
+
+    async def _refuse(self, *args: Any, **kwargs: Any) -> Any:
+        raise TradingRefused("dry run: nothing can be sent")
+
+    create_order = amend_order = cancel_order = cancel_orders = cancel_all = transfer = _refuse
+
+
+def production_allowed(mode: Mode, policy: RiskPolicy) -> bool:
+    """May the trading client act on production? Getting out (cancels, kill) always may; sending
+    orders and moving money needs ``production_enabled`` in ``risk.toml``."""
+    return mode == "exit" or policy.production_enabled
 
 
 @dataclass
@@ -72,8 +90,23 @@ async def open_runtime(
         return
 
     signer = KalshiSigner.for_trading(settings)
+    if mode == "preview":
+        async with (
+            KalshiRestClient(settings, signer=signer) as rest,
+            KalshiWebSocket(settings, signer) as ws,
+        ):
+            tracker = AccountTracker(rest, ws, state)
+            await tracker.start()
+            try:
+                service = OrderService(
+                    rest, PreviewTrading(), tracker, policy, production=settings.is_production
+                )
+                yield Runtime(settings, policy, state, rest, service, tracker, None)
+            finally:
+                await tracker.stop()
+        return
     trading = KalshiTradingClient(
-        settings, signer, allow_production=policy.production_enabled and settings.is_production
+        settings, signer, allow_production=production_allowed(mode, policy)
     )
     async with KalshiRestClient(settings, signer=signer) as rest, trading:
         if mode == "exit":

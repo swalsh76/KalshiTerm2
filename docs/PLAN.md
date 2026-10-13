@@ -1691,6 +1691,21 @@ confirmation with eight wrong phrasings, exit codes, JSON, the wide-table cases)
 cancel-by-id in `test_orders.py`; about 17 sabotages of the CLI and views each caught (one survivor, the
 NO-side fill price, and the narrow-terminal width, now tested).
 
+**6.6b fix (found when the real trading key was first used, 2026-10-13).** A dry run in production
+could not start until production trading was enabled, because the trading client refused to be built.
+A dry run should work before anything is enabled and should be unable to send at all. Now
+`--dry-run` opens a **`preview`** runtime: everything is read (tracker started, real balances and
+markets) but the trading client is a `PreviewTrading` that raises on every write. `exit` mode (cancel,
+kill) always may act on production, so getting out never depends on the switch; `trade` mode still
+needs `production_enabled` (`production_allowed(mode, policy)`, tested). Tests: dry runs open
+`preview`, real orders `trade`; each preview write call refused; the permission rule by mode; four
+sabotages caught. Live with the new trading key (Key ID registered 2026-10-13, public key supplied by
+us, Ed25519, private key generated locally in `~/.kalshiterm/kalshi_trading_key.pem`, mode 600, never
+displayed): a read signed with it returned the $10.3490 balance, and `kterm buy ... --dry-run` on a
+shard-0 and a shard-3 market printed the real worst-case cost and the refusal "production_enabled =
+false"; a deliberately oversized order listed six refusals (size, notional, position, exposure, shard
+funds). The tracker wrote `trading_state.json` (day and realized-P&L baseline) in the config directory.
+
 **Decided after 6.1 (2026-10-13).** (1) Live account, not demo, for every verification step
 (decision 6). **You will need to create a production API key with trade scope** (Kalshi account
 settings, API keys; save the private key to `~/.kalshiterm/kalshi_trading_key.pem`, mode 600, and
