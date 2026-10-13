@@ -1443,7 +1443,7 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
 
 | # | Slice |
 |---|---|
-| 6.1 | Measure first: a read-only look at the demo's order, position, balance and fill shapes (with the existing dev key, GET only) plus a re-check of the docs facts above; write the as-built models and the open questions into this section. No write code |
+| 6.1 — done | Measure first: a read-only look at the demo's order, position, balance and fill shapes (with the existing dev key, GET only) plus a re-check of the docs facts above; write the as-built models and the open questions into this section. No write code |
 | 6.2 | Risk layer: `RiskPolicy`, `risk.toml` loading and validation, `check` as a pure function, `ApprovedOrder`, fail-closed rules, worst-case fee/notional math; exhaustive tests including property tests (no order that exceeds a limit is ever approved) |
 | 6.3 | Account read side: `kalshi-core` portfolio models + GET methods (balance, positions, orders, fills, settlements, queue positions), trading key loading and permission check; production stays read-only |
 | 6.4 | Write transport: `TradingCapability`, write token bucket, create / cancel / batch cancel / amend / decrease with idempotent `client_order_id` recovery; the guard test is rewritten to prove writes need the capability and production is refused |
@@ -1451,6 +1451,42 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
 | 6.6 | CLI: `buy`, `sell`, `cancel`, `amend`, `orders`, `positions`, `balance`, `fills`, `kill`, `--dry-run`, risk verdict output, production confirmation prompt |
 | 6.7 | Demo end to end: opt-in live demo test (place, rest, amend, fill or cancel, kill switch) and the **server-offline trading test**; Phase 6 as-built notes |
 | 6.8 | **Production sign-off gate (needs your explicit go-ahead)**: remove the production refusal constant, a production read-only dress rehearsal, then (only if you decide) a first minimal real order under the smallest limits |
+
+**6.1 as built (measured 2026-10-13 with the read-only production dev key, GET only through the
+guarded client; no code added to the repo, probe scripts were throwaway).** Account: balance
+`$10.3490`, no open positions, 18 historical orders (all `executed`, `limit`, `taker_at_cross`), fills and
+settlements present. Shapes:
+- **Balance**: `balance` (int cents) *and* `balance_dollars` ("10.3490"), `portfolio_value` (int
+  cents), `updated_ts` (unix seconds), `balance_breakdown` = one row per **exchange shard**
+  (`exchange_index` 0-3, balance as a 4-decimal string). `/exchange/status` lists the same four
+  shards (Default, Combos, Crypto & Commodities, Tennis / Baseball / Basketball), each with its own
+  `trading_active`. **Consequence:** the risk layer's balance and the kill switch must be
+  shard-aware; a market lives on one shard and funds are per shard.
+- **Positions**: `market_positions` and `event_positions` lists plus `cursor`; empty here, so the
+  populated shape rests on the docs (`position_fp`, `market_exposure_dollars`, ...) until the demo.
+- **Orders** (read side) carry `order_id`, `client_order_id`, `ticker`, `status`, `type`, `action`
+  (buy / sell), `side` (always `yes` in all 18), `book_side` (bid / ask), `outcome_side` (yes / no),
+  `yes_price_dollars` / `no_price_dollars` (4 dp), `initial_count_fp` / `fill_count_fp` /
+  `remaining_count_fp` (2 dp), `taker_` / `maker_` `fees_dollars` and `fill_cost_dollars` (6 dp),
+  `created_time` / `last_update_time` (ISO), `exchange_index`, `subaccount_number`,
+  `self_trade_prevention_type`, `user_id`. **A "sell NO at 0.99" appears as `action=sell`,
+  `outcome_side=no`, `book_side=ask`, `side=yes`, `yes_price=0.0100`**: Kalshi stores everything on
+  the YES book, so the order model must keep `outcome_side` + `action` as the user's intent and
+  derive the book side, never trust `side` alone.
+- **Fills**: `fill_id` = `trade_id`, `order_id`, `ticker` (and duplicate `market_ticker`),
+  `count_fp`, `yes_price_dollars` / `no_price_dollars`, `fee_cost` (6 dp string), `is_taker`,
+  `ts` (unix s) and `created_time`, plus the same side fields. **Settlements**: `yes_count_fp`,
+  `no_count_fp`, `*_total_cost_dollars`, `fee_cost`, `market_result`, `revenue` / `value` as int cents.
+- Money mixes int cents and 4 / 6-decimal strings across endpoints; the models parse every one into
+  fixed-point (`*_e6`) without rounding, per the one-representation rule.
+
+**Open questions for you (6.7 cannot run without the first; the rest have defaults).**
+1. **Demo credentials**: `.env` holds only the production read-only key; the demo environment needs
+   its own demo account and API key (created at demo.kalshi.co, a separate login). Without it 6.7's live demo
+   test and any write-path verification are impossible; 6.2-6.6 are unaffected (fake Kalshi).
+   Hardware or credentials are never a blocker for the rest.
+2. **Shards**: default is trade on exchange 0 ("Default") only in 6.x and refuse markets on other
+   shards with a clear message; multi-shard is parked. Say if you want more.
 
 Slices 6.1-6.7 touch demo only. Parked, not planned: order groups, subaccounts, RFQ / communications
 channel, encrypted trading keys, trading from the browser (Phase 7), strategies or automation.
