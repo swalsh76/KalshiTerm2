@@ -863,7 +863,7 @@ Each phase ends with passing tests and CI green.
 | **3b. LAN features** | zeroconf discovery, client profiles, TOFU cert pinning, `cert rotate`, `kterm server status`, backup/restore — **done** (slices 3b.1-3b.4 in §10.4) |
 | **4. Analytics** | Plugin framework + built-in analyzers + alerts — **done** (slices 4.1-4.5 in §10.5) |
 | **5. Client data side** | Server API client, CLI data views — **done** (slices 5.1-5.5 in §10.6) |
-| **6. Client trading** | Risk layer first, order management, private WS channels; **demo-only until sign-off**; test proving trading works with server offline (slices 6.1-6.8 in §10.7, awaiting approval) |
+| **6. Client trading** | Risk layer first, order management, private WS channels; verified on the live account under tiny limits (decided 2026-10-13); test proving trading works with server offline (slices 6.1-6.8 in §10.7) |
 | **7. Terminal UI** | Bloomberg-style UI per §7 decision (local backend, panels, grids, charts, command bar, order entry) |
 | **8. Packaging** | Frontend build bundled into client wheel, install docs, tagged v0.1.0 |
 
@@ -1386,8 +1386,7 @@ parking lot: CSV export, a local cache / offline mode, persisted stream cursors,
 **What exists:** the typed data client (Phase 5), `kalshi-core` with signed REST, public WebSocket
 channels and a read-only transport guard (`ReadOnlyViolation`), a read token bucket only, and a key
 loader that accepts only unencrypted Ed25519 PEM. **No write code exists.** Trading goes client ->
-Kalshi directly, works with the server offline, defaults to demo, and production stays read-only
-until the user signs off (CLAUDE.md non-negotiables).
+Kalshi directly, works with the server offline, defaults to demo in code, and production writes need explicit opt-in (decision 6).
 
 **Facts from Kalshi's docs (2026-10-13; slice 6.1 re-verifies each against the demo before it is
 relied on).** Create Order V2 takes `ticker`, `side` (`bid` / `ask`, not yes / no), `count` and
@@ -1418,10 +1417,14 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
    separate **write token bucket** (default 100 tokens/s x 0.9 margin, costs per endpoint) is
    added. Writes are never retried blindly: a lost answer is resolved by looking up the
    `client_order_id`, which is always set (UUID) so a retry cannot double-order.
-6. **Environment gating**: demo is the default. Production writes need `KALSHI_ENV=production`
-   **and** `trading.production_enabled = true` in `risk.toml` **and** a per-order typed
-   confirmation (ticker + side + count + price). Until you sign off, the second flag is refused by
-   the code itself (a constant removed in the last slice), not just defaulted off.
+6. **Environment gating (revised 2026-10-13: live account, no demo).** Decided by you: every
+   step is verified on the **live** account (about $10), not the demo. Code and config still
+   default to demo, and production writes stay explicit opt-in: `KALSHI_ENV=production` **and**
+   `trading.production_enabled = true` in `risk.toml` (which you set; there is no code constant
+   refusing it) **and** a per-order typed confirmation (ticker + side + count + price). Because the
+   account is small and real, the shipped `risk.toml` defaults are tiny (order notional <= $1, open
+   exposure <= $3, daily loss <= $2, open orders <= 3) and the live checks never loosen them. Each
+   live write check is run by me only after I show you the exact order and you say go.
 7. **Trading key**: a separate key from the data key, never on the server, stored outside the repo
    (`~/.kalshiterm/kalshi_trading_key.pem`, mode 600, checked on load). The unencrypted-PEM-only
    loader stays: encrypted-key + keyring-passphrase support (PLAN §6.2) is deferred to the
@@ -1438,8 +1441,17 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
     the browser UI is Phase 7. Order commands print the risk verdict before sending.
 12. **Testing**: scripted fake Kalshi (REST + private WS) for logic and the offline test; a
     **server-offline test** (no server process, profile unreachable) places, amends and cancels
-    on the fake; live demo checks are opt-in (`KALSHI_INTEGRATION=1`, demo only, demo key).
-    Production live checks remain read-only until sign-off.
+    on the fake; live checks are opt-in (`KALSHI_INTEGRATION=1`), use the trading key, and are
+    never run in CI. They cost real (cent-level) money and are approved order by order.
+13. **Multi-shard (decided 2026-10-13).** Orders may go to any shard. Measured: of 8,000 open
+    non-combo markets, 6,551 are on shard 0, 1,115 on shard 3 (tennis / baseball / basketball) and
+    334 on shard 2 (crypto & commodities); shard 3 carried about as much 24 h volume as shard 0
+    (694k vs 761k), so single-shard would have excluded half the activity. Every market has
+    `exchange_index`; combos are shard 1. The risk layer therefore tracks balance, exposure and
+    open orders **per shard**, with the daily-loss limit and kill switch **account-wide**; an order
+    is refused if its shard's balance cannot cover it (no automatic transfers between shards; a
+    transfer would be a new write endpoint and is parked). Tests run the fake exchange with all
+    four shards, including one where a shard has `trading_active` false.
 
 | # | Slice |
 |---|---|
@@ -1449,8 +1461,8 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
 | 6.4 | Write transport: `TradingCapability`, write token bucket, create / cancel / batch cancel / amend / decrease with idempotent `client_order_id` recovery; the guard test is rewritten to prove writes need the capability and production is refused |
 | 6.5 | Private WebSocket channels and `AccountTracker` (fill, user_orders, market_positions; reconnect, reconcile, exactly-once) and the order service tying risk, snapshot and transport together |
 | 6.6 | CLI: `buy`, `sell`, `cancel`, `amend`, `orders`, `positions`, `balance`, `fills`, `kill`, `--dry-run`, risk verdict output, production confirmation prompt |
-| 6.7 | Demo end to end: opt-in live demo test (place, rest, amend, fill or cancel, kill switch) and the **server-offline trading test**; Phase 6 as-built notes |
-| 6.8 | **Production sign-off gate (needs your explicit go-ahead)**: remove the production refusal constant, a production read-only dress rehearsal, then (only if you decide) a first minimal real order under the smallest limits |
+| 6.7 | Live end to end on the real account under the tiny limits: place far-from-market resting orders, amend, cancel, kill switch (no fills needed), then one deliberate minimal fill to check fills / positions / fees; the **server-offline trading test**; Phase 6 as-built notes. Needs the production trading key (see below) |
+| 6.8 | Close-out: review of what the live checks showed, risk defaults revisited with you, docs. (Replaces the earlier separate sign-off slice; the sign-off is per order, in 6.7) |
 
 **6.1 as built (measured 2026-10-13 with the read-only production dev key, GET only through the
 guarded client; no code added to the repo, probe scripts were throwaway).** Account: balance
@@ -1480,15 +1492,14 @@ settlements present. Shapes:
 - Money mixes int cents and 4 / 6-decimal strings across endpoints; the models parse every one into
   fixed-point (`*_e6`) without rounding, per the one-representation rule.
 
-**Open questions for you (6.7 cannot run without the first; the rest have defaults).**
-1. **Demo credentials**: `.env` holds only the production read-only key; the demo environment needs
-   its own demo account and API key (created at demo.kalshi.co, a separate login). Without it 6.7's live demo
-   test and any write-path verification are impossible; 6.2-6.6 are unaffected (fake Kalshi).
-   Hardware or credentials are never a blocker for the rest.
-2. **Shards**: default is trade on exchange 0 ("Default") only in 6.x and refuse markets on other
-   shards with a clear message; multi-shard is parked. Say if you want more.
+**Decided after 6.1 (2026-10-13).** (1) Live account, not demo, for every verification step
+(decision 6). **You will need to create a production API key with trade scope** (Kalshi account
+settings, API keys; save the private key to `~/.kalshiterm/kalshi_trading_key.pem`, mode 600, and
+put only the Key ID in `.env` as `KALSHI_TRADING_KEY_ID`); I will tell you when, which is the start
+of 6.7 (6.2-6.6 run on the fake exchange and need nothing). It must be a separate key from the
+read-only data key. (2) Multi-shard (decision 13).
 
-Slices 6.1-6.7 touch demo only. Parked, not planned: order groups, subaccounts, RFQ / communications
+Slices 6.1-6.6 send no real order. Parked, not planned: order groups, subaccounts, RFQ / communications
 channel, encrypted trading keys, trading from the browser (Phase 7), strategies or automation.
 
 ## 11. Risks & Notes
