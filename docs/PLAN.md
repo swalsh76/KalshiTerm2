@@ -1485,7 +1485,7 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
 | 6.3 — done | Account read side: `kalshi-core` portfolio models + GET methods (balance, positions, orders, fills, settlements, queue positions), trading key loading and permission check; production stays read-only |
 | 6.4 — done | Write transport: `KalshiTradingClient` (separate, route-allowlisted), write token bucket, create / cancel / batch cancel / amend / decrease with idempotent `client_order_id` recovery, and the shard transfer call with `client_transfer_id` recovery (decision 14); the guard test is rewritten to prove writes need the capability and production is refused |
 | 6.5 — done | Private WebSocket channels and `AccountTracker` (fill, user_orders, market_positions; reconnect, reconcile, exactly-once) and the order service tying risk, snapshot and transport together |
-| 6.6 | CLI: `buy`, `sell` (both fund the shard automatically; no manual transfer command), `cancel`, `amend`, `orders`, `positions`, `balance`, `fills`, `kill`, `--dry-run`, risk verdict output, production confirmation prompt |
+| 6.6 — done | CLI: `buy`, `sell` (both fund the shard automatically; no manual transfer command), `cancel`, `amend`, `orders`, `positions`, `balance`, `fills`, `kill`, `--dry-run`, risk verdict output, production confirmation prompt |
 | 6.7 | Live end to end on the real account under the tiny limits: place far-from-market resting orders, amend, cancel, kill switch (no fills needed), then one deliberate minimal fill to check fills / positions / fees; the **server-offline trading test**; Phase 6 as-built notes. Needs the production trading key (see below) |
 | 6.8 | Close-out: review of what the live checks showed, risk defaults revisited with you, docs. (Replaces the earlier separate sign-off slice; the sign-off is per order, in 6.7) |
 
@@ -1651,6 +1651,45 @@ tested; another was redundant code, now removed).
 time this client runs that day, so a loss realized earlier the same UTC day, before the first run, is
 not counted; exposure from a position message is the position's cost basis until the next REST read;
 the balance is assumed to be net of resting-order collateral (checked in 6.7).
+
+**6.6 as built.** `kterm buy | sell | amend | cancel | kill | resume | balance | positions | orders |
+fills` (`trade_cli.py`, rendering in `trade_views.py`, wiring in `trade_runtime.py`). Trading talks to
+Kalshi directly and needs no profile or server. Three runtime shapes: `read` (REST only; signs with the
+data key if configured, else the trading key), `exit` (REST + trading client, tracker built but **not
+started**, used by `cancel` and `kill` so getting out never waits for a WebSocket or a full account
+read) and `trade` (tracker started and fully read before the command runs).
+- `buy / sell TICKER COUNT PRICE [--side yes|no] [--ioc] [--post-only] [--dry-run] [--yes] [--json]`:
+  prints the verdict first (what would be bought, worst-case cost with fee, any shard transfer, every
+  refusal); refusal exits 1; `--dry-run` stops there. **Demo:** `y/N` (`--yes` skips). **Production:**
+  the order must be typed out (`TICKER buy|sell yes|no COUNT PRICE`, numbers compared as numbers);
+  `--yes` does not skip it and an absent input means nothing is sent.
+- `amend ORDER_ID [--price] [--count]`: `OrderService.prepare_amend` checks the replacement as a new
+  order with the old one left out of the snapshot (`AccountTracker.snapshot(exclude_order=)`), funds
+  the shard if needed, then `execute_amend`. `--count` is the new **total** (what Kalshi's amend takes);
+  the risk check uses what would still be unfilled. Whether Kalshi's count includes already-filled
+  contracts is unverified (a fresh resting order has no fills, so 6.7 is unambiguous). The check counts
+  the replacement's full cost against the balance, conservative if Kalshi already nets the old order.
+- `cancel ORDER_ID...` uses Kalshi's own record of each order (shard and market), reports each id, exits
+  1 if any could not be cancelled, works while halted. `kill` saves the halt, cancels everything and
+  looks until two empty looks; exit 1 and the ids if anything is left. `resume` clears the halt after
+  `y/N`. `balance` shows each shard and a `TRADING HALTED` line when halted.
+- Exit status: 0 done; 1 refused or failed; 2 a usage mistake or, with an `UNKNOWN:` message, a write
+  whose outcome is unknown (the message names the id to look for in `kterm orders --status all` /
+  `kterm fills`). Every Kalshi / network / key problem is one clear line, never a traceback.
+- Tables never cut an order id or a ticker (found by looking at the real account: ids were shown
+  truncated, useless for `cancel`): columns have minimum widths and a piped console is widened to the
+  table. `--json` on every command; the environment banner goes to stderr so stdout is clean.
+Verified live on the real account, read-only: `balance` ($10.349 on shard 0), `positions --all` (5 flat
+settled markets), `orders --status all` and `fills` (the 18 historical orders, full ids), and
+`buy ... --dry-run` without a trading key gave the one-line "KALSHI_TRADING_KEY_ID is not set". A
+throwaway script (data key standing in as the signer, a write-trap in place of the trading client)
+prepared real orders without sending anything: a shard-0 market resolved to fee multiplier 1.0, status
+active, worst-case cost $0.3200 for 1 contract at 0.30; a shard-3 market showed "first moves $0.0200
+from shard 0 to shard 3"; zero write calls were attempted.
+Tests: 30 CLI tests (every command against the scripted fakes, including the production typed
+confirmation with eight wrong phrasings, exit codes, JSON, the wide-table cases), 7 more for amend and
+cancel-by-id in `test_orders.py`; about 17 sabotages of the CLI and views each caught (one survivor, the
+NO-side fill price, and the narrow-terminal width, now tested).
 
 **Decided after 6.1 (2026-10-13).** (1) Live account, not demo, for every verification step
 (decision 6). **You will need to create a production API key with trade scope** (Kalshi account
