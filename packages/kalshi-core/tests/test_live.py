@@ -298,7 +298,7 @@ async def test_account_reads_parse_and_cover_every_field(
     for order in orders[:3]:
         print(
             f"  {order.ticker} {order.action} {order.outcome_side} {order.fill_count_fp}/"
-            f"{order.initial_count_fp} @ {order.price_dollars} {order.status}"
+            f"{order.initial_count_fp} @ yes {order.yes_price_dollars} {order.status}"
         )
 
     # the integer cents are the dollars truncated ($10.3490 is 1034 cents): use the dollars

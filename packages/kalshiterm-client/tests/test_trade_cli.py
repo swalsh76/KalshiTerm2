@@ -439,7 +439,7 @@ def test_orders_show_resting_by_default_newest_first_and_can_be_limited(
     install(monkeypatch, tmp_path, rest=rest)
     out = run("orders").output
     assert out.index("o-new") < out.index("o-old") and "o-done" not in out
-    assert "SELL NO" in out and "0.70" in out  # the NO side's own price, not the YES-book price
+    assert "ASK" in out and "0.30" in out and "0.70" in out  # the YES and the NO price
     assert "o-done" in run("orders", "--status", "all").output
     assert "o-old" not in run("orders", "--limit", "1").output
     assert run("orders", "--status", "bogus").exit_code == 1
@@ -456,10 +456,10 @@ def test_fills_are_newest_first(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     result = run("fills", "--json")
     assert [f["fill_id"] for f in json.loads(result.stdout)] == ["t-2", "t-3", "t-1"]
     table = run("fills", "--limit", "2").output
-    assert "SELL NO" in table and "maker" in table and "taker" in table
-    assert (
-        "0.60" in table and "0.40" in table
-    )  # a NO fill shows the NO price, a YES fill the YES price
+    assert "ASK" in table and "maker" in table and "taker" in table
+    assert "0.60" in table and "0.40" in table  # both prices are shown, YES and NO
+    # Kalshi labelled a sale of YES at 1c "sell, no, 0.99" (seen live): that label is never shown
+    assert "SELL NO" not in table
 
 
 def test_nothing_in_the_tables_is_ever_cut_so_ids_can_be_copied_into_cancel(
@@ -477,8 +477,8 @@ def test_nothing_in_the_tables_is_ever_cut_so_ids_can_be_copied_into_cancel(
         assert "\u2026" not in out, (args, out)  # no ellipsis anywhere
         assert long_ticker in out
     orders_out = run("orders").output
-    assert long_id in orders_out and "SELL NO" in orders_out and "resting" in orders_out
-    assert "PRICE ($)" in orders_out and "CREATED (UTC)" in orders_out
+    assert long_id in orders_out and "ASK" in orders_out and "resting" in orders_out
+    assert "YES ($)" in orders_out and "CREATED (UTC)" in orders_out
 
 
 def test_on_a_narrow_terminal_the_order_id_is_still_whole() -> None:
@@ -534,3 +534,47 @@ def test_who_may_act_on_production(mode: str, enabled: bool, allowed: bool) -> N
     from kalshiterm_client.trade_runtime import production_allowed
 
     assert production_allowed(mode, RiskPolicy(production_enabled=enabled)) is allowed  # type: ignore[arg-type]
+
+
+def test_trading_works_with_the_kalshiterm_server_unreachable_and_never_touches_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Phase 6 deliverable: every trading command runs with the server gone. The server client,
+    the profile store and the network blow up if anything so much as reaches for them."""
+    import socket
+
+    from kalshiterm_client.client import ServerClient
+    from kalshiterm_client.profiles import ProfileStore
+
+    rest = FakeRest()
+    rest.balance_value = balance("10.3490", "0.0000", "0.0000", "0.0000")
+    rest.orders = [order("o-1", "KXA-1"), order("o-2", "KXA-1")]
+    rest.fills = [fill("t-1", 100)]
+    rest.positions = [position("KXA-1", "2.00", "0.80")]
+    h = install(monkeypatch, tmp_path, rest=rest)
+
+    def touched(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("trading reached for the KalshiTerm server")
+
+    monkeypatch.setattr(ServerClient, "for_profile", classmethod(touched))
+    monkeypatch.setattr(ProfileStore, "resolve", touched)
+    monkeypatch.setattr(ProfileStore, "__init__", touched)
+    monkeypatch.setattr(socket.socket, "connect", touched)
+
+    commands = [
+        ("balance",),
+        ("positions",),
+        ("orders",),
+        ("fills",),
+        ("buy", "KXA-1", "1", "0.30", "--dry-run"),
+        ("buy", "KXA-1", "1", "0.30", "--yes"),
+        ("sell", "KXA-1", "1", "0.30", "--yes"),
+        ("amend", "o-1", "--price", "0.35", "--yes"),
+        ("cancel", "o-1"),
+        ("kill",),
+        ("resume", "--yes"),
+    ]
+    for args in commands:
+        result = run(*args)
+        assert result.exit_code == 0, (args, result.output)
+    assert {"create", "amend", "cancel", "cancel_all"} <= set(h.trading.names())

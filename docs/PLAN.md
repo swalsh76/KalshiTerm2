@@ -1470,9 +1470,10 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
        the risk layer, the write bucket, the audit log, and is refused when the order itself would
        be. A transfer cap per order and per day (`risk.toml`) bounds a bug.
     d. Failure handling: Kalshi documents cross-index transfers as non-atomic ("up to three
-       steps; completed steps are not undone"), so after any transfer error the service re-reads
-       balances and reconciles by `client_transfer_id` before doing anything else, and never
-       retries blindly. If the order then fails, funds simply stay on that shard; the next order
+       steps; completed steps are not undone") and, **measured live in 6.7, does not deduplicate on
+       `client_transfer_id`** (the identical request sent twice moved the money twice), so a
+       transfer is sent at most once; after an unclear answer it stays recorded as pending and the
+       balance is read before anything else. Never retried blindly. If the order then fails, funds simply stay on that shard; the next order
        pulls them wherever needed. No sweep-back is built (the web app does none either).
     e. Dry-run prints the plan and makes no request. The kill switch never needs funding.
     f. Slice 6.7 checks on the live account that an unfunded shard rejects an order (how the
@@ -1486,7 +1487,7 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
 | 6.4 — done | Write transport: `KalshiTradingClient` (separate, route-allowlisted), write token bucket, create / cancel / batch cancel / amend / decrease with idempotent `client_order_id` recovery, and the shard transfer call with `client_transfer_id` recovery (decision 14); the guard test is rewritten to prove writes need the capability and production is refused |
 | 6.5 — done | Private WebSocket channels and `AccountTracker` (fill, user_orders, market_positions; reconnect, reconcile, exactly-once) and the order service tying risk, snapshot and transport together |
 | 6.6 — done | CLI: `buy`, `sell` (both fund the shard automatically; no manual transfer command), `cancel`, `amend`, `orders`, `positions`, `balance`, `fills`, `kill`, `--dry-run`, risk verdict output, production confirmation prompt |
-| 6.7 | Live end to end on the real account under the tiny limits: place far-from-market resting orders, amend, cancel, kill switch (no fills needed), then one deliberate minimal fill to check fills / positions / fees; the **server-offline trading test**; Phase 6 as-built notes. Needs the production trading key (see below) |
+| 6.7 — done | Live end to end on the real account under the tiny limits: place far-from-market resting orders, amend, cancel, kill switch (no fills needed), then one deliberate minimal fill to check fills / positions / fees; the **server-offline trading test**; Phase 6 as-built notes. Needs the production trading key (see below) |
 | 6.8 | Close-out: review of what the live checks showed, risk defaults revisited with you, docs. (Replaces the earlier separate sign-off slice; the sign-off is per order, in 6.7) |
 
 **6.1 as built (measured 2026-10-13 with the read-only production dev key, GET only through the
@@ -1650,7 +1651,7 @@ tested; another was redundant code, now removed).
 **Known limits (accepted, written down):** "today" is the UTC day and the baseline is taken the first
 time this client runs that day, so a loss realized earlier the same UTC day, before the first run, is
 not counted; exposure from a position message is the position's cost basis until the next REST read;
-the balance is assumed to be net of resting-order collateral (checked in 6.7).
+the balance was assumed net of resting-order collateral: **wrong, corrected in 6.7** (it is gross cash).
 
 **6.6 as built.** `kterm buy | sell | amend | cancel | kill | resume | balance | positions | orders |
 fills` (`trade_cli.py`, rendering in `trade_views.py`, wiring in `trade_runtime.py`). Trading talks to
@@ -1705,6 +1706,47 @@ displayed): a read signed with it returned the $10.3490 balance, and `kterm buy 
 shard-0 and a shard-3 market printed the real worst-case cost and the refusal "production_enabled =
 false"; a deliberately oversized order listed six refusals (size, notional, position, exposure, shard
 funds). The tracker wrote `trading_state.json` (day and realized-P&L baseline) in the config directory.
+
+**6.7 as built: live verification on the real account (2026-10-13).** Set-up: a separate Ed25519
+trading key (private half generated locally into `~/.kalshiterm/kalshi_trading_key.pem`, mode 600,
+never displayed; public half pasted into Kalshi; full read / write scope chosen by the user; Key ID
+only in the gitignored `.env`), and the approved `risk.toml` (the shipped tiny limits written out,
+`production_enabled = true`). Every order was one contract at cent scale, shown before it was sent.
+Net cost of the whole run: **$0.0121** (the one-cent spread of the deliberate fill round trip plus
+$0.0021 in fees); the balance ended at $10.3369, all on shard 0.
+| # | Test | Result |
+|---|---|---|
+| 1 | order mapping | A YES bid and a "buy NO" were both read back and checked against Kalshi's **orderbook**: a bid at 0.01 sits as a YES bid; a buy of NO at 0.01 (sent as `ask` at 0.99) sits as a NO bid at 0.01. The V2 `bid` / `ask` is the YES book, as `to_v2` assumed. |
+| 2 | amend, cancel | price 1c -> 2c and count 1 -> 2 amended (remaining 2.00); cancel by id works. |
+| 3 | kill switch, resume | halt saved, cancel-all, two empty follow-up looks, new orders refused with the halt reason, `balance` banner, `resume` clears it. |
+| 4 | shard transfer, unfunded shard | An order on an unfunded shard is rejected: **HTTP 404 `insufficient_shard_balance` ("Exchange user not found")**; the CLI funds the shard ($0.02 moved 0 -> 3) and then places the order, which rests on shard 3. |
+| 5 | one deliberate fill | BUY 1 YES at 0.02 IOC filled at $0.02, fee $0.0014 (the model said "up to $0.01", conservative); balance fell by exactly $0.0214; position 1 YES, exposure $0.02. SELL 1 YES at 0.01 IOC flattened it: realized -$0.01, fees $0.0021 in total. |
+| 6 | server offline | with no KalshiTerm server running and a config whose only profile points at an unreachable server, `balance`, a real order and its cancel all worked. Also an automated test that makes the server client, the profile store and `socket.connect` raise if trading touches them. |
+Findings, each fixed and tested (the live run found five real defects):
+1. **Kalshi's `action` / `outcome_side` labels cannot be trusted** (a buy of NO is held as "sell, no,
+   ask, yes 0.99"; a sale of YES at 1c appears in the fills as "sell, no, 0.99"). Risk, amend and the
+   displays now use only the YES book: `book_side` (bid / ask) and the YES price. The defect it
+   exposed: `kterm amend` on a buy of NO would have rebuilt it from the labels and sent a **bid at
+   0.99** (crossing the book). Fixed; `orders` and `fills` show `BID` / `ASK` with the YES and NO
+   prices; `amend --price` takes the YES price. `Order.price_dollars` (same wrong assumption) removed.
+2. **The balance is gross cash**: a resting order does not reduce it (measured). The tracker now
+   subtracts the collateral resting orders may need, per shard, to get what is free. (This corrects
+   the 6.5 assumption "the balance is net of resting collateral".)
+3. **Kalshi does not deduplicate transfers on `client_transfer_id`** (identical request twice = two
+   transfers). Transfers are sent at most once; unclear -> `WriteOutcomeUnknown`, recorded pending.
+   Decision 14d revised. Not so for orders: a repeated `client_order_id` gets **HTTP 409** and
+   the client's lookup returns the original order (`recovered=True`), exactly one order exists.
+4. **Eventual consistency**: the balance read right after a transfer, and the single-order read right
+   after a cancel, lag the list endpoints by a second or two. The order service now waits up to ~10 s
+   for a transfer to show in the balance (and refuses at once for any other reason) instead of
+   failing "the shard does not hold what the order needs" with the money already moved.
+5. **Dry runs** could not start in production until it was enabled (found when the real key was first
+   used); fixed earlier as 6.6b (`preview` runtime that cannot send).
+Also measured: after an amend `initial_count_fp` is left unchanged (a total of filled + remaining is
+used); whether the amend `count` includes already-filled contracts could not be tested without a
+partial fill, so **amend refuses to change the count of a partly filled order** (price only, or
+cancel and re-place). Real fees match the model: $0.0014 at 0.02 and $0.0007 at 0.01 (Kalshi aligns
+to $0.0001); the check's cent-rounded worst case is deliberately above them.
 
 **Decided after 6.1 (2026-10-13).** (1) Live account, not demo, for every verification step
 (decision 6). **You will need to create a production API key with trade scope** (Kalshi account

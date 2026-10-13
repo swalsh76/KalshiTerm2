@@ -92,14 +92,18 @@ def _own_side(outcome_side: str, book_side: str) -> str:
 
 
 def orders_table(orders: Sequence[Order], title: str | None = None) -> RenderableType:
+    """Orders as Kalshi's YES book holds them: a BID buys YES, an ASK sells YES (which is the same
+    as buying NO at 1 - price), so both prices are shown. Kalshi's own action / outcome labels on
+    an order are not dependable (a buy of NO is labelled "sell, no, ask"), so they are not used."""
     if not orders:
         return Text("no orders")
     rows = [
         (
             Text(o.order_id),
             Text(o.ticker),
-            _own_side(o.outcome_side, o.book_side),
-            money(o.price_dollars),
+            o.book_side.upper() or DASH,
+            money(o.yes_price_dollars),
+            money(o.no_price_dollars),
             num(o.fill_count_fp),
             num(o.remaining_count_fp),
             Text(o.status),
@@ -111,8 +115,9 @@ def orders_table(orders: Sequence[Order], title: str | None = None) -> Renderabl
         [
             ("ORDER", "left"),
             ("TICKER", "left"),
-            ("SIDE", "left"),
-            ("PRICE ($)", "right"),
+            ("BOOK", "left"),
+            ("YES ($)", "right"),
+            ("NO ($)", "right"),
             ("FILLED", "right"),
             ("LEFT", "right"),
             ("STATUS", "left"),
@@ -123,30 +128,39 @@ def orders_table(orders: Sequence[Order], title: str | None = None) -> Renderabl
     )
 
 
+ORDERS_NOTE = (
+    "BID = buy YES (or sell NO); ASK = sell YES (or buy NO at the NO price shown). "
+    "`kterm amend --price` takes the YES price."
+)
+
+
 def fills_table(fills: Sequence[Fill]) -> RenderableType:
+    """Fills on the YES book, like ``orders_table``: Kalshi's action / outcome labels on a fill
+    are not dependable (a sale of YES at 1c is labelled "sell, no, 0.99"), the book side and the
+    two prices are."""
     if not fills:
         return Text("no fills")
-    rows = []
-    for f in fills:
-        price = f.yes_price_dollars if f.outcome_side == "yes" else f.no_price_dollars
-        rows.append(
-            (
-                stamp(f.created_time, seconds=True),
-                Text(f.ticker),
-                _own_side(f.outcome_side, f.book_side),
-                num(f.count_fp),
-                money(price),
-                money(f.fee_cost),
-                "taker" if f.is_taker else "maker",
-            )
+    rows = [
+        (
+            stamp(f.created_time, seconds=True),
+            Text(f.ticker),
+            f.book_side.upper() or DASH,
+            num(f.count_fp),
+            money(f.yes_price_dollars),
+            money(f.no_price_dollars),
+            money(f.fee_cost),
+            "taker" if f.is_taker else "maker",
         )
+        for f in fills
+    ]
     return fitted_table(
         [
             ("TIME (UTC)", "left"),
             ("TICKER", "left"),
-            ("SIDE", "left"),
+            ("BOOK", "left"),
             ("COUNT", "right"),
-            ("PRICE ($)", "right"),
+            ("YES ($)", "right"),
+            ("NO ($)", "right"),
             ("FEE ($)", "right"),
             ("ROLE", "left"),
         ],
