@@ -123,6 +123,7 @@ def test_selling_what_you_hold_locks_nothing_and_selling_short_locks_the_other_s
         (dict(snapshot=snap(exposure_e6=2_900_000)), Code.EXPOSURE_LIMIT),
         (dict(snapshot=snap(realized_pnl_today_e6=-2_000_000)), Code.DAILY_LOSS),
         (dict(snapshot=snap(stream_ok=False)), Code.STREAM_DOWN),
+        (dict(snapshot=snap(halted=True)), Code.HALTED),
         (dict(snapshot=snap(as_of=NOW - timedelta(seconds=11))), Code.STALE_SNAPSHOT),
         (dict(snapshot=snap(as_of=NOW + timedelta(minutes=1))), Code.STALE_SNAPSHOT),
         (dict(intent=order(exchange_index=9)), Code.UNKNOWN_SHARD),

@@ -61,6 +61,8 @@ class Code(StrEnum):
     DAILY_LOSS = "daily_loss"
     INSUFFICIENT_FUNDS = "insufficient_funds"
     TRANSFER_LIMIT = "transfer_limit"
+    HALTED = "halted"
+    MARKET_NOT_TRADABLE = "market_not_tradable"
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,7 @@ class AccountSnapshot:
     realized_pnl_today_e6: int
     transferred_today_e6: int
     stream_ok: bool
+    halted: bool = False  # the kill switch fired; nothing new is allowed until it is cleared
 
 
 @dataclass(frozen=True)
@@ -277,6 +280,11 @@ def check(
     if snapshot is None:
         refuse(Code.NO_SNAPSHOT, "no account snapshot yet, so limits cannot be checked")
         return _refused(refusals, fee)
+
+    if snapshot.halted:
+        refuse(
+            Code.HALTED, "trading is halted by the kill switch; no new orders until it is cleared"
+        )
 
     age = now - snapshot.as_of
     if age > timedelta(seconds=policy.snapshot_max_age_seconds) or age < -FUTURE_TOLERANCE:

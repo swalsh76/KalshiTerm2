@@ -1484,7 +1484,7 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
 | 6.2 — done | Risk layer: `RiskPolicy` (per-shard balances, funding plan, transfer caps), `risk.toml` loading and validation, `check` as a pure function, `ApprovedOrder`, fail-closed rules, worst-case fee/notional math; exhaustive tests including property tests (no order that exceeds a limit is ever approved) |
 | 6.3 — done | Account read side: `kalshi-core` portfolio models + GET methods (balance, positions, orders, fills, settlements, queue positions), trading key loading and permission check; production stays read-only |
 | 6.4 — done | Write transport: `KalshiTradingClient` (separate, route-allowlisted), write token bucket, create / cancel / batch cancel / amend / decrease with idempotent `client_order_id` recovery, and the shard transfer call with `client_transfer_id` recovery (decision 14); the guard test is rewritten to prove writes need the capability and production is refused |
-| 6.5 | Private WebSocket channels and `AccountTracker` (fill, user_orders, market_positions; reconnect, reconcile, exactly-once) and the order service tying risk, snapshot and transport together |
+| 6.5 — done | Private WebSocket channels and `AccountTracker` (fill, user_orders, market_positions; reconnect, reconcile, exactly-once) and the order service tying risk, snapshot and transport together |
 | 6.6 | CLI: `buy`, `sell` (both fund the shard automatically; no manual transfer command), `cancel`, `amend`, `orders`, `positions`, `balance`, `fills`, `kill`, `--dry-run`, risk verdict output, production confirmation prompt |
 | 6.7 | Live end to end on the real account under the tiny limits: place far-from-market resting orders, amend, cancel, kill switch (no fills needed), then one deliberate minimal fill to check fills / positions / fees; the **server-offline trading test**; Phase 6 as-built notes. Needs the production trading key (see below) |
 | 6.8 | Close-out: review of what the live checks showed, risk defaults revisited with you, docs. (Replaces the earlier separate sign-off slice; the sign-off is per order, in 6.7) |
@@ -1608,6 +1608,49 @@ costs against a fake clock) and twelve sabotages of `trading.py`, each caught (r
 the route guard, the trading-signer check, the production check, centicent conversion, batch
 cost, the lookback window, 429 retry, the already-gone rule, retry an amend, the 409 lookup, the
 lookup loop).
+
+**6.5 as built.** *Core:* WebSocket models `FillMsg` (`fill`), `UserOrderMsg` (`user_order`),
+`MarketPositionMsg` (`market_position`); `KalshiRestClient.market / event / series`;
+`ExchangeIndexStatus.intra_exchange_transfers_active` (absent means "not allowed"). *Client:*
+- `trading_state.py` (`trading_state.json` in the config directory, mode 600, atomic writes): the
+  day's (UTC) realized-P&L baseline, the day's transferred total, the halt, unresolved
+  `client_order_id`s and pending transfers. A transfer is counted **before** the request is sent, so a
+  crash cannot hide it; a damaged file is an error, never a reset (a reset would erase the halt).
+- `account.py` `AccountTracker`: the private channels have **no snapshot and no sequence numbers**
+  (Kalshi docs), so it re-reads balance, shard status, positions (`settlement_status=all`) and
+  resting orders over REST after subscribing and after **every** reconnect, and reports the stream as
+  not OK until that finishes; messages are idempotent (orders replace and older ones are ignored,
+  fills deduplicated by `trade_id`, positions replace). There is **no balance channel**: the balance
+  is polled every 5 s and at once after a fill, and the snapshot's age is the age of the last good
+  balance, so a failing poll makes the risk layer refuse. Which way a resting order pushes a position
+  is `(book_side == bid) == (outcome_side == yes)`, true both for Kalshi's reported legacy orders and a
+  YES-book-only order. `AccountSnapshot` gained `halted`; `risk` gained `HALTED` and
+  `MARKET_NOT_TRADABLE`.
+- `orders.py` `OrderService`: `prepare` (read-only: market shard, status and fee straight from Kalshi
+  via market -> event -> series, balance refresh, risk check, and the wire body is built so a price
+  Kalshi cannot take fails **before** any money moves), `execute` (fresh re-check; `PlanChanged` if the
+  cost or funding differs from what was shown; shard transfers one by one, each recorded first, a
+  refused one taken back out of the day's total, an unclear one left pending; the balance re-read and
+  the risk check repeated; only then the order with the `ApprovedOrder`), `describe` (the confirmation
+  text, funding included), `cancel`, `kill` and a daily-loss guard (`guard_once`, `start_guard`).
+  `to_v2` expresses everything on the YES book (buy YES = bid, buy NO at q = ask at 1 - q), the
+  documented reading, **proved in 6.7**. `kill` saves the halt first, calls cancel-all, then lists
+  resting orders and batch-cancels until **two** consecutive looks (a second apart) are empty, at most
+  10 looks; it reports what remained and any error honestly. The guard (and any order attempt over the
+  limit) fires it when today's realized loss reaches the limit.
+Verified live, read-only (production data key, 2026-10-13): all three private channels subscribed
+(the read-only key may), the tracker synced against the real account (4 shards with their trading /
+transfer flags, balance $10.3490 on shard 0, 5 settled positions), and its realized-P&L baseline $0.69
+equals the raw sum of the positions endpoint exactly. A crude "settlement-derived P&L" cross-check
+disagreed and was discarded: its formula was wrong (cost fields cover both sides), not the tracker.
+Tests: 16 for the state file, 18 for the tracker, 33 for the service, on shared scripted fakes
+(`tests/trading_fakes.py`); nineteen sabotages of `orders.py` / `account.py` / `trading_state.py` /
+`risk.py` were run and each is caught (one survivor revealed an untested "two empty looks" rule, now
+tested; another was redundant code, now removed).
+**Known limits (accepted, written down):** "today" is the UTC day and the baseline is taken the first
+time this client runs that day, so a loss realized earlier the same UTC day, before the first run, is
+not counted; exposure from a position message is the position's cost basis until the next REST read;
+the balance is assumed to be net of resting-order collateral (checked in 6.7).
 
 **Decided after 6.1 (2026-10-13).** (1) Live account, not demo, for every verification step
 (decision 6). **You will need to create a production API key with trade scope** (Kalshi account

@@ -20,6 +20,8 @@ class ExchangeIndexStatus(KalshiModel):
     description: str
     exchange_active: bool
     trading_active: bool
+    # Absent means unknown, so treated as not allowed: funding a shard fails closed.
+    intra_exchange_transfers_active: bool = False
 
 
 class ExchangeStatus(KalshiModel):

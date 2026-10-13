@@ -217,6 +217,15 @@ class KalshiRestClient:
         async for event in self._iter_items("/events/multivariate", EventsPage, "events", params):
             yield event
 
+    async def market(self, ticker: str) -> Market:
+        return Market.model_validate((await self._get(f"/markets/{ticker}"))["market"])
+
+    async def event(self, event_ticker: str) -> Event:
+        return Event.model_validate((await self._get(f"/events/{event_ticker}"))["event"])
+
+    async def series(self, series_ticker: str) -> Series:
+        return Series.model_validate((await self._get(f"/series/{series_ticker}"))["series"])
+
     async def series_list(self, **params: Any) -> list[Series]:
         return SeriesList.model_validate(await self._get("/series", params)).series
 

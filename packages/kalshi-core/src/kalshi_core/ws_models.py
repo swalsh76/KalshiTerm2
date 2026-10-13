@@ -84,6 +84,67 @@ class OrderbookDeltaMsg(WsModel):
     client_order_id: str | None = None
 
 
+class FillMsg(WsModel):
+    """Private ``fill`` channel (type ``fill``): one fill of one of your orders."""
+
+    trade_id: str
+    order_id: str
+    client_order_id: str = ""
+    market_ticker: str
+    exchange_index: int = 0
+    is_taker: bool = False
+    side: str = ""
+    outcome_side: str = ""
+    purchased_side: str = ""
+    book_side: str = ""
+    action: str = ""
+    yes_price_dollars: Decimal
+    count_fp: Decimal
+    fee_cost: Decimal = Decimal(0)
+    post_position_fp: Decimal | None = None
+    ts_ms: int | None = None
+    subaccount: int | None = None
+
+
+class UserOrderMsg(WsModel):
+    """Private ``user_orders`` channel (type ``user_order``): the full state of one order."""
+
+    order_id: str
+    client_order_id: str = ""
+    user_id: str = ""
+    ticker: str
+    exchange_index: int = 0
+    status: str  # resting, canceled, executed, unknown
+    side: str = ""
+    outcome_side: str = ""
+    book_side: str = ""
+    yes_price_dollars: Decimal
+    initial_count_fp: Decimal
+    fill_count_fp: Decimal
+    remaining_count_fp: Decimal
+    taker_fill_cost_dollars: Decimal = Decimal(0)
+    maker_fill_cost_dollars: Decimal = Decimal(0)
+    taker_fees_dollars: Decimal = Decimal(0)
+    maker_fees_dollars: Decimal = Decimal(0)
+    created_ts_ms: int | None = None
+    last_updated_ts_ms: int | None = None
+    last_update_reason: str = ""
+
+
+class MarketPositionMsg(WsModel):
+    """Private ``market_positions`` channel (type ``market_position``): a market's new state."""
+
+    market_ticker: str
+    user_id: str = ""
+    position_fp: Decimal  # net YES contracts; negative = long NO
+    position_cost_dollars: Decimal | None = None
+    realized_pnl_dollars: Decimal | None = None
+    fees_paid_dollars: Decimal | None = None
+    position_fee_cost_dollars: Decimal | None = None
+    volume_fp: Decimal | None = None
+    subaccount: int | None = None
+
+
 class WsMessage(WsModel):
     """Envelope for everything the server sends."""
 
@@ -104,6 +165,9 @@ class WsMessage(WsModel):
         | EventLifecycleMsg
         | OrderbookSnapshotMsg
         | OrderbookDeltaMsg
+        | FillMsg
+        | UserOrderMsg
+        | MarketPositionMsg
         | None
     ):
         """Typed payload for known data channels, else ``None`` (use ``msg``)."""
@@ -119,4 +183,10 @@ class WsMessage(WsModel):
             return OrderbookSnapshotMsg.model_validate(self.msg)
         if self.type == "orderbook_delta":
             return OrderbookDeltaMsg.model_validate(self.msg)
+        if self.type == "fill":
+            return FillMsg.model_validate(self.msg)
+        if self.type == "user_order":
+            return UserOrderMsg.model_validate(self.msg)
+        if self.type == "market_position":
+            return MarketPositionMsg.model_validate(self.msg)
         return None
