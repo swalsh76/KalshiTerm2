@@ -87,6 +87,7 @@ class StreamClient:
         channels: Sequence[str],
         markets: Sequence[str] = (),
         watchlist: bool = False,
+        alerts_since: int | None = None,
         verify: ssl.SSLContext | bool = True,
         profile: Profile | None = None,
         idle_timeout: float = 45.0,
@@ -102,6 +103,8 @@ class StreamClient:
         if not channels or unknown:
             raise ValueError(f"channels must be some of {CHANNELS}; got {list(channels)}")
         self._market_channels = [c for c in channels if c in MARKET_CHANNELS]
+        if alerts_since is not None and "alerts" not in channels:
+            raise ValueError("alerts_since needs the 'alerts' channel")
         if self._market_channels and not markets and not watchlist:
             raise ValueError("market channels need markets=[...] or watchlist=True")
         parts = urlsplit(base_url)
@@ -125,7 +128,8 @@ class StreamClient:
         self._closed = False
         self._running = False
         self._cursor: int | None = None  # None: the next subscribe starts fresh
-        self._alert_cursor: int | None = None
+        # Start after this alert id instead of from now (see `GET /v1/alerts` for the backlog).
+        self._alert_cursor: int | None = alerts_since
         self._sent_since = False
         self._sent_alerts_since = False
         self._established = False

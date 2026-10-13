@@ -77,6 +77,7 @@ class FakeServer:
         self.body: Any = {"time": "2026-10-09T12:00:00+00:00", "problems": []}
         # path (no query) -> a body, a (status, body) pair, or a function of the query parameters
         self.routes: dict[str, Any] = {}
+        self.calls: list[tuple[str, str, Any]] = []  # (method, path, json body) of every request
         self._server: _Quiet | None = None
         self._dir = tempfile.TemporaryDirectory()
 
@@ -88,13 +89,19 @@ class FakeServer:
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
-            def do_GET(self) -> None:
-                outer.requests.append((self.path, self.headers.get("Authorization")))
+            def _answer(self, method: str) -> None:
                 import json
                 from urllib.parse import parse_qs, urlsplit
 
+                outer.requests.append((self.path, self.headers.get("Authorization")))
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length)) if length else None
                 parts = urlsplit(self.path)
-                reply = outer.routes.get(parts.path, outer.body)
+                outer.calls.append((method, parts.path, body))
+                # a route may be keyed "METHOD /path" (wins) or just "/path"
+                reply = outer.routes.get(
+                    f"{method} {parts.path}", outer.routes.get(parts.path, outer.body)
+                )
                 status = outer.status
                 if callable(reply):
                     reply = reply({k: v[0] for k, v in parse_qs(parts.query).items()})
@@ -108,6 +115,21 @@ class FakeServer:
                     self.send_header("Retry-After", "42")
                 self.end_headers()
                 self.wfile.write(payload)
+
+            def do_GET(self) -> None:
+                self._answer("GET")
+
+            def do_PUT(self) -> None:
+                self._answer("PUT")
+
+            def do_POST(self) -> None:
+                self._answer("POST")
+
+            def do_PATCH(self) -> None:
+                self._answer("PATCH")
+
+            def do_DELETE(self) -> None:
+                self._answer("DELETE")
 
             def log_message(self, *args: Any) -> None:
                 pass

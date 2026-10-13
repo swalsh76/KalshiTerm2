@@ -20,8 +20,11 @@ from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 
+from kalshiterm_client.book import Book
 from kalshiterm_client.models import (
+    Alert,
     AlertMetric,
+    AlertRule,
     AnalyticsValue,
     Bar,
     CandlePage,
@@ -32,7 +35,9 @@ from kalshiterm_client.models import (
     OrderBook,
     Tick,
     Trade,
+    Watchlist,
 )
+from kalshiterm_client.stream_events import AlertEvent, TickerEvent, TradeEvent
 
 DASH = "-"
 
@@ -330,3 +335,150 @@ def metrics_table(metrics: Sequence[AlertMetric]) -> Table:
     for m in metrics:
         table.add_row(Text(m.metric), m.subject, m.unit, ", ".join(m.ops), Text(m.meaning))
     return table
+
+
+# ---------------------------------------------------------------- your watchlist and alerts
+
+OPS = {"gt": ">", "lt": "<", "abs_gt": "|change| >"}
+
+
+def amount(value: Decimal | None, unit: str | None) -> str:
+    """A metric value in its own unit: dollars keep their cents, contracts and seconds do not."""
+    return money(value) if unit == "dollars" else num(value)
+
+
+def condition(op: str, threshold: Decimal, unit: str | None) -> str:
+    return f"{OPS.get(op, op)} {amount(threshold, unit)}"
+
+
+def watchlist_table(watchlist: Watchlist) -> RenderableType:
+    table = _table(
+        ("TICKER", "left"),
+        ("STATUS", "left"),
+        ("ORDERBOOK", "left"),
+        ("ADDED (UTC)", "left"),
+        ("EVENT", "left"),
+    )
+    for m in watchlist.markets:
+        table.add_row(
+            Text(m.ticker),
+            Text(m.status),
+            "capturing" if m.capturing else "waiting",
+            stamp(m.added_at),
+            clip(m.event_title, 50),
+        )
+    return Group(table, Text(f"{len(watchlist.markets)} of {watchlist.limit} places used"))
+
+
+def rules_table(rules: Sequence[AlertRule], limit: int) -> RenderableType:
+    table = _table(
+        ("ID", "right"),
+        ("NAME", "left"),
+        ("ON", "left"),
+        ("METRIC", "left"),
+        ("CONDITION", "left"),
+        ("COOLDOWN", "right"),
+        ("STATE", "left"),
+        ("LAST FIRED (UTC)", "left"),
+    )
+    for r in rules:
+        state = "disabled" if not r.enabled else ("triggered" if r.active else "armed")
+        table.add_row(
+            str(r.id),
+            clip(r.name, 24),
+            Text(r.ticker or r.event_ticker or DASH),
+            Text(r.metric),
+            condition(r.op, r.threshold, r.unit),
+            f"{r.cooldown_seconds}s",
+            state,
+            stamp(r.last_fired_at),
+        )
+    return Group(table, Text(f"{len(rules)} of {limit} rules used"))
+
+
+def alerts_table(alerts: Sequence[Alert]) -> Table:
+    table = _table(
+        ("ID", "right"),
+        ("FIRED (UTC)", "left"),
+        ("RULE", "left"),
+        ("ON", "left"),
+        ("METRIC", "left"),
+        ("CONDITION", "left"),
+        ("VALUE", "right"),
+        ("", "left"),
+    )
+    for a in alerts:
+        table.add_row(
+            str(a.id),
+            stamp(a.fired_at, seconds=True),
+            clip(a.rule_name, 24),
+            Text(a.ticker or a.event_ticker or DASH),
+            Text(a.metric),
+            condition(a.op, a.threshold, a.unit),
+            amount(a.value, a.unit),
+            "acknowledged" if a.acknowledged_at else "NEW",
+        )
+    return table
+
+
+def alert_line(a: Alert | AlertEvent) -> Text:
+    """One line for a live alert."""
+    subject = a.ticker or a.event_ticker or DASH
+    return Text(
+        f"{stamp(a.fired_at, seconds=True)} UTC  ALERT #{a.id}  {a.rule_name or '(unnamed)'}  "
+        f"{subject}  {a.metric} {condition(a.op, a.threshold, a.unit)}  "
+        f"value {amount(a.value, a.unit)}"
+    )
+
+
+# ---------------------------------------------------------------- live events
+
+
+def _clock(value: datetime) -> str:
+    return value.strftime("%H:%M:%S.") + f"{value.microsecond // 1000:03d}"
+
+
+def event_line(event: TradeEvent | TickerEvent) -> Text:
+    """One line per live trade or ticker update (times are UTC)."""
+    if isinstance(event, TradeEvent):
+        block = "  block" if event.is_block_trade else ""
+        return Text(
+            f"{_clock(event.time)}  TRADE  {event.ticker}  yes {money(event.yes_price)} x "
+            f"{num(event.count)}  taker {event.taker_side or DASH}{block}"
+        )
+    return Text(
+        f"{_clock(event.time)}  TICK   {event.ticker}  last {money(event.price)}  "
+        f"bid {money(event.yes_bid)} x {num(event.yes_bid_size)}  "
+        f"ask {money(event.yes_ask)} x {num(event.yes_ask_size)}  volume {num(event.volume)}"
+    )
+
+
+def tracker_book_view(ticker: str, book: Book | None, depth: int) -> RenderableType:
+    """The live book kept by ``BookTracker`` (not the server's reconstruction of a past moment)."""
+    if book is None:
+        return Text(f"{ticker}: waiting for the book...")
+    table = _table(
+        ("YES BID", "right"),
+        ("SIZE", "right"),
+        ("", "left"),
+        ("NO BID", "right"),
+        ("SIZE", "right"),
+        title=ticker,
+    )
+    for y, n in zip_longest(book.levels("yes", depth), book.levels("no", depth)):
+        table.add_row(
+            money(y[0]) if y else "",
+            num(y[1]) if y else "",
+            "|",
+            money(n[0]) if n else "",
+            num(n[1]) if n else "",
+        )
+    summary = Text(
+        f"best YES bid {money(book.best_yes_bid)}   best YES ask {money(book.best_yes_ask)}"
+    )
+    parts: list[RenderableType] = [table, summary]
+    if book.inconsistent:
+        parts.append(
+            Text("WARNING: a change removed more than the book held; it may be wrong", style="bold")
+        )
+    return Group(*parts)

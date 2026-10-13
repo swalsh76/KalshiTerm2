@@ -4,7 +4,10 @@ from io import StringIO
 
 import pytest
 from kalshiterm_client import views
+from kalshiterm_client.book import Book
 from kalshiterm_client.models import (
+    Alert,
+    AlertRule,
     AnalyticsValue,
     CandlePage,
     HistoryPoint,
@@ -14,7 +17,9 @@ from kalshiterm_client.models import (
     OrderBook,
     Tick,
     Trade,
+    Watchlist,
 )
+from kalshiterm_client.stream_events import AlertEvent, TickerEvent, TradeEvent
 from rich.console import Console, RenderableType
 
 D = Decimal
@@ -367,3 +372,195 @@ def test_no_arbitrage_is_said_in_words_and_still_carries_the_caveat() -> None:
     shown = render(views.arbitrage_table([], total=0))
     assert "no opportunities right now" in shown and "re-read the live book" in shown
     assert "EVENT" not in shown  # no empty table
+
+
+# ------------------------------------------------------------------ watchlist, alerts, live lines
+
+
+def test_the_watchlist_shows_whether_the_orderbook_is_being_captured() -> None:
+    watchlist = Watchlist.model_validate(
+        {
+            "markets": [
+                {
+                    "ticker": "A",
+                    "event_title": "An event",
+                    "status": "active",
+                    "added_at": WHEN,
+                    "capturing": True,
+                },
+                {
+                    "ticker": "B",
+                    "event_title": None,
+                    "status": "active",
+                    "added_at": WHEN,
+                    "capturing": False,
+                },
+            ],
+            "limit": 50,
+        }
+    )
+    shown = render(views.watchlist_table(watchlist))
+    assert "capturing" in shown and "waiting" in shown and "2 of 50 places used" in shown
+
+
+def rule(**changes: object) -> AlertRule:
+    base = {
+        "id": 7,
+        "name": "wide",
+        "metric": "market_quotes.spread",
+        "op": "gt",
+        "threshold": "0.050000",
+        "unit": "dollars",
+        "cooldown_seconds": 900,
+        "enabled": True,
+        "active": False,
+        "last_fired_at": None,
+        "created_at": WHEN,
+        "ticker": "KXA-E1-X",
+        "event_ticker": None,
+    }
+    return AlertRule.model_validate({**base, **changes})
+
+
+def test_rules_show_their_state_condition_and_cooldown() -> None:
+    shown = render(
+        views.rules_table(
+            [
+                rule(),
+                rule(id=8, enabled=False),
+                rule(id=9, active=True, last_fired_at=WHEN),
+                rule(id=10, op="abs_gt", threshold="0.100000", metric="market_moves.change_15m"),
+                rule(
+                    id=11,
+                    ticker=None,
+                    event_ticker="KX-E1",
+                    metric="arbitrage_bid.profit",
+                    op="gt",
+                    threshold="0",
+                ),
+                rule(
+                    id=12,
+                    metric="market_moves.volume_1h",
+                    unit="contracts",
+                    threshold="1000.000000",
+                ),
+            ],
+            limit=50,
+        )
+    )
+    for expected in (
+        "armed",
+        "disabled",
+        "triggered",
+        "> 0.05",
+        "|change| > 0.10",
+        "900s",
+        "KX-E1",
+        "2026-10-12 18:00",
+        "> 1000",
+        "6 of 50 rules used",
+    ):
+        assert expected in shown, expected
+
+
+def alert(**changes: object) -> Alert:
+    base = {
+        "id": 3,
+        "rule_id": 7,
+        "rule_name": "wide",
+        "fired_at": WHEN,
+        "metric": "market_quotes.spread",
+        "op": "gt",
+        "threshold": "0.050000",
+        "value": "0.080000",
+        "unit": "dollars",
+        "acknowledged_at": None,
+        "ticker": "KXA-E1-X",
+        "event_ticker": None,
+    }
+    return Alert.model_validate({**base, **changes})
+
+
+def test_alerts_are_marked_new_or_acknowledged_with_values_in_their_unit() -> None:
+    shown = render(
+        views.alerts_table(
+            [
+                alert(),
+                alert(id=2, acknowledged_at=WHEN),
+                alert(
+                    id=1,
+                    metric="market_quotes.bid_size",
+                    unit="contracts",
+                    op="lt",
+                    threshold="100.000000",
+                    value="12.340000",
+                ),
+            ]
+        )
+    )
+    assert shown.count("NEW") == 2 and "acknowledged" in shown
+    assert "> 0.05" in shown and "0.08" in shown and "< 100" in shown and "12.34" in shown
+
+
+def test_a_live_alert_is_one_line_and_text_from_users_and_the_server_is_not_markup() -> None:
+    line = views.alert_line(
+        AlertEvent.model_validate({**alert().model_dump(mode="json"), "alert_cursor": 3})
+    )
+    assert line.plain == (
+        "2026-10-12 18:00:00 UTC  ALERT #3  wide  KXA-E1-X  market_quotes.spread > 0.05  value 0.08"
+    )
+    nasty = alert(rule_name="[bold red]hot[/bold red]", ticker=None, event_ticker="KX-[x]")
+    shown = render(views.alert_line(nasty))
+    assert "[bold red]hot[/bold red]" in shown and "KX-[x]" in shown
+    assert "(unnamed)" in views.alert_line(alert(rule_name="")).plain
+
+
+def test_live_trades_and_ticks_are_one_line_each_with_millisecond_times() -> None:
+    trade = TradeEvent.model_validate(
+        {
+            "type": "trade",
+            "ticker": "KXA-E1-X",
+            "time": "2026-10-12T18:00:01.234567+00:00",
+            "cursor": 5,
+            "trade_id": "00000000-0000-0000-0000-000000000001",
+            "yes_price": "0.350000",
+            "no_price": "0.650000",
+            "count": "12.16",
+            "taker_side": "yes",
+            "is_block_trade": True,
+        }
+    )
+    assert (
+        views.event_line(trade).plain
+        == "18:00:01.234  TRADE  KXA-E1-X  yes 0.35 x 12.16  taker yes  block"
+    )
+    tick = TickerEvent.model_validate(
+        {
+            "type": "ticker",
+            "ticker": "[red]T[/red]",
+            "time": WHEN,
+            "cursor": 6,
+            "price": "0.35",
+            "yes_bid": "0.34",
+            "yes_ask": "0.36",
+            "yes_bid_size": "100.00",
+            "yes_ask_size": None,
+            "volume": "5000.00",
+        }
+    )
+    text = views.event_line(tick).plain
+    assert text.startswith(
+        "18:00:00.000  TICK   [red]T[/red]  last 0.35  bid 0.34 x 100  ask 0.36 x -"
+    )
+    assert "[red]T[/red]" in render(views.event_line(tick))  # shown literally, not as markup
+
+
+def test_the_live_book_view_waits_then_shows_levels_and_flags_a_suspect_book() -> None:
+    assert "waiting for the book" in render(views.tracker_book_view("T", None, 5))
+    book = Book(yes={D("0.40"): D("10"), D("0.39"): D("5.5")}, no={D("0.58"): D("7")})
+    shown = render(views.tracker_book_view("T", book, 5))
+    assert "0.40" in shown and "5.5" in shown and "0.58" in shown and "best YES ask 0.42" in shown
+    assert "WARNING" not in shown
+    book.inconsistent = True
+    assert "WARNING" in render(views.tracker_book_view("T", book, 5))
+    assert "0.39" not in render(views.tracker_book_view("T", book, 1))

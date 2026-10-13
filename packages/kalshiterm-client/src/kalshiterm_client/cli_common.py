@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from rich.console import Console
 
 from kalshiterm_client.client import ServerClient
+from kalshiterm_client.errors import ApiProblem
 from kalshiterm_client.profiles import Profile, ProfileError, ProfileStore
 
 T = TypeVar("T")
@@ -33,10 +34,15 @@ def current_profile() -> Profile:
         raise fail(str(exc)) from exc
 
 
-def run_with_api(work: Callable[[ServerClient], Awaitable[T]]) -> T:
+def run_with_api(
+    work: Callable[[ServerClient], Awaitable[T]],
+    *,
+    explain: Callable[[ApiProblem], str] | None = None,
+) -> T:
     """Open a client for the current profile, run ``work(api)``, and turn any problem a person
     can act on (a changed certificate, a refused request, an unreachable server) into a one-line
-    error and exit status 1."""
+    error and exit status 1. ``explain`` words the server's refusals (an ``ApiProblem``) for this
+    command; without it the problem's own message is used."""
     profile = current_profile()
 
     async def go() -> T:
@@ -45,6 +51,8 @@ def run_with_api(work: Callable[[ServerClient], Awaitable[T]]) -> T:
 
     try:
         return asyncio.run(go())
+    except ApiProblem as exc:
+        raise fail(explain(exc) if explain else str(exc)) from exc
     except ProfileError as exc:
         raise fail(str(exc)) from exc
 
