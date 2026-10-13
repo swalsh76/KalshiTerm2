@@ -613,3 +613,27 @@ async def test_only_one_consumer_at_a_time_and_closing_ends_the_iteration() -> N
     await stream.aclose()
     with pytest.raises(StopAsyncIteration):
         await iterator.__anext__()
+
+
+async def test_a_first_connection_can_start_after_a_given_alert() -> None:
+    """The recommended client flow: read the backlog over REST, then stream from its head."""
+    socket = FakeSocket(
+        subscribed(alerts_cursor="40"),
+        alert(40),  # already in the backlog: must not be delivered again
+        alert(41),
+        {"type": "alerts_caught_up", "alerts_cursor": "41"},
+        HANG,
+    )
+    stream = Script(socket).stream(channels=["alerts"], markets=[], alerts_since=40)
+    events = await collect(stream, lambda e: sum(isinstance(x, AlertEvent) for x in e) == 1)
+    assert socket.sent[0]["alerts_since"] == "40" and "since" not in socket.sent[0]
+    assert [e.alert_cursor for e in events if isinstance(e, AlertEvent)] == [41]
+    assert [e for e in events if isinstance(e, Connected)][0].resumed is True
+    assert stream.stats.duplicates_suppressed == 1
+
+
+def test_alerts_since_needs_the_alerts_channel() -> None:
+    with pytest.raises(ValueError, match="alerts_since needs"):
+        StreamClient(
+            "https://example.test", TOKEN, channels=["trades"], markets=["A"], alerts_since=3
+        )

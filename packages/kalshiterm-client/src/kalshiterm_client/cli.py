@@ -7,7 +7,16 @@ from typing import Annotated, Any
 
 import typer
 
-from kalshiterm_client import client, data_cli, discovery, pinning, secrets, status_view
+from kalshiterm_client import (
+    account_cli,
+    client,
+    data_cli,
+    discovery,
+    live_cli,
+    pinning,
+    secrets,
+    status_view,
+)
 from kalshiterm_client.cli_common import State, current_profile, fail
 from kalshiterm_client.profiles import (
     PROFILE_ENV,
@@ -24,6 +33,7 @@ app.add_typer(config_app, name="config")
 server_app = typer.Typer(no_args_is_help=True, help="The server you are connected to.")
 app.add_typer(server_app, name="server")
 data_cli.register(app)
+live_cli.register(app, account_cli.register(app))
 
 
 @app.callback()

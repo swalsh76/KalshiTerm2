@@ -862,7 +862,7 @@ Each phase ends with passing tests and CI green.
 | **3. Server API** | REST + WS push with catch-up, token auth, TLS, health/status endpoints |
 | **3b. LAN features** | zeroconf discovery, client profiles, TOFU cert pinning, `cert rotate`, `kterm server status`, backup/restore — **done** (slices 3b.1-3b.4 in §10.4) |
 | **4. Analytics** | Plugin framework + built-in analyzers + alerts — **done** (slices 4.1-4.5 in §10.5) |
-| **5. Client data side** | Server API client, CLI data views — slices 5.1-5.5 in §10.6 |
+| **5. Client data side** | Server API client, CLI data views — **done** (slices 5.1-5.5 in §10.6) |
 | **6. Client trading** | Risk layer first, order management, private WS channels; **demo-only until sign-off**; test proving trading works with server offline |
 | **7. Terminal UI** | Bloomberg-style UI per §7 decision (local backend, panels, grids, charts, command bar, order entry) |
 | **8. Packaging** | Frontend build bundled into client wheel, install docs, tagged v0.1.0 |
@@ -1335,13 +1335,50 @@ market list, a market's detail and last quote, hourly candles, trades, a 5-level
 server's incompleteness warning, correct because ingest had restarted after the snapshot),
 analytics, arbitrage and a not-found error.
 
+**5.5 as built.** *Watchlist:* `kterm watchlist [list | add T... | remove T...]` (the listing shows
+whether the server is capturing each orderbook yet, and how many of the 50 places are used).
+*Alerts:* `kterm alerts [list [-u] | ack IDS | ack --all | rules | metrics | add METRIC SUBJECT OP
+THRESHOLD | set ID | rm IDS | watch]`. `alerts add` asks the server's catalog whether the metric is
+about a market or an event, so one subject argument is enough; it refuses an unknown metric or a
+bad number before any request, and turns the server's refusals into what to do next
+(`not_watched` -> "kterm watchlist add T", `invalid_comparison` -> the allowed ones,
+`cooldown_too_short` -> the minimum, `rule_limit` -> "remove one"). Commands that take several
+tickers or ids report each one, carry on after a failure, and exit 1 if any failed; every write
+goes through the never-retried path. *Live:* `kterm watch TICKER... | --watchlist [--book]
+[--no-trades] [--no-ticker] [--count N] [--json]` prints one line per trade and ticker update
+(millisecond UTC times), or one JSON object per line; `--book` keeps a `BookTracker` live and shows
+it on a terminal (redrawn at most 4 times a second), or prints it once at the end when piped.
+`kterm alerts watch [--no-backlog] [--count N] [--json]` follows the 4.5 recommended flow: read
+the newest alert id, list the unacknowledged backlog oldest first, then stream with
+`alerts_since` set to that id (new `StreamClient(alerts_since=...)` parameter), skipping any id
+already printed. Human notes (connecting, "disconnected (...); retrying in Ns", "reconnected
+(resumed, nothing missed)", resyncs) go to stderr, so stdout stays pipeable; Ctrl-C stops quietly.
+`--count` counts data events. *Design fix found by the tests:* `run_with_api` turned every
+`ProfileError` (which includes the server's refusals) into a plain one-liner, so the helpful
+messages above never ran; it now takes an `explain` function. *Tests:* 20 on the REST commands
+against a scripted server (verbs, paths and exact JSON bodies; the fake server now handles
+PUT / POST / PATCH / DELETE), 8 more view tests, 2 for `alerts_since`, and 9 on the real server
+with a producer thread committing data while the commands run: watch output, JSON in cursor
+order, a cut connection mid-command with every committed row between the first and last delivered
+cursor shown exactly once (trades and alerts), the final book, backlog ordering (reversing it
+fails the test), and a wrong token. *Verified live (Phase 5 acceptance):* with real ingest,
+`watchlist add` of the busiest market, `alerts add market_moves.last`, the real analyzers and
+evaluator firing it (value 0.21), `alerts watch` printing the backlog at once, `ack --all`, live
+trades at millisecond times, a live 5-level book, and **a real API kill and restart during `kterm
+watch`: five retries over ~6 s with growing waits, "reconnected (resumed, nothing missed)", 2,500
+trades delivered = 2,500 in the database for that market and cursor range**.
+
+**Phase 5 is complete.** The library (`ServerClient`, `StreamClient`, `BookTracker`) is what Phase 6
+(market data beside trading) and Phase 7 (the local backend behind the browser) build on. Left in the
+parking lot: CSV export, a local cache / offline mode, persisted stream cursors, shell completion.
+
 | # | Slice |
 |---|---|
 | 5.1 — done | API client foundation: `ServerClient` (pinned TLS, token, connection reuse, timeouts, retries for GETs, the error taxonomy of `connection.py`, pagination iterators) and typed models + methods for `me`, `status`, markets (list / search / get), events, candles, trades, ticks, orderbook and gaps; contract tests against the real server; `kterm server status` moves onto it |
 | 5.2 — done | The rest of the API in the client: watchlist, analytics (market latest / history, event, arbitrage) and alerts (metrics, rules create / list / change / delete, alerts list / acknowledge), with contract tests |
 | 5.3 — done | Live stream client: `StreamClient` (pinned `wss`, header auth, reconnect with backoff, heartbeat timeout detection, `since` / `alerts_since` resume with exactly-once delivery, `gap` handling), a `BookTracker` that keeps an orderbook from `book_snapshot` / `book_delta` events; tested against the real server over a real socket with forced disconnects (no duplicates, no gaps) |
 | 5.4 — done | CLI data views: `kterm markets`, `market`, `candles`, `trades`, `book`, `analytics`, `arbitrage` (tables and `--json`) |
-| 5.5 | CLI account and live views: `watchlist`, `alerts` (rules, list, acknowledge), `watch` (live tickers / trades / book) and `alerts watch`; an end-to-end check against a live server |
+| 5.5 — done | CLI account and live views: `watchlist`, `alerts` (rules, list, acknowledge), `watch` (live tickers / trades / book) and `alerts watch`; an end-to-end check against a live server |
 | deferred | CSV export, a local response cache or offline mode, persisted stream cursors, shell completion: parking lot. Trading is Phase 6 and the browser UI Phase 7 |
 
 ## 11. Risks & Notes
