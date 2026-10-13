@@ -1482,7 +1482,7 @@ after the request"**. Positions: `position_fp`, `market_exposure_dollars`, `real
 |---|---|
 | 6.1 — done | Measure first: a read-only look at the demo's order, position, balance and fill shapes (with the existing dev key, GET only) plus a re-check of the docs facts above; write the as-built models and the open questions into this section. No write code |
 | 6.2 — done | Risk layer: `RiskPolicy` (per-shard balances, funding plan, transfer caps), `risk.toml` loading and validation, `check` as a pure function, `ApprovedOrder`, fail-closed rules, worst-case fee/notional math; exhaustive tests including property tests (no order that exceeds a limit is ever approved) |
-| 6.3 | Account read side: `kalshi-core` portfolio models + GET methods (balance, positions, orders, fills, settlements, queue positions), trading key loading and permission check; production stays read-only |
+| 6.3 — done | Account read side: `kalshi-core` portfolio models + GET methods (balance, positions, orders, fills, settlements, queue positions), trading key loading and permission check; production stays read-only |
 | 6.4 | Write transport: `TradingCapability`, write token bucket, create / cancel / batch cancel / amend / decrease with idempotent `client_order_id` recovery, and the shard transfer call with `client_transfer_id` recovery (decision 14); the guard test is rewritten to prove writes need the capability and production is refused |
 | 6.5 | Private WebSocket channels and `AccountTracker` (fill, user_orders, market_positions; reconnect, reconcile, exactly-once) and the order service tying risk, snapshot and transport together |
 | 6.6 | CLI: `buy`, `sell` (both fund the shard automatically; no manual transfer command), `cancel`, `amend`, `orders`, `positions`, `balance`, `fills`, `kill`, `--dry-run`, risk verdict output, production confirmation prompt |
@@ -1545,6 +1545,27 @@ Tests: 46 (30 for the checks, 16 for the file) including a 20,000-case seeded fu
 limit independently for each approved order, and nine deliberate sabotages of `risk.py` (position
 off by one, fee at the limit price, open-order off by one, future-dated snapshots, funding order,
 production switch, stream check, centicent rounding, short-sale collateral) each caught by a test.
+
+**6.3 as built.** `kalshi_core.portfolio` holds the account models (`Balance` with a per-shard
+`balance_breakdown` and `shard(i)`, `MarketPosition` / `EventPosition` / `PositionsPage`, `Order`,
+`Fill`, `Settlement`, `QueuePosition`; `Decimal` throughout) and `KalshiRestClient` gained the GETs
+`balance`, `positions_page` / `iter_positions`, `orders_page` / `iter_orders`, `order`, `fills_page` /
+`iter_fills`, `settlements_page` / `iter_settlements`, `queue_positions`. The GET-only guard is
+untouched: there is still no write code. **Trading key:** `KalshiSettings` gained
+`trading_key_id` (`KALSHI_TRADING_KEY_ID`) and `trading_private_key_path` (default
+`~/.kalshiterm/kalshi_trading_key.pem`); `load_trading_key` refuses a file that group or others can
+read (POSIX; the message says `chmod 600 <file>`), and `KalshiSigner.for_trading` refuses a key id or
+a file equal to the data key's, so the two keys cannot be confused. Verified live (read-only key,
+2026-10-13): 18 orders, 18 fills, 5 settlements and the 4-shard balance parsed, every field Kalshi
+sent is declared by a model (a live test fails on any new one), and an independent cross-check
+agreed: order fees $0.041 = fill fees $0.041, 18 filled contracts on both sides, every order's fill
+count equal to the sum of its fills. **Finding:** the integer-cents `balance` is the dollar balance
+*truncated* ($10.3490 is reported as 1034 cents), so only `balance_dollars` / the shard breakdown
+is used. **Still unmeasured** (no positions exist on the account): the populated positions shape
+and whether the balance already excludes resting-order collateral; both are checked in 6.7.
+Tests: 20 new plus one opt-in live (field coverage for every model with a deliberate-drift check, cursor paging, the
+user-side price of a NO order, queue positions, five key-file modes, key separation) and four
+sabotages caught (mode mask, key-id equality, same-file check, order price side).
 
 **Decided after 6.1 (2026-10-13).** (1) Live account, not demo, for every verification step
 (decision 6). **You will need to create a production API key with trade scope** (Kalshi account

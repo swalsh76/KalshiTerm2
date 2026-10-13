@@ -1,5 +1,7 @@
 import base64
+import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -12,6 +14,7 @@ from kalshi_core.auth import (
     AuthError,
     KalshiSigner,
     load_private_key,
+    load_trading_key,
 )
 from kalshi_core.config import KalshiSettings
 
@@ -98,3 +101,58 @@ def test_from_settings_loads_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     monkeypatch.setenv("KALSHI_PRIVATE_KEY_PATH", str(f))
     signer = KalshiSigner.from_settings(KalshiSettings())
     assert signer.headers("GET", PATH)[HEADER_KEY] == "kid"
+
+
+def key_file(tmp_path: Path, name: str = "k.pem", mode: int = 0o600) -> Path:
+    path = tmp_path / name
+    path.write_bytes(pem(Ed25519PrivateKey.generate()))
+    path.chmod(mode)
+    return path
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are POSIX")
+@pytest.mark.parametrize("mode", [0o644, 0o640, 0o604, 0o660, 0o777])
+def test_a_trading_key_other_users_can_read_is_refused(tmp_path: Path, mode: int) -> None:
+    path = key_file(tmp_path, mode=mode)
+    with pytest.raises(AuthError, match=r"chmod 600"):
+        load_trading_key(path)
+    load_private_key(path)  # the ordinary loader does not care
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are POSIX")
+@pytest.mark.parametrize("mode", [0o600, 0o400])
+def test_an_owner_only_trading_key_loads(tmp_path: Path, mode: int) -> None:
+    assert isinstance(load_trading_key(key_file(tmp_path, mode=mode)), Ed25519PrivateKey)
+
+
+def test_the_trading_key_must_be_a_different_key_from_the_data_key(tmp_path: Path) -> None:
+    trading = key_file(tmp_path, "trading.pem")
+    data = key_file(tmp_path, "data.pem")
+    ok = KalshiSettings(
+        key_id="data-id",
+        private_key_path=data,
+        trading_key_id="trade-id",
+        trading_private_key_path=trading,
+    )
+    signer = KalshiSigner.for_trading(ok)
+    assert signer.headers("GET", "/x")[HEADER_KEY] == "trade-id"
+    cases: dict[str, dict[str, Any]] = {
+        "same key id": dict(trading_key_id="data-id"),
+        "same file": dict(trading_private_key_path=data),
+        "no key id": dict(trading_key_id=None),
+    }
+    for what, change in cases.items():
+        bad = ok.model_copy(update=change)
+        with pytest.raises(AuthError):
+            KalshiSigner.for_trading(bad)
+        assert what  # the dict key is the failure's name in pytest output
+
+
+def test_the_trading_key_defaults_to_a_file_outside_the_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)  # no .env here
+    monkeypatch.delenv("KALSHI_TRADING_KEY_ID", raising=False)
+    settings = KalshiSettings()
+    assert str(settings.trading_private_key_path) == "~/.kalshiterm/kalshi_trading_key.pem"
+    assert settings.trading_key_id is None
