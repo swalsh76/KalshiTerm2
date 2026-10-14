@@ -17,6 +17,7 @@ from kalshiterm_client import (
     secrets,
     status_view,
     trade_cli,
+    ui_cli,
 )
 from kalshiterm_client.cli_common import State, current_profile, fail
 from kalshiterm_client.profiles import (
@@ -35,6 +36,7 @@ server_app = typer.Typer(no_args_is_help=True, help="The server you are connecte
 app.add_typer(server_app, name="server")
 data_cli.register(app)
 trade_cli.register(app)
+ui_cli.register(app)
 live_cli.register(app, account_cli.register(app))
 
 

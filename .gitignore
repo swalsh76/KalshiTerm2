@@ -231,3 +231,7 @@ deploy/state/
 # Claude Code: per-machine permission allowlist (grows as commands are approved)
 .claude/settings.json
 .claude/settings.local.json
+
+# built front end (slice 7.5 onwards; bundled into the wheel in Phase 8)
+packages/kalshiterm-client/src/kalshiterm_client/ui_assets/
+packages/kalshiterm-client/frontend/node_modules/
