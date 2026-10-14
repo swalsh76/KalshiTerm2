@@ -409,6 +409,49 @@ async def test_the_models_cover_the_account_and_analytics_endpoints(api: ServerC
         model.model_validate(payload)
 
 
+async def test_the_models_cover_the_layout_endpoints(api: ServerClient) -> None:
+    await api.save_layout("Main", {"version": 1, "panels": []})
+    cases: list[tuple[str, dict[str, Any] | None, type[BaseModel]]] = [
+        ("/v1/layouts", None, models.LayoutList),
+        ("/v1/layouts/Main", None, models.Layout),
+    ]
+    for path, params, model in cases:
+        payload = await api._get(path, params)
+        assert uncovered(model, payload) == [], path
+        model.model_validate(payload)
+    saved = await api._request("PUT", "/v1/layouts/Main", json={"data": {}})
+    assert uncovered(models.LayoutSaved, saved) == []
+    models.LayoutSaved.model_validate(saved)
+
+
+async def test_layouts_through_their_whole_life(world: World) -> None:
+    async with world.client("alice") as alice, world.client("root") as root:
+        assert (await alice.layouts()).layouts == []
+        data = {"version": 2, "panels": [{"id": "book", "ticker": A}], "price": "0.560000"}
+        first = await alice.save_layout("My Layout", data)
+        assert first.created is True and first.name == "My Layout"
+        again = await alice.save_layout("My Layout", {**data, "version": 3})
+        assert again.created is False
+        got = await alice.layout("My Layout")
+        assert got.data["version"] == 3 and got.data["price"] == "0.560000"
+        listing = await alice.layouts()
+        assert [(x.name, x.size_bytes) for x in listing.layouts] == [("My Layout", got.size_bytes)]
+        assert listing.limit == 50 and listing.max_bytes == 262_144
+        with pytest.raises(NotFound):  # another user's layout looks like no layout at all
+            await root.layout("My Layout")
+        assert (await root.layouts()).layouts == []
+        with pytest.raises(InvalidRequest) as big:
+            await alice.save_layout("big", {"p": "x" * 300_000})
+        assert big.value.code == "layout_too_large" and big.value.extra["limit_bytes"] == 262_144
+        with pytest.raises(InvalidRequest) as bad:
+            await alice.save_layout("nul", {"p": "a\u0000b"})
+        assert bad.value.code == "invalid_layout"
+        await alice.delete_layout("My Layout")
+        with pytest.raises(NotFound):
+            await alice.delete_layout("My Layout")
+        assert (await alice.layouts()).layouts == []
+
+
 async def test_the_watchlist_round_trip(api: ServerClient) -> None:
     assert (await api.watchlist()).markets == []
     assert await api.watch(A) is True and await api.watch(A) is False  # idempotent

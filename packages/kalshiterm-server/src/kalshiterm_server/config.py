@@ -56,4 +56,6 @@ class ServerSettings(BaseSettings):
 
     # Alerts (PLAN §10.5, slice 4.4)
     alert_rules_max_per_user: int = 50
+    layouts_max_per_user: int = 50
+    layout_max_bytes: int = 262_144  # of compact JSON, per saved layout
     alert_min_cooldown_seconds: int = 300  # the shortest gap between two firings of one rule

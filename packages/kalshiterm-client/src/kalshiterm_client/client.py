@@ -7,12 +7,13 @@ only if the server asks for a short wait. Nothing that writes is ever retried si
 """
 
 import asyncio
+import re
 import ssl
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, TypeVar
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -38,6 +39,9 @@ from kalshiterm_client.models import (
     Event,
     EventResults,
     Gap,
+    Layout,
+    LayoutList,
+    LayoutSaved,
     MarketDetail,
     MarketPage,
     MarketResults,
@@ -100,6 +104,19 @@ async def explain_tls_failure(
         "certificate is unchanged, so check the name in the URL against the certificate's "
         "names and its expiry (`kterm-server cert show`)"
     )
+
+
+LAYOUT_NAME = re.compile(r"[A-Za-z0-9]([A-Za-z0-9 _.-]{0,62}[A-Za-z0-9_.-])?")
+
+
+def _layout_name(name: str) -> str:
+    """A layout name as it goes in a URL; one the server would refuse is a ValueError here."""
+    if not LAYOUT_NAME.fullmatch(name):
+        raise ValueError(
+            "a layout name is 1-64 characters: letters, digits, spaces, '_', '-' and '.', "
+            "starting with a letter or digit and not ending in a space"
+        )
+    return quote(name, safe="")
 
 
 def _wire(params: dict[str, Any] | None) -> dict[str, str]:
@@ -417,6 +434,24 @@ class ServerClient:
         """Take a market off your list. True if it was there."""
         data = await self._request("DELETE", f"/v1/watchlist/{ticker}")
         return bool(data["removed"])
+
+    # ------------------------------------------------------------------ saved UI layouts
+
+    async def layouts(self) -> LayoutList:
+        """Your saved layouts: names and sizes, and the limits."""
+        return self._model(LayoutList, await self._get("/v1/layouts"))
+
+    async def layout(self, name: str) -> Layout:
+        return self._model(Layout, await self._get(f"/v1/layouts/{_layout_name(name)}"))
+
+    async def save_layout(self, name: str, data: dict[str, Any]) -> LayoutSaved:
+        """Create or replace a layout (any JSON object the front end defines). Not retried if
+        the connection drops: ``layouts()`` shows what the server holds."""
+        reply = await self._request("PUT", f"/v1/layouts/{_layout_name(name)}", json={"data": data})
+        return self._model(LayoutSaved, reply)
+
+    async def delete_layout(self, name: str) -> None:
+        await self._request("DELETE", f"/v1/layouts/{_layout_name(name)}")
 
     # ------------------------------------------------------------------ analytics
 

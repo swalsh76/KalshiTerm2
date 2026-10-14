@@ -14,12 +14,15 @@ Every request, HTTP or WebSocket, passes these checks before any route code runs
   site's request. There are **no cookies and no CORS headers at all**: another tab has nothing to
   ride on and cannot read a response. Unauthenticated ``/api`` requests get 401 whether or not the
   path exists. The WebSocket sends its token as the first message instead (see ``app``).
+* **A request body is capped** (1 MiB, counted as it arrives, so a missing or lying Content-Length
+  helps no one): the largest legitimate body is a saved layout, a fraction of that.
 * **Response headers**: no framing (a hidden frame cannot click the order button), no sniffing, no
   Referer, a Content-Security-Policy that allows only this origin, and no caching of ``/api``.
 
 Nothing here logs a token or an ``Authorization`` header.
 """
 
+import contextlib
 import hmac
 import json
 import secrets
@@ -32,6 +35,7 @@ Send = Callable[[MutableMapping[str, Any]], Awaitable[None]]
 ASGIApp = Callable[[Scope, Receive, Send], Awaitable[None]]
 
 SAFE_METHODS = frozenset({"GET", "HEAD"})
+MAX_REQUEST_BYTES = 1_048_576
 WS_PATH = "/api/ws"
 
 # Wasm is allowed because the grid candidate in the 7.5 spike (Perspective) needs it; this is
@@ -83,6 +87,10 @@ def _headers(scope: Scope) -> dict[str, str]:
     return {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
 
 
+class BodyTooLarge(Exception):
+    pass
+
+
 class SecurityMiddleware:
     def __init__(self, app: ASGIApp, *, port: int, token: str) -> None:
         self.app = app
@@ -117,7 +125,35 @@ class SecurityMiddleware:
                 ]
             await send(message)
 
-        await self.app(scope, receive, with_headers)
+        started = False
+        overflowed = False
+
+        async def tracked_send(message: MutableMapping[str, Any]) -> None:
+            nonlocal started
+            if overflowed:  # we already answered 413; whatever the app says now is moot
+                return
+            started = started or message["type"] == "http.response.start"
+            await with_headers(message)
+
+        received = 0
+
+        async def counted_receive() -> MutableMapping[str, Any]:
+            nonlocal received, overflowed
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > MAX_REQUEST_BYTES:
+                    # Answer now: the framework would turn an exception raised here into a 400.
+                    if not started and not overflowed:
+                        overflowed = True
+                        await self._refuse(scope, receive, send, 413, "request body too large")
+                    raise BodyTooLarge
+            return message
+
+        with contextlib.suppress(BodyTooLarge):  # we already answered 413
+            await self.app(
+                scope, counted_receive if scope["type"] == "http" else receive, tracked_send
+            )
 
     def _refusal(self, scope: Scope, headers: dict[str, str]) -> tuple[int, str] | None:
         if headers.get("host") not in self.hosts:
@@ -127,6 +163,9 @@ class SecurityMiddleware:
         if changes_state and headers.get("origin") not in self.origins:
             return 403, "unexpected Origin"
         path: str = scope["path"]
+        declared = headers.get("content-length", "")
+        if scope["type"] == "http" and declared.isdigit() and int(declared) > MAX_REQUEST_BYTES:
+            return 413, "request body too large"
         under_api = path == "/api" or path.startswith("/api/")
         if (
             scope["type"] == "http"

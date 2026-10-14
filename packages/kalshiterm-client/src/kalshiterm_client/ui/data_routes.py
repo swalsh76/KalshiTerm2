@@ -19,7 +19,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -43,6 +43,9 @@ from kalshiterm_client.models import (
     Event,
     EventResults,
     Gap,
+    Layout,
+    LayoutList,
+    LayoutSaved,
     MarketDetail,
     MarketPage,
     MarketResults,
@@ -123,6 +126,13 @@ class Changed(BaseModel):
     changed: bool
 
 
+class LayoutBody(BaseModel):
+    """What the page sends to save a layout: any JSON object (the front end defines it)."""
+
+    model_config = ConfigDict(extra="forbid")
+    data: dict[str, Any]
+
+
 def _access(request: Request) -> DataAccess:
     access: DataAccess = request.app.state.data
     return access
@@ -141,6 +151,7 @@ def aware(value: datetime | None, name: str) -> datetime | None:
     return value
 
 
+LayoutName = Annotated[str, Path(pattern=r"^[A-Za-z0-9]([A-Za-z0-9 _.-]{0,62}[A-Za-z0-9_.-])?$")]
 Limit = Annotated[int | None, Query(ge=1, le=1000)]
 Cursor = Annotated[str | None, Query(max_length=512)]
 Instant = Annotated[datetime | None, Query()]
@@ -388,6 +399,29 @@ async def alerts(
 @router.post("/alerts/{alert_id}/acknowledge", status_code=204)
 async def acknowledge_alert(client: Client, alert_id: int) -> None:
     await client.acknowledge_alert(alert_id)
+
+
+# ------------------------------------------------------------------ saved layouts
+
+
+@router.get("/layouts", response_model=LayoutList)
+async def layouts(client: Client) -> Any:
+    return await client.layouts()
+
+
+@router.get("/layouts/{name}", response_model=Layout)
+async def layout(client: Client, name: LayoutName) -> Any:
+    return await client.layout(name)
+
+
+@router.put("/layouts/{name}", response_model=LayoutSaved)
+async def save_layout(client: Client, name: LayoutName, body: LayoutBody) -> Any:
+    return await client.save_layout(name, body.data)
+
+
+@router.delete("/layouts/{name}", status_code=204)
+async def delete_layout(client: Client, name: LayoutName) -> None:
+    await client.delete_layout(name)
 
 
 # ------------------------------------------------------------------ errors
