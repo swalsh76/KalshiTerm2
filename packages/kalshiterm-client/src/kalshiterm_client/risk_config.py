@@ -20,6 +20,8 @@ through binary rounding.
 
     [trading]
     production_enabled = false
+    ui_idle_minutes = 30           # the browser UI switches trading off after this much inactivity
+    ui_disconnect_seconds = 60     # ... or this long after the last browser connection has gone
 """
 
 import tomllib
@@ -39,6 +41,7 @@ MONEY = {
     "max_transfer_per_day": "max_transfer_per_day_e6",
 }
 COUNTS = {"max_order_count": "max_order_count_e2", "max_position": "max_position_e2"}
+UI_TIMERS = {"ui_idle_minutes": (1, 1440), "ui_disconnect_seconds": (5, 3600)}
 INTEGERS = {
     "max_open_orders": "max_open_orders",
     "snapshot_max_age_seconds": "snapshot_max_age_seconds",
@@ -93,11 +96,17 @@ def parse_policy(data: dict[str, object], source: str = FILE_NAME) -> RiskPolicy
         else:
             raise RiskConfigError(f"{source}: unknown limit {key!r}")
     for key, value in trading.items():
-        if key != "production_enabled":
+        if key == "production_enabled":
+            if not isinstance(value, bool):
+                raise RiskConfigError("production_enabled: must be true or false")
+            changes["production_enabled"] = value
+        elif key in UI_TIMERS:
+            low, high = UI_TIMERS[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                raise RiskConfigError(f"{key}: must be a whole number from {low} to {high}")
+            changes[key] = value
+        else:
             raise RiskConfigError(f"{source}: unknown setting {key!r}")
-        if not isinstance(value, bool):
-            raise RiskConfigError("production_enabled: must be true or false")
-        changes["production_enabled"] = value
     return replace(policy, **changes)  # type: ignore[arg-type]
 
 

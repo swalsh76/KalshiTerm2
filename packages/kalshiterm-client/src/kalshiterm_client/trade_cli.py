@@ -43,6 +43,7 @@ from kalshiterm_client.orders import (
     TransferUnknown,
     cancel_by_ids,
     describe,
+    typed_phrase_matches,
 )
 from kalshiterm_client.profiles import ProfileError
 from kalshiterm_client.risk import Action, Outcome, Verdict
@@ -153,24 +154,6 @@ def verdict_data(prepared: Prepared) -> dict[str, Any]:
         "refusals": [{"code": r.code.value, "message": r.message} for r in v.refusals],
         "lines": describe(prepared),
     }
-
-
-def typed_phrase_matches(typed: str, request: OrderRequest) -> bool:
-    """``TICKER buy|sell yes|no COUNT PRICE`` with the numbers equal as numbers (0.4 == 0.40)."""
-    parts = typed.split()
-    if len(parts) != 5:
-        return False
-    ticker, action, outcome, count, price = parts
-    try:
-        return (
-            ticker == request.ticker
-            and action.lower() == request.action.value
-            and outcome.lower() == request.outcome.value
-            and Decimal(count) == request.count
-            and Decimal(price) == request.price
-        )
-    except InvalidOperation:
-        return False
 
 
 def confirm(runtime: Runtime, prepared: Prepared, yes: bool) -> None:

@@ -65,3 +65,31 @@ def test_the_file_lives_in_the_config_directory(
     assert risk_path() == tmp_path / "risk.toml"
     (tmp_path / "risk.toml").write_text('[limits]\nmax_daily_loss = "1"\n')
     assert load_policy().max_daily_loss_e6 == 1_000_000
+
+
+def test_the_ui_timers_default_and_can_be_set(tmp_path: Path) -> None:
+    assert load_policy(tmp_path / "none.toml").ui_idle_minutes == 30
+    assert load_policy(tmp_path / "none.toml").ui_disconnect_seconds == 60
+    policy = load_policy(
+        write(tmp_path, "[trading]\nui_idle_minutes = 5\nui_disconnect_seconds = 120\n")
+    )
+    assert (policy.ui_idle_minutes, policy.ui_disconnect_seconds) == (5, 120)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "ui_idle_minutes = 0",
+        "ui_idle_minutes = 1441",
+        "ui_idle_minutes = -1",
+        'ui_idle_minutes = "30"',
+        "ui_idle_minutes = 2.5",
+        "ui_idle_minutes = true",
+        "ui_disconnect_seconds = 4",
+        "ui_disconnect_seconds = 3601",
+        "ui_idle_seconds = 30",
+    ],
+)
+def test_bad_ui_timers_are_refused_with_the_key_named(tmp_path: Path, line: str) -> None:
+    with pytest.raises(RiskConfigError, match=line.split(" ")[0]):
+        load_policy(write(tmp_path, f"[trading]\n{line}\n"))

@@ -36,6 +36,27 @@
         "title": "Ping",
         "type": "object"
       },
+      "SetAccountFeed": {
+        "additionalProperties": false,
+        "description": "Ask for (or stop) live account updates; only meaningful while trading is switched on.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "type": {
+            "const": "account",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "enabled"
+        ],
+        "title": "SetAccountFeed",
+        "type": "object"
+      },
       "SetAlerts": {
         "additionalProperties": false,
         "properties": {
@@ -141,6 +162,7 @@
     },
     "discriminator": {
       "mapping": {
+        "account": "#/$defs/SetAccountFeed",
         "alerts": "#/$defs/SetAlerts",
         "auth": "#/$defs/Auth",
         "ping": "#/$defs/Ping",
@@ -164,11 +186,43 @@
       },
       {
         "$ref": "#/$defs/SetAlerts"
+      },
+      {
+        "$ref": "#/$defs/SetAccountFeed"
       }
     ]
   },
   "server_to_browser": {
     "$defs": {
+      "AccountMessage": {
+        "additionalProperties": false,
+        "description": "The whole account view (see ``trading_models.AccountView``), pushed when it changes, at most\ntwice a second. ``view`` is null when trading is off.",
+        "properties": {
+          "type": {
+            "const": "account",
+            "default": "account",
+            "title": "Type",
+            "type": "string"
+          },
+          "view": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "View"
+          }
+        },
+        "required": [
+          "view"
+        ],
+        "title": "AccountMessage",
+        "type": "object"
+      },
       "AlertEvent": {
         "properties": {
           "acknowledged_at": {
@@ -458,6 +512,36 @@
         "title": "Link",
         "type": "object"
       },
+      "ModeMessage": {
+        "additionalProperties": false,
+        "description": "Trading was switched on or off. ``reason`` says why when the backend did it itself\n(``idle``, ``no browser``, ``shutdown``) or ``user``.",
+        "properties": {
+          "mode": {
+            "enum": [
+              "read-only",
+              "trading"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "type": {
+            "const": "mode",
+            "default": "mode",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "reason"
+        ],
+        "title": "ModeMessage",
+        "type": "object"
+      },
       "Pong": {
         "additionalProperties": false,
         "properties": {
@@ -737,11 +821,13 @@
     },
     "discriminator": {
       "mapping": {
+        "account": "#/$defs/AccountMessage",
         "alert": "#/$defs/AlertEvent",
         "book": "#/$defs/BookMessage",
         "error": "#/$defs/ErrorMessage",
         "hello": "#/$defs/Hello",
         "link": "#/$defs/Link",
+        "mode": "#/$defs/ModeMessage",
         "pong": "#/$defs/Pong",
         "resync": "#/$defs/Resync",
         "subscribed": "#/$defs/Subscribed",
@@ -768,6 +854,12 @@
       },
       {
         "$ref": "#/$defs/Resync"
+      },
+      {
+        "$ref": "#/$defs/ModeMessage"
+      },
+      {
+        "$ref": "#/$defs/AccountMessage"
       },
       {
         "$ref": "#/$defs/BookMessage"

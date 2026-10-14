@@ -1,6 +1,98 @@
 {
   "components": {
     "schemas": {
+      "AccountView": {
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "day": {
+            "title": "Day",
+            "type": "string"
+          },
+          "exposure": {
+            "title": "Exposure",
+            "type": "string"
+          },
+          "fills": {
+            "items": {
+              "$ref": "#/components/schemas/FillView"
+            },
+            "title": "Fills",
+            "type": "array"
+          },
+          "halt_reason": {
+            "title": "Halt Reason",
+            "type": "string"
+          },
+          "halted": {
+            "title": "Halted",
+            "type": "boolean"
+          },
+          "open_orders": {
+            "title": "Open Orders",
+            "type": "integer"
+          },
+          "orders": {
+            "items": {
+              "$ref": "#/components/schemas/OrderView"
+            },
+            "title": "Orders",
+            "type": "array"
+          },
+          "positions": {
+            "items": {
+              "$ref": "#/components/schemas/PositionView"
+            },
+            "title": "Positions",
+            "type": "array"
+          },
+          "realized_today": {
+            "title": "Realized Today",
+            "type": "string"
+          },
+          "shards": {
+            "items": {
+              "$ref": "#/components/schemas/ShardView"
+            },
+            "title": "Shards",
+            "type": "array"
+          },
+          "synced": {
+            "title": "Synced",
+            "type": "boolean"
+          },
+          "transferred_today": {
+            "title": "Transferred Today",
+            "type": "string"
+          }
+        },
+        "required": [
+          "as_of",
+          "synced",
+          "halted",
+          "halt_reason",
+          "shards",
+          "positions",
+          "orders",
+          "fills",
+          "realized_today",
+          "transferred_today",
+          "exposure",
+          "open_orders",
+          "day"
+        ],
+        "title": "AccountView",
+        "type": "object"
+      },
       "Alert": {
         "properties": {
           "acknowledged_at": {
@@ -307,6 +399,39 @@
         "title": "AlertRules",
         "type": "object"
       },
+      "AmendPrepareRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "anyOf": [
+              {
+                "maxLength": 24,
+                "pattern": "^[0-9]+(\\.[0-9]+)?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Count"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "maxLength": 24,
+                "pattern": "^[0-9]+(\\.[0-9]+)?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          }
+        },
+        "title": "AmendPrepareRequest",
+        "type": "object"
+      },
       "AnalyticsValue": {
         "description": "One analyzer metric. ``value`` is in ``unit`` (dollars, contracts or seconds); ``unit`` is\nNone for a plugin's metric the catalog does not know.",
         "properties": {
@@ -527,6 +652,29 @@
         "title": "BookLevel",
         "type": "object"
       },
+      "CancelView": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "order_id": {
+            "title": "Order Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_id",
+          "ok",
+          "message"
+        ],
+        "title": "CancelView",
+        "type": "object"
+      },
       "CandlePage": {
         "properties": {
           "bars": {
@@ -588,6 +736,33 @@
           "changed"
         ],
         "title": "Changed",
+        "type": "object"
+      },
+      "DisableRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cancel_open_orders": {
+            "default": false,
+            "title": "Cancel Open Orders",
+            "type": "boolean"
+          }
+        },
+        "title": "DisableRequest",
+        "type": "object"
+      },
+      "EnableRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "phrase": {
+            "maxLength": 100,
+            "title": "Phrase",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phrase"
+        ],
+        "title": "EnableRequest",
         "type": "object"
       },
       "Event": {
@@ -681,6 +856,170 @@
         "title": "EventResults",
         "type": "object"
       },
+      "ExecuteRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "phrase": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phrase"
+          },
+          "prepare_id": {
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Prepare Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "prepare_id"
+        ],
+        "title": "ExecuteRequest",
+        "type": "object"
+      },
+      "ExecutedView": {
+        "properties": {
+          "client_order_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Order Id"
+          },
+          "filled": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filled"
+          },
+          "kind": {
+            "enum": [
+              "order",
+              "amend"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "order_id": {
+            "title": "Order Id",
+            "type": "string"
+          },
+          "recovered": {
+            "default": false,
+            "title": "Recovered",
+            "type": "boolean"
+          },
+          "remaining": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remaining"
+          },
+          "transfers": {
+            "items": {
+              "$ref": "#/components/schemas/TransferView"
+            },
+            "title": "Transfers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "order_id",
+          "transfers",
+          "lines"
+        ],
+        "title": "ExecutedView",
+        "type": "object"
+      },
+      "FillView": {
+        "properties": {
+          "book_side": {
+            "title": "Book Side",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "string"
+          },
+          "fee": {
+            "title": "Fee",
+            "type": "string"
+          },
+          "is_taker": {
+            "title": "Is Taker",
+            "type": "boolean"
+          },
+          "order_id": {
+            "title": "Order Id",
+            "type": "string"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          },
+          "time_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Ms"
+          },
+          "trade_id": {
+            "title": "Trade Id",
+            "type": "string"
+          },
+          "yes_price": {
+            "title": "Yes Price",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trade_id",
+          "order_id",
+          "ticker",
+          "book_side",
+          "yes_price",
+          "count",
+          "fee",
+          "is_taker",
+          "time_ms"
+        ],
+        "title": "FillView",
+        "type": "object"
+      },
       "Gap": {
         "description": "A period the live stream may have missed (tickers, lifecycle events and orderbook\nchanges; trades are recovered, see ``trades_recovered``).",
         "properties": {
@@ -763,6 +1102,48 @@
           "value"
         ],
         "title": "HistoryPoint",
+        "type": "object"
+      },
+      "KillView": {
+        "properties": {
+          "cancelled": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cancelled",
+            "type": "array"
+          },
+          "clean": {
+            "title": "Clean",
+            "type": "boolean"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "halted": {
+            "title": "Halted",
+            "type": "boolean"
+          },
+          "remaining": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Remaining",
+            "type": "array"
+          }
+        },
+        "required": [
+          "cancelled",
+          "remaining",
+          "errors",
+          "clean",
+          "halted"
+        ],
+        "title": "KillView",
         "type": "object"
       },
       "Layout": {
@@ -894,6 +1275,55 @@
           "updated_at"
         ],
         "title": "LayoutSummary",
+        "type": "object"
+      },
+      "Limits": {
+        "description": "The limits from ``risk.toml`` that apply to this session (all decimal strings).",
+        "properties": {
+          "max_daily_loss": {
+            "title": "Max Daily Loss",
+            "type": "string"
+          },
+          "max_open_exposure": {
+            "title": "Max Open Exposure",
+            "type": "string"
+          },
+          "max_open_orders": {
+            "title": "Max Open Orders",
+            "type": "integer"
+          },
+          "max_order_count": {
+            "title": "Max Order Count",
+            "type": "string"
+          },
+          "max_order_notional": {
+            "title": "Max Order Notional",
+            "type": "string"
+          },
+          "max_position": {
+            "title": "Max Position",
+            "type": "string"
+          },
+          "max_transfer_per_day": {
+            "title": "Max Transfer Per Day",
+            "type": "string"
+          },
+          "max_transfer_per_order": {
+            "title": "Max Transfer Per Order",
+            "type": "string"
+          }
+        },
+        "required": [
+          "max_order_count",
+          "max_position",
+          "max_order_notional",
+          "max_open_exposure",
+          "max_daily_loss",
+          "max_open_orders",
+          "max_transfer_per_order",
+          "max_transfer_per_day"
+        ],
+        "title": "Limits",
         "type": "object"
       },
       "Market": {
@@ -1384,6 +1814,132 @@
         "title": "MetricHistory",
         "type": "object"
       },
+      "ModeChange": {
+        "properties": {
+          "cancelled": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Cancelled",
+            "type": "array"
+          },
+          "mode": {
+            "enum": [
+              "read-only",
+              "trading"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "problems": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Problems",
+            "type": "array"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "ModeChange",
+        "type": "object"
+      },
+      "ModeInfo": {
+        "properties": {
+          "day": {
+            "title": "Day",
+            "type": "string"
+          },
+          "disconnect_seconds": {
+            "title": "Disconnect Seconds",
+            "type": "integer"
+          },
+          "enable_phrase": {
+            "title": "Enable Phrase",
+            "type": "string"
+          },
+          "environment": {
+            "title": "Environment",
+            "type": "string"
+          },
+          "halt_reason": {
+            "title": "Halt Reason",
+            "type": "string"
+          },
+          "halted": {
+            "title": "Halted",
+            "type": "boolean"
+          },
+          "idle_minutes": {
+            "title": "Idle Minutes",
+            "type": "integer"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          },
+          "mode": {
+            "enum": [
+              "read-only",
+              "trading"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "permission_help": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permission Help"
+          },
+          "permitted": {
+            "title": "Permitted",
+            "type": "boolean"
+          },
+          "production": {
+            "title": "Production",
+            "type": "boolean"
+          },
+          "seconds_until_idle": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seconds Until Idle"
+          },
+          "transferred_today": {
+            "title": "Transferred Today",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "environment",
+          "production",
+          "permitted",
+          "enable_phrase",
+          "halted",
+          "halt_reason",
+          "idle_minutes",
+          "disconnect_seconds",
+          "limits",
+          "transferred_today",
+          "day"
+        ],
+        "title": "ModeInfo",
+        "type": "object"
+      },
       "NewRule": {
         "additionalProperties": false,
         "properties": {
@@ -1688,6 +2244,314 @@
         "title": "OrderBook",
         "type": "object"
       },
+      "OrderView": {
+        "properties": {
+          "book_side": {
+            "title": "Book Side",
+            "type": "string"
+          },
+          "client_order_id": {
+            "title": "Client Order Id",
+            "type": "string"
+          },
+          "filled": {
+            "title": "Filled",
+            "type": "string"
+          },
+          "no_price": {
+            "title": "No Price",
+            "type": "string"
+          },
+          "order_id": {
+            "title": "Order Id",
+            "type": "string"
+          },
+          "remaining": {
+            "title": "Remaining",
+            "type": "string"
+          },
+          "shard": {
+            "title": "Shard",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "string"
+          },
+          "yes_price": {
+            "title": "Yes Price",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_id",
+          "client_order_id",
+          "ticker",
+          "shard",
+          "book_side",
+          "yes_price",
+          "no_price",
+          "filled",
+          "remaining",
+          "total",
+          "status"
+        ],
+        "title": "OrderView",
+        "type": "object"
+      },
+      "PositionView": {
+        "properties": {
+          "exposure": {
+            "title": "Exposure",
+            "type": "string"
+          },
+          "position": {
+            "title": "Position",
+            "type": "string"
+          },
+          "realized": {
+            "title": "Realized",
+            "type": "string"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "position",
+          "exposure",
+          "realized"
+        ],
+        "title": "PositionView",
+        "type": "object"
+      },
+      "PrepareRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "buy",
+              "sell"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "count": {
+            "maxLength": 24,
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "title": "Count",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "yes",
+              "no"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "post_only": {
+            "default": false,
+            "title": "Post Only",
+            "type": "boolean"
+          },
+          "price": {
+            "maxLength": 24,
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "title": "Price",
+            "type": "string"
+          },
+          "ticker": {
+            "pattern": "^[A-Za-z0-9._-]{1,128}$",
+            "title": "Ticker",
+            "type": "string"
+          },
+          "time_in_force": {
+            "default": "good_till_canceled",
+            "enum": [
+              "good_till_canceled",
+              "immediate_or_cancel"
+            ],
+            "title": "Time In Force",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "action",
+          "outcome",
+          "count",
+          "price"
+        ],
+        "title": "PrepareRequest",
+        "type": "object"
+      },
+      "PreparedView": {
+        "description": "What would happen. ``prepare_id`` is null when the order is refused (nothing to execute).",
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "expires_in_seconds": {
+            "title": "Expires In Seconds",
+            "type": "integer"
+          },
+          "fee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fee"
+          },
+          "funding": {
+            "items": {
+              "$ref": "#/components/schemas/TransferView"
+            },
+            "title": "Funding",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "order",
+              "amend"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "phrase_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phrase Format"
+          },
+          "prepare_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prepare Id"
+          },
+          "refusals": {
+            "items": {
+              "$ref": "#/components/schemas/RefusalView"
+            },
+            "title": "Refusals",
+            "type": "array"
+          },
+          "requires_phrase": {
+            "title": "Requires Phrase",
+            "type": "boolean"
+          },
+          "shard": {
+            "title": "Shard",
+            "type": "integer"
+          },
+          "worst_case_cost": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worst Case Cost"
+          }
+        },
+        "required": [
+          "prepare_id",
+          "kind",
+          "expires_in_seconds",
+          "lines",
+          "approved",
+          "refusals",
+          "shard",
+          "worst_case_cost",
+          "fee",
+          "funding",
+          "requires_phrase",
+          "phrase_format"
+        ],
+        "title": "PreparedView",
+        "type": "object"
+      },
+      "RefusalView": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "RefusalView",
+        "type": "object"
+      },
+      "ResumeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "confirm": {
+            "const": true,
+            "title": "Confirm",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "confirm"
+        ],
+        "title": "ResumeRequest",
+        "type": "object"
+      },
+      "Resumed": {
+        "properties": {
+          "halted": {
+            "title": "Halted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "halted"
+        ],
+        "title": "Resumed",
+        "type": "object"
+      },
       "RulePatch": {
         "additionalProperties": false,
         "properties": {
@@ -1811,6 +2675,39 @@
           "reachable"
         ],
         "title": "ServerInfo",
+        "type": "object"
+      },
+      "ShardView": {
+        "properties": {
+          "cash": {
+            "title": "Cash",
+            "type": "string"
+          },
+          "free": {
+            "title": "Free",
+            "type": "string"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "trading": {
+            "title": "Trading",
+            "type": "boolean"
+          },
+          "transfers": {
+            "title": "Transfers",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "index",
+          "cash",
+          "free",
+          "trading",
+          "transfers"
+        ],
+        "title": "ShardView",
         "type": "object"
       },
       "Tick": {
@@ -2039,6 +2936,29 @@
           "trades"
         ],
         "title": "TradePage",
+        "type": "object"
+      },
+      "TransferView": {
+        "properties": {
+          "amount": {
+            "title": "Amount",
+            "type": "string"
+          },
+          "destination": {
+            "title": "Destination",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "source",
+          "destination",
+          "amount"
+        ],
+        "title": "TransferView",
         "type": "object"
       },
       "ValidationError": {
@@ -3633,6 +4553,100 @@
         "summary": "Trades"
       }
     },
+    "/api/mode": {
+      "get": {
+        "operationId": "mode_api_mode_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModeInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Mode"
+      }
+    },
+    "/api/mode/disable": {
+      "post": {
+        "operationId": "disable_api_mode_disable_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisableRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModeChange"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disable"
+      }
+    },
+    "/api/mode/enable": {
+      "post": {
+        "operationId": "enable_api_mode_enable_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnableRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModeInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enable"
+      }
+    },
     "/api/server": {
       "get": {
         "description": "Is a server configured, and does it answer? Never fails: the browser shows the answer.",
@@ -3692,6 +4706,247 @@
           }
         },
         "summary": "Touch"
+      }
+    },
+    "/api/trading/account": {
+      "get": {
+        "operationId": "account_api_trading_account_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Account"
+      }
+    },
+    "/api/trading/kill": {
+      "post": {
+        "description": "Halt and cancel everything. Works with trading switched off too.",
+        "operationId": "kill_api_trading_kill_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KillView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Kill"
+      }
+    },
+    "/api/trading/orders/execute": {
+      "post": {
+        "operationId": "execute_api_trading_orders_execute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutedView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute"
+      }
+    },
+    "/api/trading/orders/prepare": {
+      "post": {
+        "operationId": "prepare_api_trading_orders_prepare_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrepareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepare"
+      }
+    },
+    "/api/trading/orders/{order_id}": {
+      "delete": {
+        "operationId": "cancel_api_trading_orders__order_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._-]{1,64}$",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel"
+      }
+    },
+    "/api/trading/orders/{order_id}/amend": {
+      "post": {
+        "operationId": "prepare_amend_api_trading_orders__order_id__amend_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._-]{1,64}$",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AmendPrepareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepare Amend"
+      }
+    },
+    "/api/trading/resume": {
+      "post": {
+        "operationId": "resume_api_trading_resume_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Resumed"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume"
       }
     },
     "/api/watchlist": {

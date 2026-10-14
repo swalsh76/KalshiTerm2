@@ -68,6 +68,7 @@ class Connection:
         self.limit = QUEUE_LIMIT if limit is None else limit
         self.subs: dict[str, set[str]] = {"ticker": set(), "trades": set(), "book": set()}
         self.alerts = True
+        self.account = False  # wants live account updates (trading mode only)
         self.overflowed = False
         self.dropped = asyncio.Event()  # set when the page fell too far behind
 
@@ -151,6 +152,21 @@ class StreamHub:
         for channel in channels:
             conn.subs[channel].difference_update(tickers)
         self._changed.set()
+
+    @property
+    def connection_count(self) -> int:
+        return len(self._connections)
+
+    def broadcast(
+        self,
+        message: BaseModel | dict[str, Any],
+        wanted: Callable[[Connection], bool] | None = None,
+    ) -> None:
+        """Send to every connection, or those ``wanted`` accepts (each has a bounded queue)."""
+        self._broadcast(wanted or (lambda c: True), message)
+
+    def set_account_feed(self, conn: Connection, enabled: bool) -> None:
+        conn.account = enabled
 
     def set_alerts(self, conn: Connection, enabled: bool) -> None:
         conn.alerts = enabled

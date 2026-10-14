@@ -188,6 +188,7 @@ class AccountTracker:
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         balance_interval: float = BALANCE_INTERVAL,
+        on_change: Callable[[], None] | None = None,
     ) -> None:
         self._rest = rest
         self._ws = socket
@@ -195,6 +196,9 @@ class AccountTracker:
         self._clock = clock
         self._sleep = sleep
         self._balance_interval = balance_interval
+        self.on_change = (
+            on_change  # called (never raising) whenever what the snapshot shows may differ
+        )
         self.balances_e6: dict[int, int] = {}
         self.shard_flags: dict[int, tuple[bool, bool]] = {}  # (trading, transfers)
         self.positions: dict[str, TrackedPosition] = {}
@@ -253,6 +257,7 @@ class AccountTracker:
         self.state.set_baseline(self.realized_total_e6())
         self.synced = True
         self.synced_event.set()
+        self._changed()
 
     async def refresh_balance(self) -> None:
         """Re-read the balance and shard status (cheap; used before every order)."""
@@ -273,6 +278,7 @@ class AccountTracker:
             for row in balance.balance_breakdown
         }
         self.balance_at = self._clock()
+        self._changed()
 
     @staticmethod
     def _position_from_rest(position: MarketPosition) -> TrackedPosition:
@@ -294,6 +300,7 @@ class AccountTracker:
         finally:
             self.connected = False
             self.synced = False
+            self._changed()
 
     async def _resync(self) -> None:
         delay = 0.5  # ``refresh`` marks the tracker unsynced until it has read everything
@@ -317,6 +324,13 @@ class AccountTracker:
                 log.warning("balance poll failed; the snapshot will go stale", exc_info=True)
                 await self._sleep(1.0)
 
+    def _changed(self) -> None:
+        if self.on_change is not None:
+            try:
+                self.on_change()
+            except Exception:  # a listener's trouble must never break the account view
+                log.exception("account change listener failed")
+
     def apply(self, message: WsMessage) -> None:
         """Apply one private-channel message. Idempotent, and ignores anything else."""
         if message.type == "user_order":
@@ -325,6 +339,9 @@ class AccountTracker:
             self._apply_position(MarketPositionMsg.model_validate(message.msg))
         elif message.type == "fill":
             self._apply_fill(FillMsg.model_validate(message.msg))
+        else:
+            return
+        self._changed()
 
     def _apply_order(self, msg: UserOrderMsg) -> None:
         incoming = tracked_from_message(msg)

@@ -297,3 +297,59 @@ class FakeTrading:
 
     def names(self) -> list[str]:
         return [name for name, _ in self.calls]
+
+
+# --- a runtime built from the fakes, for the UI's trading session ---------------------------------
+
+
+async def instant(_: float) -> None:
+    await asyncio.sleep(0)
+
+
+def fake_runtime_factory(
+    rest: FakeRest,
+    trading: "FakeTrading",
+    state: TradingState,
+    settings: Any,
+    policy: Any,
+    *,
+    modes: list[str] | None = None,
+    fail: Exception | None = None,
+    sockets: list[FakeSocket] | None = None,
+) -> Any:
+    """``open_runtime``'s stand-in: same shapes, scripted Kalshi, nothing on the network."""
+    from contextlib import asynccontextmanager
+    from datetime import UTC
+    from datetime import datetime as dt
+
+    from kalshiterm_client.orders import OrderService
+    from kalshiterm_client.trade_runtime import Runtime
+
+    @asynccontextmanager
+    async def factory(mode: str) -> Any:
+        if modes is not None:
+            modes.append(mode)
+        if fail is not None:
+            raise fail
+        socket = FakeSocket()
+        if sockets is not None:
+            sockets.append(socket)
+        tracker = AccountTracker(rest, socket, state, clock=lambda: T0, balance_interval=3600)
+        service = OrderService(
+            rest,
+            trading,
+            tracker,
+            policy,
+            production=settings.is_production,
+            clock=lambda: dt.fromtimestamp(T0, UTC),
+            sleep=instant,
+        )
+        runtime = Runtime(settings, policy, state, rest, service, tracker, trading)  # type: ignore[arg-type]
+        if mode in ("trade", "preview"):
+            await tracker.start()
+        try:
+            yield runtime
+        finally:
+            await tracker.stop()
+
+    return factory

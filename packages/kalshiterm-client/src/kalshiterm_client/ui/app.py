@@ -25,6 +25,9 @@ from kalshiterm_client.ui import messages as m
 from kalshiterm_client.ui.data_routes import DataAccess, register_error_handlers, router
 from kalshiterm_client.ui.security import WS_PATH, SecurityMiddleware, token_matches
 from kalshiterm_client.ui.stream_hub import Connection, StreamFactory, StreamHub
+from kalshiterm_client.ui.trading import TradingSession
+from kalshiterm_client.ui.trading_routes import register_trading_errors
+from kalshiterm_client.ui.trading_routes import router as trading_router
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "ui_assets"
 AUTH_TIMEOUT_SECONDS = 5.0
@@ -57,16 +60,27 @@ def create_app(
     assets_dir: Path | None = None,
     data: DataAccess | None = None,
     stream_factory: StreamFactory | None = None,
+    trading: TradingSession | None = None,
 ) -> FastAPI:
     """Build the app. ``port`` and ``token`` feed the security layer; ``environment`` is what
     ``KALSHI_ENV`` says (``demo`` or ``production``)."""
     # No interactive docs or schema endpoint: a smaller surface. The schema for the generated
     # TypeScript types comes from ``create_app(...).openapi()`` in a build script.
     hub = StreamHub(stream_factory)
+    if trading is not None:
+        trading.bind(
+            announce_mode=hub.broadcast,
+            announce_account=lambda view: hub.broadcast(
+                m.AccountMessage(view=view), lambda conn: conn.account
+            ),
+            connection_count=lambda: hub.connection_count,
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
+        if trading is not None:
+            await trading.close()
         await hub.close()
         await app.state.data.close()
 
@@ -80,8 +94,11 @@ def create_app(
     assets = assets_dir if assets_dir is not None else ASSETS_DIR
     app.state.data = data or DataAccess(None)
     app.state.hub = hub
+    app.state.trading = trading
     register_error_handlers(app)
+    register_trading_errors(app)
     app.include_router(router)
+    app.include_router(trading_router)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:
@@ -89,10 +106,13 @@ def create_app(
 
     @app.get("/api/session")
     async def session() -> dict[str, Any]:
-        return {"mode": "read-only", "environment": environment, "version": version()}
+        mode = trading.mode if trading is not None else "read-only"
+        return {"mode": mode, "environment": environment, "version": version()}
 
     @app.post("/api/session/touch")
     async def touch() -> dict[str, bool]:
+        if trading is not None:
+            trading.touch()  # the user is active: the idle timer starts again
         return {"ok": True}
 
     @app.websocket(WS_PATH)
@@ -113,9 +133,14 @@ def create_app(
             await _close(websocket, WS_AUTH_FAILED)
             return
         await websocket.send_json(
-            m.Hello(mode="read-only", environment=environment).model_dump(mode="json")
+            m.Hello(
+                mode="trading"
+                if trading is not None and trading.mode == "trading"
+                else "read-only",
+                environment=environment,
+            ).model_dump(mode="json")
         )
-        await serve_connection(websocket, hub)
+        await serve_connection(websocket, hub, trading)
 
     if (assets / "index.html").is_file():
         app.mount("/", StaticFiles(directory=assets, html=True), name="ui")
@@ -133,7 +158,9 @@ _CLIENT_MESSAGE: TypeAdapter[Any] = TypeAdapter(m.ClientMessage)
 WS_TRY_AGAIN_LATER = 1013
 
 
-def _handle(hub: StreamHub, conn: Connection, raw: Any) -> None:
+def _handle(
+    hub: StreamHub, conn: Connection, raw: Any, trading: TradingSession | None = None
+) -> None:
     """One message from the browser. A bad one gets an error message; the connection stays."""
     try:
         message = _CLIENT_MESSAGE.validate_python(raw)
@@ -149,6 +176,10 @@ def _handle(hub: StreamHub, conn: Connection, raw: Any) -> None:
             hub.unsubscribe(conn, message.channels, message.tickers)
         elif isinstance(message, m.SetAlerts):
             hub.set_alerts(conn, message.enabled)
+        elif isinstance(message, m.SetAccountFeed):
+            hub.set_account_feed(conn, message.enabled)
+            if message.enabled and trading is not None and trading.mode == "trading":
+                conn.send(m.AccountMessage(view=trading.account().model_dump(mode="json")))
         else:
             conn.send(m.ErrorMessage(error="already authenticated"))
     except ValueError as exc:
@@ -164,7 +195,9 @@ async def _write(websocket: WebSocket, conn: Connection) -> None:
         return
 
 
-async def _read(websocket: WebSocket, hub: StreamHub, conn: Connection) -> None:
+async def _read(
+    websocket: WebSocket, hub: StreamHub, conn: Connection, trading: TradingSession | None
+) -> None:
     """Handle what the page sends until it goes away."""
     try:
         while True:
@@ -173,18 +206,20 @@ async def _read(websocket: WebSocket, hub: StreamHub, conn: Connection) -> None:
             except ValueError:
                 conn.send(m.ErrorMessage(error="not JSON"))
                 continue
-            _handle(hub, conn, raw)
+            _handle(hub, conn, raw, trading)
     except (WebSocketDisconnect, KeyError, RuntimeError):
         return
 
 
-async def serve_connection(websocket: WebSocket, hub: StreamHub) -> None:
+async def serve_connection(
+    websocket: WebSocket, hub: StreamHub, trading: TradingSession | None = None
+) -> None:
     """An authenticated page: read its commands, write its events, and drop it if it cannot keep
     up. A page that stops reading blocks our send, so the drop cannot wait for the writer: it is
     triggered by the queue limit and tears the other two tasks down."""
     conn = Connection()
     hub.attach(conn)
-    reader = asyncio.create_task(_read(websocket, hub, conn))
+    reader = asyncio.create_task(_read(websocket, hub, conn, trading))
     writer = asyncio.create_task(_write(websocket, conn))
     dropped = asyncio.create_task(conn.dropped.wait())
     try:
