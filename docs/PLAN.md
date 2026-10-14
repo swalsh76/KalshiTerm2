@@ -1798,12 +1798,31 @@ and §7.3 chose it before any measurement, so it is decided by a spike (decision
    as `Authorization: Bearer` (WebSocket: first message); **no cookies, no CORS**, so there is nothing
    for another tab to ride on. Tests for each (wrong Host, wrong Origin, missing / wrong token, WebSocket
    without a token).
-3. **Trading is opt-in per session**: `kterm ui` is read-only; `kterm ui --trading` enables the order
-   endpoints, and production still needs everything Phase 6 requires (`KALSHI_ENV=production`,
-   `production_enabled`, the typed confirmation). A stray POST cannot place an order: an order is a
-   **two-step flow**, `prepare` (returns the verdict, the funding plan and a one-time id) then
-   `execute(id)`; the id expires in 60 s, is single use, and is bound to exactly what was shown
-   (`PlanChanged` rules as in the CLI). The production typed phrase is checked by the backend, not the page.
+3. **Trading is switched on and off inside the app (changed 2026-10-13 at the user's request;
+   replaces "`kterm ui --trading`").** `kterm ui` always starts **read-only**: in that mode the
+   backend has not loaded the trading key, has no trading client and no private WebSocket, and every
+   order endpoint answers 403. A mode control in the header switches to **trading** (which, on this
+   setup, is production):
+   a. *Permission vs session.* `risk.toml` keeps granting **permission** (`production_enabled`); the
+      app only controls the **session mode**. The page can never write `risk.toml` (limits and the
+      permission change only by editing that file, as since slice 6.2), so a hijacked page or a stolen
+      session token can ask for trading but cannot grant itself the right to. If the permission is
+      missing the app says exactly what to edit.
+   b. *Switching on* needs a human act the page cannot do silently: the user types a phrase in a
+      dialog (`ENABLE PRODUCTION TRADING`, or `ENABLE DEMO TRADING` when the environment is demo), the
+      backend checks the phrase, the permission and the key, then builds the trading runtime (loads the
+      key, starts the account tracker) and answers with the new mode. The dialog shows the limits from
+      `risk.toml` and today's loss and transfer totals.
+   c. *Switching off* is one click, no phrase, instant: the trading runtime is stopped and the key
+      dropped from memory. Resting orders stay unless the user also ticks "cancel all open orders".
+   d. *It lapses on its own*: back to read-only after 30 minutes without any trading activity or
+      when the last browser connection has been gone for 60 seconds (both overridable in
+      `risk.toml`), and always at backend shutdown. The kill switch works in either mode.
+   e. A persistent banner shows the mode (production = red); the header control always shows it.
+   f. An order is still a **two-step flow**: `prepare` (the verdict, the funding plan and a one-time
+      id) then `execute(id)`; the id expires in 60 s, is single use, and is bound to exactly what was
+      shown (`PlanChanged` rules as in the CLI). The production typed order phrase is checked by the
+      backend, not the page. Switching on does not weaken any of this.
 4. **Types cannot drift**: the backend's OpenAPI schema generates the TypeScript API types
    (`openapi-typescript`); a CI check fails if the committed types are out of date. Prices and counts
    cross the wire as decimal strings and are never parsed to JS `number` for arithmetic (display
@@ -1840,17 +1859,17 @@ and §7.3 chose it before any measurement, so it is decided by a spike (decision
 | 7.1 | Backend skeleton: `kterm ui`, FastAPI + uvicorn, the whole security layer of decision 2 with its tests, a placeholder page, the new dependencies. No data yet |
 | 7.2 | Backend data API: server data through `ServerClient` (markets, market, candles, trades, book, analytics, arbitrage, watchlist, alerts) and the live stream relay through `StreamClient` / `BookTracker` (resume, exactly-once); OpenAPI -> generated types check; contract tests |
 | 7.3 | Layouts on the server: migration 0020, endpoints, `ServerClient` methods, per-user scoping tests, relayed by the backend |
-| 7.4 | Backend trading API (`--trading`): account snapshot + live account events, prepare / execute / cancel / amend / kill / resume with the one-time ids and server-side typed confirmation; tests on the Phase 6 fakes; a live read-only check |
+| 7.4 | Backend trading API: the mode switch of decision 3 (lazy trading runtime, typed phrase, permission check, lapse timers, switching off), account snapshot + live account events, prepare / execute / cancel / amend / kill / resume with the one-time ids and server-side typed confirmation; tests on the Phase 6 fakes (every order endpoint 403 in read-only; wrong phrase, missing permission, expiry); a live read-only check |
 | 7.5 | Front-end scaffold: Node set up, Vite / React / TS, lint, type-check, Vitest, generated types, dockview shell, command bar skeleton, token bootstrap, themes, the CI Node job, and **the grid spike with its measured result** |
 | 7.6 | Market panels: market list / search grid, market detail, watchlist, linked-ticker groups; candlestick chart (bars + live tick); order-book ladder and depth chart from `BookTracker` |
 | 7.7 | Live panels: trades tape, alerts (rules and live alerts), analytics and arbitrage panels |
-| 7.8 | Trading panels: balance by shard, positions, orders, fills; the order ticket (prepare -> verdict -> confirm -> execute), amend / cancel from the orders grid, the always-visible kill switch, the production banner |
+| 7.8 | Trading panels: the header mode control and its enable dialog, balance by shard, positions, orders, fills; the order ticket (prepare -> verdict -> confirm -> execute), amend / cancel from the orders grid, the always-visible kill switch, the production banner |
 | 7.9 | Layouts and windows (save / load / delete named layouts, reset, popout windows for multi-monitor as far as dockview supports it), Playwright journeys (browse -> chart -> order ticket -> kill), performance measurements, README, PLAN as-built; **Phase 7 complete** |
 
 **Decided with the user (2026-10-13):** Node is approved (install **Node 22 LTS via Homebrew** at the
 start of 7.5, pinned in the repo and in CI; slices 7.1-7.4 are Python only); layouts are
-**server-stored per user** (decision 6); `kterm ui` is **read-only by default** with `--trading` as the
-opt-in (decision 3); the grid is **decided by the measured spike** (decision 5).
+**server-stored per user** (decision 6); `kterm ui` is **read-only by default** with trading as an
+opt-in (decision 3, changed the same day: switched on and off inside the app, with `risk.toml` still granting permission); the grid is **decided by the measured spike** (decision 5).
 
 ## 11. Risks & Notes
 
