@@ -864,7 +864,7 @@ Each phase ends with passing tests and CI green.
 | **4. Analytics** | Plugin framework + built-in analyzers + alerts — **done** (slices 4.1-4.5 in §10.5) |
 | **5. Client data side** | Server API client, CLI data views — **done** (slices 5.1-5.5 in §10.6) |
 | **6. Client trading** | Risk layer, order management, private WS channels, CLI; verified on the live account under tiny limits; works with the server offline — **done** (slices 6.1-6.8 in §10.7) |
-| **7. Terminal UI** | Bloomberg-style UI per §7 decision (local backend, panels, grids, charts, command bar, order entry) |
+| **7. Terminal UI** | Local backend (FastAPI on 127.0.0.1), React front end: panels, grids, charts, command bar, order entry per §7 decision (slices 7.1-7.9 in §10.8) |
 | **8. Packaging** | Frontend build bundled into client wheel, install docs, tagged v0.1.0 |
 
 ### 10.1 Phase 2 slices
@@ -1769,6 +1769,88 @@ read-only data key. (2) Multi-shard (decision 13).
 
 Slices 6.1-6.6 send no real order. Parked, not planned: order groups, subaccounts, RFQ / communications
 channel, encrypted trading keys, trading from the browser (Phase 7), strategies or automation.
+
+### 10.8 Phase 7 slices (terminal UI)
+
+**What exists:** everything the UI needs is already a typed Python library: `ServerClient` (data,
+analytics, alerts, watchlist), `StreamClient` + `BookTracker` (live, exactly-once), and for trading
+`OrderService` / `AccountTracker` / the risk layer, all verified live. Phase 7 is therefore a **thin
+local backend** that exposes those to a browser, plus the front end. No business logic is duplicated
+in either.
+
+**Measured before designing (2026-10-13).** (1) **Node and npm are not installed on this machine**; the
+front end needs them to develop and build (not to run: built assets ship in the wheel, Phase 8). Vite 8
+requires Node `^20.19 || >=22.12`. (2) The client package has no web-server dependency yet (the server
+package already uses FastAPI + uvicorn). (3) **The server has no layouts endpoint**, although §8.3 and
+CLAUDE.md say layouts are per-user server data. (4) Library weight (npm unpacked, not bundled):
+dockview 1.7 MB (MIT); Lightweight Charts 3.1 MB (Apache-2.0); Perspective 7.4 MB + datagrid 1.2 MB + a
+viewer + WASM (Apache-2.0); AG Grid Community 21.6 MB (MIT). Perspective is by far the heaviest piece
+and §7.3 chose it before any measurement, so it is decided by a spike (decision 5).
+
+**Decisions (recommended defaults; say if you disagree).**
+1. **Backend**: FastAPI + uvicorn inside `kalshiterm-client` (`kalshiterm_client/ui/`), started by
+   `kterm ui`. One process on `127.0.0.1` (random free port unless `--port`), serving the built front
+   end and `/api` (REST) + `/api/ws` (one multiplexed WebSocket: live market data, alerts, and, in
+   trading mode, account events). The browser never sees the Kalshi keys or the server token.
+2. **Security (from §7.3, made concrete)**: bind loopback only; `Host` header allow-list (stops DNS
+   rebinding); `Origin` check on every non-GET request and WebSocket upgrade; a 256-bit per-session
+   token printed in the URL **fragment** (never sent to any server, not logged), kept in page memory and sent
+   as `Authorization: Bearer` (WebSocket: first message); **no cookies, no CORS**, so there is nothing
+   for another tab to ride on. Tests for each (wrong Host, wrong Origin, missing / wrong token, WebSocket
+   without a token).
+3. **Trading is opt-in per session**: `kterm ui` is read-only; `kterm ui --trading` enables the order
+   endpoints, and production still needs everything Phase 6 requires (`KALSHI_ENV=production`,
+   `production_enabled`, the typed confirmation). A stray POST cannot place an order: an order is a
+   **two-step flow**, `prepare` (returns the verdict, the funding plan and a one-time id) then
+   `execute(id)`; the id expires in 60 s, is single use, and is bound to exactly what was shown
+   (`PlanChanged` rules as in the CLI). The production typed phrase is checked by the backend, not the page.
+4. **Types cannot drift**: the backend's OpenAPI schema generates the TypeScript API types
+   (`openapi-typescript`); a CI check fails if the committed types are out of date. Prices and counts
+   cross the wire as decimal strings and are never parsed to JS `number` for arithmetic (display
+   formatting only).
+5. **Front end**: React + TypeScript + Vite, dockview (panels), Lightweight Charts (charts), TanStack
+   Query (REST) and one WebSocket store. **The grid library is decided by a measured spike in slice
+   7.5** between **Perspective**, **AG Grid Community** and **TanStack Table + virtual scrolling**,
+   because every grid panel (7.6-7.8) depends on it and swapping later means rewriting them. Pass
+   marks, fixed before measuring: 5,000 rows x 10 columns taking 200 cell updates / s with changed
+   cells flashing, 95th-percentile frame time <= ~17 ms; re-sorting on a live-updating column responsive
+   (< ~50 ms per interaction); then the gzipped JS + WASM added to the initial load, and the glue code
+   needed for sort, flash, keyboard navigation and column resize. Among candidates that pass, the
+   lightest wins, then the least custom code. The result (numbers, not impressions) is written here.
+   *Expectation recorded beforehand, unmeasured:* AG Grid Community balances best for this app, TanStack
+   is lightest but costs feature work, Perspective's strengths (client-side pivot / huge datasets) are
+   not needed here.
+6. **Layouts are per-user server data** (as §8.3 says): a new `ui_layouts` table (migration 0020),
+   endpoints to list / save / delete by name (size-capped), and `ServerClient` methods; the browser keeps
+   the last layout in `localStorage` so the UI still opens when the server is down.
+7. **Testing**: pytest for the backend (fakes from the Phase 5 / 6 tests), Vitest for front-end units,
+   Playwright for end-to-end journeys against a backend started with the same fakes (deterministic).
+   CI gets a Node job (install, lint, type-check, test, build, e2e); sources live in
+   `packages/kalshiterm-client/frontend/`, the build goes to `ui_assets/` (git-ignored; bundled into the
+   wheel in Phase 8). `kterm ui` without built assets says so and shows the dev command.
+8. **Interaction**: a global command bar (Ctrl+K) with mnemonics (`M <ticker>`, `CH`, `BK`, `OR`, `POS`,
+   `BUY <ticker> <n> <price>`, `KILL`), panels linked by colour channels (pick a ticker in one, linked
+   panels follow), light and dark themes. **The kill switch is always visible in trading mode; a
+   persistent red banner marks production.**
+9. **Out of scope** (parking lot if raised): mobile layouts, multi-user login screens, chart drawing
+   tools and saved studies, backtesting, alert delivery outside the app, themes beyond light / dark.
+
+| # | Slice |
+|---|---|
+| 7.1 | Backend skeleton: `kterm ui`, FastAPI + uvicorn, the whole security layer of decision 2 with its tests, a placeholder page, the new dependencies. No data yet |
+| 7.2 | Backend data API: server data through `ServerClient` (markets, market, candles, trades, book, analytics, arbitrage, watchlist, alerts) and the live stream relay through `StreamClient` / `BookTracker` (resume, exactly-once); OpenAPI -> generated types check; contract tests |
+| 7.3 | Layouts on the server: migration 0020, endpoints, `ServerClient` methods, per-user scoping tests, relayed by the backend |
+| 7.4 | Backend trading API (`--trading`): account snapshot + live account events, prepare / execute / cancel / amend / kill / resume with the one-time ids and server-side typed confirmation; tests on the Phase 6 fakes; a live read-only check |
+| 7.5 | Front-end scaffold: Node set up, Vite / React / TS, lint, type-check, Vitest, generated types, dockview shell, command bar skeleton, token bootstrap, themes, the CI Node job, and **the grid spike with its measured result** |
+| 7.6 | Market panels: market list / search grid, market detail, watchlist, linked-ticker groups; candlestick chart (bars + live tick); order-book ladder and depth chart from `BookTracker` |
+| 7.7 | Live panels: trades tape, alerts (rules and live alerts), analytics and arbitrage panels |
+| 7.8 | Trading panels: balance by shard, positions, orders, fills; the order ticket (prepare -> verdict -> confirm -> execute), amend / cancel from the orders grid, the always-visible kill switch, the production banner |
+| 7.9 | Layouts and windows (save / load / delete named layouts, reset, popout windows for multi-monitor as far as dockview supports it), Playwright journeys (browse -> chart -> order ticket -> kill), performance measurements, README, PLAN as-built; **Phase 7 complete** |
+
+**Decided with the user (2026-10-13):** Node is approved (install **Node 22 LTS via Homebrew** at the
+start of 7.5, pinned in the repo and in CI; slices 7.1-7.4 are Python only); layouts are
+**server-stored per user** (decision 6); `kterm ui` is **read-only by default** with `--trading` as the
+opt-in (decision 3); the grid is **decided by the measured spike** (decision 5).
 
 ## 11. Risks & Notes
 
