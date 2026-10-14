@@ -6,15 +6,18 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import uvicorn
+from kalshi_core.config import KalshiSettings
 
 from kalshiterm_client.client import ServerClient
 from kalshiterm_client.errors import ConnectionProblem
 from kalshiterm_client.profiles import ProfileError, ProfileStore
+from kalshiterm_client.risk_config import load_policy
 from kalshiterm_client.stream import StreamClient
 from kalshiterm_client.ui.app import MAX_WS_MESSAGE_BYTES, create_app
 from kalshiterm_client.ui.data_routes import DataAccess
 from kalshiterm_client.ui.security import new_token
 from kalshiterm_client.ui.stream_hub import StreamFactory, StreamLike
+from kalshiterm_client.ui.trading import TradingSession
 
 LOOPBACK = "127.0.0.1"
 
@@ -64,6 +67,7 @@ def make_server(
     *,
     data: DataAccess | None = None,
     stream_factory: StreamFactory | None = None,
+    trading: TradingSession | None = None,
 ) -> uvicorn.Server:
     app = create_app(
         port=sock.getsockname()[1],
@@ -72,6 +76,7 @@ def make_server(
         assets_dir=assets_dir,
         data=data,
         stream_factory=stream_factory,
+        trading=trading,
     )
     config = uvicorn.Config(
         app,
@@ -97,9 +102,13 @@ def serve(
     token = new_token()
     url = build_url(sock.getsockname()[1], token)
     data, stream_factory = connect_server(profile)
-    server = make_server(sock, token, environment, data=data, stream_factory=stream_factory)
+    trading = TradingSession(settings=KalshiSettings(), policy_loader=load_policy)
+    server = make_server(
+        sock, token, environment, data=data, stream_factory=stream_factory, trading=trading
+    )
     echo(
-        f"KalshiTerm UI ({environment}, read-only) listening on {LOOPBACK}:{sock.getsockname()[1]}"
+        f"KalshiTerm UI ({environment}) listening on {LOOPBACK}:{sock.getsockname()[1]}; "
+        "trading is OFF until you switch it on in the page"
     )
     echo(f"server: {data.profile or 'none'} ({'configured' if data.client else data.reason})")
     echo(f"open: {url}")

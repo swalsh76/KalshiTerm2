@@ -21,7 +21,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
 from kalshi_core.fees import QUADRATIC_FAMILY, taker_multiplier
@@ -248,6 +248,24 @@ def describe(prepared: Prepared) -> list[str]:
     for refusal in verdict.refusals:
         lines.append(f"REFUSED: {refusal.message}")
     return lines
+
+
+def typed_phrase_matches(typed: str, request: OrderRequest) -> bool:
+    """``TICKER buy|sell yes|no COUNT PRICE`` with the numbers equal as numbers (0.4 == 0.40)."""
+    parts = typed.split()
+    if len(parts) != 5:
+        return False
+    ticker, action, outcome, count, price = parts
+    try:
+        return (
+            ticker == request.ticker
+            and action.lower() == request.action.value
+            and outcome.lower() == request.outcome.value
+            and Decimal(count) == request.count
+            and Decimal(price) == request.price
+        )
+    except InvalidOperation:
+        return False
 
 
 class OrderService:
@@ -490,8 +508,12 @@ class OrderService:
         )
 
     async def kill(self, reason: str = "kill switch") -> KillReport:
-        """Halt, cancel everything, and look until nothing rests."""
+        """Halt (saved first, so nothing new can start), then cancel everything."""
         self._tracker.state.halt(reason)
+        return await self.cancel_everything()
+
+    async def cancel_everything(self) -> KillReport:
+        """Cancel every resting order and look until none remain; does not halt trading."""
         report = KillReport()
         try:
             await self._trading.cancel_all()

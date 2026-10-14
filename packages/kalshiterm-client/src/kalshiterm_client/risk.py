@@ -143,6 +143,8 @@ class RiskPolicy:
     max_transfer_per_day_e6: int = 5_000_000
     snapshot_max_age_seconds: int = 10
     production_enabled: bool = False
+    ui_idle_minutes: int = 30  # browser UI: trading switches itself off after this much inactivity
+    ui_disconnect_seconds: int = 60  # ... or this long after the last browser connection is gone
 
 
 @dataclass(frozen=True)

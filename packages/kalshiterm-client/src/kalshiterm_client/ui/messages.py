@@ -6,7 +6,7 @@ Decimals are strings on the wire, never JSON numbers.
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -54,8 +54,17 @@ class SetAlerts(BaseModel):
     enabled: bool
 
 
+class SetAccountFeed(BaseModel):
+    """Ask for (or stop) live account updates; only meaningful while trading is switched on."""
+
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["account"]
+    enabled: bool
+
+
 ClientMessage = Annotated[
-    Auth | Ping | Subscribe | Unsubscribe | SetAlerts, Field(discriminator="type")
+    Auth | Ping | Subscribe | Unsubscribe | SetAlerts | SetAccountFeed,
+    Field(discriminator="type"),
 ]
 
 
@@ -115,6 +124,23 @@ class BookMessage(_Out):
     inconsistent: bool = False
 
 
+class ModeMessage(_Out):
+    """Trading was switched on or off. ``reason`` says why when the backend did it itself
+    (``idle``, ``no browser``, ``shutdown``) or ``user``."""
+
+    type: Literal["mode"] = "mode"
+    mode: Literal["read-only", "trading"]
+    reason: str
+
+
+class AccountMessage(_Out):
+    """The whole account view (see ``trading_models.AccountView``), pushed when it changes, at most
+    twice a second. ``view`` is null when trading is off."""
+
+    type: Literal["account"] = "account"
+    view: dict[str, Any] | None
+
+
 ServerMessage = Annotated[
     Hello
     | Pong
@@ -122,6 +148,8 @@ ServerMessage = Annotated[
     | Subscribed
     | Link
     | Resync
+    | ModeMessage
+    | AccountMessage
     | BookMessage
     | TickerEvent
     | TradeEvent

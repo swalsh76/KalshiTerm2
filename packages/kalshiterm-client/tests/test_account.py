@@ -348,3 +348,43 @@ async def test_a_failed_first_read_raises_and_leaves_nothing_synced(tmp_path: Pa
     with pytest.raises(RuntimeError):
         await tracker.start()
     assert tracker.snapshot() is None
+
+
+# --- the change hook the UI listens to ------------------------------------------------------------
+
+
+async def test_the_change_hook_fires_when_the_view_may_differ_and_a_broken_listener_is_harmless(
+    tmp_path: Path,
+) -> None:
+    rest = FakeRest()
+    rest.positions = [position("KXA-1", "1.00")]
+    tracker, _, ws, _ = make(tmp_path, rest)
+    calls: list[int] = []
+    tracker.on_change = lambda: calls.append(1)
+    await tracker.start()
+    try:
+        after_start = len(calls)
+        assert after_start >= 2  # the balance read and the full read
+        ws.push("user_order", user_order())
+        ws.push("market_position", {"market_ticker": "KXA-1", "position_fp": "2.00"})
+        ws.push(
+            "fill",
+            {"trade_id": "t-1", "order_id": "o-1", "market_ticker": "KXA-1",
+             "yes_price_dollars": "0.4", "count_fp": "1.00"},
+        )  # fmt: skip
+        await settle()
+        assert len(calls) >= after_start + 3
+        before_noise = len(calls)
+        ws.push("subscribed", {})  # not an account message: nothing changed
+        await settle()
+        assert len(calls) == before_noise
+
+        def broken() -> None:
+            raise RuntimeError("a listener's own bug")
+
+        tracker.on_change = broken
+        ws.push("user_order", user_order(order_id="o-2", last_updated_ts_ms=5000))
+        await settle()
+        assert "o-2" in tracker.orders  # the state still updated
+    finally:
+        await tracker.stop()

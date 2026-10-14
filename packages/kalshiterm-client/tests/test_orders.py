@@ -814,3 +814,42 @@ async def test_cancel_by_ids_uses_kalshis_record_and_one_failure_does_not_stop_t
         CancelTarget("o-1", 0, "KXT-1"),
         CancelTarget("o-2", 0, "KXA-1"),
     ]
+
+
+# --- cancelling everything without halting; the typed order phrase -------------------------------
+
+
+async def test_cancel_everything_clears_the_orders_but_does_not_halt(tmp_path: Path) -> None:
+    rest = FakeRest()
+    rest.orders = resting("o-1", "o-2")
+    service, _, trading, state = await build(tmp_path, rest=rest)
+    try:
+        report = await service.cancel_everything()
+        assert report.clean and rest.orders == [] and trading.names() == ["cancel_all"]
+        assert not state.halted and not TradingState.load(state.path).halted
+        assert (await service.prepare(buy())).verdict.ok  # orders are still allowed afterwards
+    finally:
+        await service._tracker.stop()
+
+
+@pytest.mark.parametrize(
+    ("typed", "ok"),
+    [
+        ("KXA-1 buy yes 2 0.4", True),
+        ("KXA-1 BUY YES 2.00 0.40", True),
+        ("  KXA-1   buy  yes  2  0.4  ", True),
+        ("kxa-1 buy yes 2 0.4", False),  # the ticker is case-sensitive
+        ("KXA-1 sell yes 2 0.4", False),
+        ("KXA-1 buy no 2 0.4", False),
+        ("KXA-1 buy yes 3 0.4", False),
+        ("KXA-1 buy yes 2 0.41", False),
+        ("KXA-1 buy yes 2", False),
+        ("KXA-1 buy yes 2 0.4 now", False),
+        ("KXA-1 buy yes two 0.4", False),
+        ("", False),
+    ],
+)
+def test_the_typed_order_phrase(typed: str, ok: bool) -> None:
+    from kalshiterm_client.orders import typed_phrase_matches
+
+    assert typed_phrase_matches(typed, buy()) is ok

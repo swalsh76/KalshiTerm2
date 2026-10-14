@@ -76,6 +76,6 @@ def test_the_websocket_contract_names_every_message_type() -> None:
     client = set(contract["browser_to_server"]["discriminator"]["mapping"])
     assert server == {
         *("hello", "pong", "error", "subscribed", "link"),
-        *("resync", "book", "ticker", "trade", "alert"),
+        *("resync", "book", "ticker", "trade", "alert", "mode", "account"),
     }
-    assert client == {"auth", "ping", "subscribe", "unsubscribe", "alerts"}
+    assert client == {"auth", "ping", "subscribe", "unsubscribe", "alerts", "account"}

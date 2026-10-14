@@ -1859,7 +1859,7 @@ and §7.3 chose it before any measurement, so it is decided by a spike (decision
 | 7.1 — done | Backend skeleton: `kterm ui`, FastAPI + uvicorn, the whole security layer of decision 2 with its tests, a placeholder page, the new dependencies. No data yet |
 | 7.2 — done | Backend data API: server data through `ServerClient` (markets, market, candles, trades, book, analytics, arbitrage, watchlist, alerts) and the live stream relay through `StreamClient` / `BookTracker` (resume, exactly-once); OpenAPI -> generated types check; contract tests |
 | 7.3 — done | Layouts on the server: migration 0020, endpoints, `ServerClient` methods, per-user scoping tests, relayed by the backend |
-| 7.4 | Backend trading API: the mode switch of decision 3 (lazy trading runtime, typed phrase, permission check, lapse timers, switching off), account snapshot + live account events, prepare / execute / cancel / amend / kill / resume with the one-time ids and server-side typed confirmation; tests on the Phase 6 fakes (every order endpoint 403 in read-only; wrong phrase, missing permission, expiry); a live read-only check |
+| 7.4 — done | Backend trading API: the mode switch of decision 3 (lazy trading runtime, typed phrase, permission check, lapse timers, switching off), account snapshot + live account events, prepare / execute / cancel / amend / kill / resume with the one-time ids and server-side typed confirmation; tests on the Phase 6 fakes (every order endpoint 403 in read-only; wrong phrase, missing permission, expiry); a live read-only check |
 | 7.5 | Front-end scaffold: Node set up, Vite / React / TS, lint, type-check, Vitest, generated types, dockview shell, command bar skeleton, token bootstrap, themes, the CI Node job, and **the grid spike with its measured result** |
 | 7.6 | Market panels: market list / search grid, market detail, watchlist, linked-ticker groups; candlestick chart (bars + live tick); order-book ladder and depth chart from `BookTracker` |
 | 7.7 | Live panels: trades tape, alerts (rules and live alerts), analytics and arbitrage panels |
@@ -1970,6 +1970,33 @@ B's list was empty and B could not read A's layout, and B saving the same name l
 a 300 KB layout was refused with the real cap (262,144); a 1.2 MB body got 413 from the backend; the 51st
 layout was refused (`layout_limit`, 50) while replacing at the cap still worked; bad names were
 refused; delete worked; **removing the two users removed their 50 layout rows**.
+
+**7.4 as built.** *Mode switch* (`ui/trading.py`, `TradingSession`): the session starts read-only with no
+key loaded. `POST /api/mode/enable` checks `risk.toml` permission for the environment, then the exact
+typed phrase (`ENABLE PRODUCTION TRADING` / `ENABLE DEMO TRADING`), then opens the Phase 6 `trade`
+runtime (account tracker, guard); `POST /api/mode/disable` closes it (optionally cancelling open orders
+first). Trading lapses after `ui_idle_minutes` (default 30; only deliberate actions count, not account
+polling) or `ui_disconnect_seconds` (default 60) with no browser, and on shutdown; both are new
+`[trading]` keys in `risk.toml`, strictly validated. *Orders*: `prepare` (and `/orders/{id}/amend`)
+return the verdict, funding plan and a **one-time id valid 60 s**; `execute` takes that id (a wrong
+production order phrase is refused without burning the id); `DELETE /orders/{id}`; `kill` works in either
+mode (an ad hoc exit runtime when trading is off); `resume` needs `confirm: true`. Every `/api/trading/*`
+route except kill answers 403 `trading_off` in read-only. Errors map to stable codes (`order_refused`
+422 with the refusals, `plan_changed`/`funding_short` 409, `outcome_unknown` 502 with a reference,
+`kalshi_error` with Kalshi's status). Request models are strict (no coercion, no unknown fields, amounts
+as decimal strings). *Live account*: `AccountTracker` got an `on_change` hook; the WebSocket gained
+`{"type":"account","enabled":bool}` (client) and `mode` / `account` messages (server) so the page sees
+balances, positions, orders and fills as they change. `OrderService.cancel_everything()` was split out
+of `kill()`. OpenAPI (35 paths) and WS schemas regenerated and committed. *Tests*: 37 session tests, the
+HTTP / WS route tests, plus config, orders and account tests; about 40 sabotages each caught. Sabotage
+testing also caught my own harness hanging on a mutated WS handler, so those tests now use a ping
+sentinel and a hard timeout. *Verified live, read-only* on the real account via `kterm ui`: read-only
+start (account route 403); wrong phrase 422; correct phrase enabled trading; the account snapshot
+matched `kterm balance` ($10.3369 on shard 0, nothing elsewhere, no orders or positions); a dry-run
+`prepare` of a 1-contract 1-cent buy was approved with a $0.02 funding plan and a one-time id (never
+executed); a 50-contract order was refused with five reasons; disabling returned to read-only and the
+account route to 403. **No order, transfer or kill was sent**; the balance and transferred-today were
+unchanged afterwards.
 
 **Decided with the user (2026-10-13):** Node is approved (install **Node 22 LTS via Homebrew** at the
 start of 7.5, pinned in the repo and in CI; slices 7.1-7.4 are Python only); layouts are
