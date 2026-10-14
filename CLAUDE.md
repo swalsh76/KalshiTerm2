@@ -65,6 +65,7 @@ KalshiTerm 1 died of feature creep and directional changes. Guard against it:
   127.0.0.1:5433), then
   `KTERM_DB_URL=postgresql+asyncpg://kterm:kterm_dev_only@127.0.0.1:5433/kterm uv run kterm-server db upgrade`.
   Relative downgrades need `--`: `kterm-server db downgrade -- -1`.
+- Front end (`packages/kalshiterm-client/frontend/`, Node 22; `export PATH=/opt/homebrew/opt/node@22/bin:$PATH`): `npm ci`, `npm run lint | typecheck | test | build`, `npm run gen:types` after changing the API (regenerate `openapi.json` first: `uv run python -m kalshiterm_client.ui.schema`).
 - The TimescaleDB image tag is pinned in `deploy/docker-compose.dev.yml` (tests read it from there).
 
 ## Conventions
