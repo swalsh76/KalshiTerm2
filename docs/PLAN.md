@@ -1857,7 +1857,7 @@ and §7.3 chose it before any measurement, so it is decided by a spike (decision
 | # | Slice |
 |---|---|
 | 7.1 — done | Backend skeleton: `kterm ui`, FastAPI + uvicorn, the whole security layer of decision 2 with its tests, a placeholder page, the new dependencies. No data yet |
-| 7.2 | Backend data API: server data through `ServerClient` (markets, market, candles, trades, book, analytics, arbitrage, watchlist, alerts) and the live stream relay through `StreamClient` / `BookTracker` (resume, exactly-once); OpenAPI -> generated types check; contract tests |
+| 7.2 — done | Backend data API: server data through `ServerClient` (markets, market, candles, trades, book, analytics, arbitrage, watchlist, alerts) and the live stream relay through `StreamClient` / `BookTracker` (resume, exactly-once); OpenAPI -> generated types check; contract tests |
 | 7.3 | Layouts on the server: migration 0020, endpoints, `ServerClient` methods, per-user scoping tests, relayed by the backend |
 | 7.4 | Backend trading API: the mode switch of decision 3 (lazy trading runtime, typed phrase, permission check, lapse timers, switching off), account snapshot + live account events, prepare / execute / cancel / amend / kill / resume with the one-time ids and server-side typed confirmation; tests on the Phase 6 fakes (every order endpoint 403 in read-only; wrong phrase, missing permission, expiry); a live read-only check |
 | 7.5 | Front-end scaffold: Node set up, Vite / React / TS, lint, type-check, Vitest, generated types, dockview shell, command bar skeleton, token bootstrap, themes, the CI Node job, and **the grid spike with its measured result** |
@@ -1894,6 +1894,49 @@ and a CORS preflight are all refused; headers as above; a request to the machine
 refused; the WebSocket authenticated, answered a ping, closed a wrong token with 4401 and refused a
 hostile Origin with 403. The permission design of decision 3 (`risk.toml` grants, the app switches
 the session) was **confirmed by the user** on 2026-10-13.
+
+**7.2 as built.** *REST* (`ui/data_routes.py`): an explicit list of 24 routes, each one `ServerClient`
+call returning its typed model (no generic proxy, so the browser cannot ask the backend to fetch an
+arbitrary server path): `GET /api/server` (configured? reachable? who am I; never fails), markets,
+market, event, candles, trades, ticks, orderbook, gaps, watchlist (+ PUT / DELETE per ticker),
+analytics (market, history, event, arbitrage) and alerts (metrics, rules create / read / patch /
+delete, alerts, acknowledge). Parameters are validated before the server is asked (limits, intervals,
+patterns; **times must carry a time zone**, rule thresholds are decimal *strings*, never JSON
+numbers); the server token never appears in an answer. The client library's errors become clear
+statuses (`not_found` 404, `rejected_by_server` 422 with the server's code, `forbidden_by_server`
+403, `server_rejected_token` / `server_unreachable` / `server_certificate_changed` 502,
+`server_not_configured` 503). **With no profile or no token the UI still starts** and the data routes
+say why (`kterm ui` prints `server: ... (configured | the reason)`); trading does not depend on the
+server. Writes pass the Origin rule of 7.1. *Live stream* (`ui/stream_hub.py`, `ui/messages.py`): one
+`StreamClient` per active union of what every browser connection asks for, restarted (debounced) when
+the union changes; the backend keeps the order books and sends the page **whole books**, best price
+first, at most 25 levels a side and at most ~10 per second per market; a page that subscribes to a
+market already streaming gets its current book and last ticker at once; `link` messages say up / down
+(retrying in N s) / failed; a `resync` clears books. **Bounded**: 100 markets per page, 200 across the
+UI, a 2,000-message queue per page. A page that stops reading is **dropped with close code 1013 even
+though its send is blocked** (a design gap found while testing: the first version only noticed in the
+writer, which a stalled socket blocks; an overflow now tears the connection down directly). A fatal
+stream error is reported once and **never retried on its own; a fresh subscribe retries once**
+(found by a sabotage survivor: reloading the page after a failure would otherwise never retry).
+*Contract*: `kalshiterm_client.ui.schema` writes `frontend/src/api/openapi.json` (24 paths, 28
+operations) and `ws.schema.json` (10 server and 5 browser message types), committed; a test fails when
+they differ from the code, and another that **no money field is a JSON number** (only `retry_in` is);
+the TypeScript is generated from them in 7.5. *Tests*: 78 new (34 data routes against the real
+`ServerClient` and a scripted server, 34 hub / WebSocket, 6 schema, 4 startup wiring), about 30
+sabotages each caught after four test additions prompted by survivors. *Verified live*, against the
+**real KalshiTerm server and real ingested data** (throwaway user, token and watchlist, all deleted
+afterwards): `/api/server`, markets, detail, hourly candles, trades with exact decimal strings, error
+statuses (naive time 400, unknown market 404, bad limit 422); the WebSocket relayed **1,050 trades and 20
+ticker updates in 20 s** for a 15-minute crypto market (about 52 trades a second), reported the link
+going down then up, and handled an unknown ticker (the server's own answer), a bad channel and non-JSON
+without dropping the connection; and the book for the Bitcoin $200k market, delivered 0.3 s after
+subscribing, **matched both the server's stored book and Kalshi's own book exactly** (yes 0.01 x
+1,139,101.57; no 0.97 x 198,376.21, 0.96 x 1,446.95, 0.95 x 14,169.67). *Finding about the server
+(not the UI)*: `kterm-server ingest` only creates the order-book feed and the watchlist controller when
+started with `--watchlist FILE` or `--watch TICKER`; without either, API watchlists are silently never
+captured (`capturing: false`). The deployment passes `--watchlist`, so it is a dev sharp edge (parked,
+§13). The controller does a full reconcile every 300 s (TOML file, top-N refresh) and a cheap poll every 15 s for
+changes to users' watchlists; capture began 6 s after the corrected start.
 
 **Decided with the user (2026-10-13):** Node is approved (install **Node 22 LTS via Homebrew** at the
 start of 7.5, pinned in the repo and in CI; slices 7.1-7.4 are Python only); layouts are
@@ -2000,4 +2043,5 @@ Ideas raised but **not** in scope. Not to be built until promoted into a phase.
 - Client: CSV export of series (candles, history), a local response cache / offline mode, persisted stream cursors across CLI runs, and shell completion. Raised 2026-10-12 with the Phase 5 breakdown.
 - Trading: whether Kalshi's amend `count` includes already-filled contracts (it needs a partial fill to test, so amend refuses to change the count of a partly filled order for now). Raised 2026-10-13 with the Phase 6 close-out; test when a real partial fill happens.
 - Trading: fill-or-kill orders, order groups, subaccounts, the RFQ / communications channels, encrypted trading keys (keyring passphrase), a manual `kterm transfer` command, scripted (non-interactive) production orders, and a daily-loss day that is not the UTC day. Raised 2026-10-13 with the Phase 6 breakdown and close-out.
+- Server: `kterm-server ingest` started without `--watchlist` or `--watch` silently ignores API watchlists (no order-book feed, `capturing: false`). The deployment always passes `--watchlist`; consider a startup log line saying so, or an always-on feed. Raised 2026-10-14 while live-checking slice 7.2.
 - Exclude the fast crypto 15-minute books from the auto top-N (they made 58% of orderbook deltas in the 2.7a sample). Raised 2026-10-07; deferred until the storage governor (2.8) shows whether it is needed.
