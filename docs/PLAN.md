@@ -1858,7 +1858,7 @@ and §7.3 chose it before any measurement, so it is decided by a spike (decision
 |---|---|
 | 7.1 — done | Backend skeleton: `kterm ui`, FastAPI + uvicorn, the whole security layer of decision 2 with its tests, a placeholder page, the new dependencies. No data yet |
 | 7.2 — done | Backend data API: server data through `ServerClient` (markets, market, candles, trades, book, analytics, arbitrage, watchlist, alerts) and the live stream relay through `StreamClient` / `BookTracker` (resume, exactly-once); OpenAPI -> generated types check; contract tests |
-| 7.3 | Layouts on the server: migration 0020, endpoints, `ServerClient` methods, per-user scoping tests, relayed by the backend |
+| 7.3 — done | Layouts on the server: migration 0020, endpoints, `ServerClient` methods, per-user scoping tests, relayed by the backend |
 | 7.4 | Backend trading API: the mode switch of decision 3 (lazy trading runtime, typed phrase, permission check, lapse timers, switching off), account snapshot + live account events, prepare / execute / cancel / amend / kill / resume with the one-time ids and server-side typed confirmation; tests on the Phase 6 fakes (every order endpoint 403 in read-only; wrong phrase, missing permission, expiry); a live read-only check |
 | 7.5 | Front-end scaffold: Node set up, Vite / React / TS, lint, type-check, Vitest, generated types, dockview shell, command bar skeleton, token bootstrap, themes, the CI Node job, and **the grid spike with its measured result** |
 | 7.6 | Market panels: market list / search grid, market detail, watchlist, linked-ticker groups; candlestick chart (bars + live tick); order-book ladder and depth chart from `BookTracker` |
@@ -1937,6 +1937,39 @@ started with `--watchlist FILE` or `--watch TICKER`; without either, API watchli
 captured (`capturing: false`). The deployment passes `--watchlist`, so it is a dev sharp edge (parked,
 §13). The controller does a full reconcile every 300 s (TOML file, top-N refresh) and a cheap poll every 15 s for
 changes to users' watchlists; capture began 6 s after the corrected start.
+
+**7.3 as built.** *Server*: migration **0020** `ui_layouts (user_id, name, data jsonb, size_bytes,
+created_at, updated_at)`, primary key (user, name), `ON DELETE CASCADE` with the user, CHECKs as a
+backstop (name 1-64 chars, `data` an object, size bounded). `kalshiterm_server/layouts.py` + `api/layouts.py`:
+`GET /v1/layouts` (names, sizes, times, plus `limit` 50 and `max_bytes` 262,144), `GET|PUT|DELETE
+/v1/layouts/{name}`. `PUT` takes exactly `{"data": {...}}` and answers 201 (new) / 200 (replaced).
+Names: letters, digits, space, `_` `-` `.`, starting with a letter or digit and not ending in a space (a
+name can never traverse or break a URL). The server stores the object **without interpreting it** (the
+front end defines and versions it) and enforces: size in **bytes of compact JSON** (exact boundary
+tested; 413 `layout_too_large` with the true cap), depth <= 64, **no NUL anywhere** (jsonb cannot hold
+one and would answer 500), no NaN / Infinity (`parse_constant` refuses them, 400), 50 layouts per user
+(422 `layout_limit`; replacing never counts), the count checked under a **per-user advisory lock**
+(12 concurrent saves at a cap of 3 give exactly 3). The body reader stops at the cap instead of
+buffering (a lying or missing Content-Length helps no one). Layouts are strictly the caller's own:
+every query is scoped by user, and an admin sees only their own too. *Client*: `Layout`,
+`LayoutList`, `LayoutSummary`, `LayoutSaved`; `layouts()`, `layout(name)`, `save_layout(name, data)`,
+`delete_layout(name)`; a bad name is a `ValueError` before any request; saves and deletes are never
+retried. *UI backend*: `GET /api/layouts`, `GET|PUT|DELETE /api/layouts/{name}` (a layout is a `data`
+object only; the server's reasons pass through), and a **general 1 MiB request-body cap** in the
+security layer (declared length refused at once, undeclared counted as it arrives and answered 413
+immediately, before the framework can turn the overflow into a 400); the OpenAPI schema was regenerated
+and committed. *Tests*: 97 new (49 server API incl. isolation, every limit, the race and the table
+CHECKs; 2 contract; 28 client; 18 UI backend) and about 35 sabotages each caught. Two real defects
+came from testing, not review: an oversized upload reported the **read cutoff** (262,144 + 4,096) as
+its limit instead of the real cap (a client would have shown a wrong number; found by the contract
+test), and my first sabotages of the SQL failed for the wrong reason (asyncpg refused the mutated
+statement) so they were redone with valid SQL before they counted. *Verified live* on the real stack
+(real API, the dev database migrated to 0020, two throwaway users, all removed afterwards): a nested
+layout with accents, emoji, a 20-digit integer and price strings came back **identical**; replace; user
+B's list was empty and B could not read A's layout, and B saving the same name left A's data intact;
+a 300 KB layout was refused with the real cap (262,144); a 1.2 MB body got 413 from the backend; the 51st
+layout was refused (`layout_limit`, 50) while replacing at the cap still worked; bad names were
+refused; delete worked; **removing the two users removed their 50 layout rows**.
 
 **Decided with the user (2026-10-13):** Node is approved (install **Node 22 LTS via Homebrew** at the
 start of 7.5, pinned in the repo and in CI; slices 7.1-7.4 are Python only); layouts are

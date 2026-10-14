@@ -321,3 +321,30 @@ class Alert(ApiModel):
 class AlertPage(ApiModel):
     alerts: list[Alert]
     next_cursor: str | None = None
+
+
+class LayoutSummary(ApiModel):
+    name: str
+    size_bytes: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class LayoutList(ApiModel):
+    layouts: list[LayoutSummary]
+    limit: int
+    max_bytes: int
+
+
+class Layout(ApiModel):
+    name: str
+    data: dict[str, Any]
+    size_bytes: int
+    updated_at: datetime
+
+
+class LayoutSaved(ApiModel):
+    name: str
+    created: bool
+    size_bytes: int
+    updated_at: datetime

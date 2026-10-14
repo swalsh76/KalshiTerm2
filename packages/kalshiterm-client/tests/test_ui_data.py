@@ -254,6 +254,104 @@ def test_a_bad_rule_is_422_and_nothing_is_sent_to_the_server(
     assert not server.calls
 
 
+# --- saved layouts -----------------------------------------------------------------------------
+
+
+def test_layouts_can_be_listed_fetched_saved_and_deleted_through_the_backend(
+    browser: TestClient, server: FakeServer
+) -> None:
+    when = p.WHEN
+    server.routes["/v1/layouts"] = {
+        "layouts": [{"name": "Main", "size_bytes": 12, "created_at": when, "updated_at": when}],
+        "limit": 50, "max_bytes": 262144,
+    }  # fmt: skip
+    server.routes["/v1/layouts/My%20Layout"] = {
+        "name": "My Layout",
+        "data": {"v": 2, "price": "0.560000"},
+        "size_bytes": 30,
+        "updated_at": when,
+    }
+    server.routes["PUT /v1/layouts/My%20Layout"] = {
+        "name": "My Layout", "created": False, "size_bytes": 9, "updated_at": when,
+    }  # fmt: skip
+    server.routes["DELETE /v1/layouts/Main"] = {"name": "Main", "deleted": True}
+    assert browser.get("/api/layouts", headers=AUTH).json()["layouts"][0]["name"] == "Main"
+    got = browser.get("/api/layouts/My%20Layout", headers=AUTH).json()
+    assert got["data"] == {"v": 2, "price": "0.560000"}  # a price inside a layout stays a string
+    saved = browser.put("/api/layouts/My%20Layout", headers=WRITE, json={"data": {"v": 3}})
+    assert saved.json()["created"] is False
+    assert [b for m, path, b in server.calls if m == "PUT"] == [{"data": {"v": 3}}]
+    assert browser.delete("/api/layouts/Main", headers=WRITE).status_code == 204
+
+
+@pytest.mark.parametrize(
+    "body", [{"data": []}, {"data": "x"}, {"data": None}, {}, {"data": {}, "extra": 1}, [], "x"]
+)
+def test_a_layout_must_be_an_object_called_data(
+    browser: TestClient, server: FakeServer, body: Any
+) -> None:
+    assert browser.put("/api/layouts/a", headers=WRITE, json=body).status_code == 422
+    assert not server.calls
+
+
+@pytest.mark.parametrize("name", [" a", "a ", "x" * 65, "-a", "a;b", "%C3%A9"])
+def test_a_bad_layout_name_never_reaches_the_server(
+    browser: TestClient, server: FakeServer, name: str
+) -> None:
+    assert browser.put(f"/api/layouts/{name}", headers=WRITE, json={"data": {}}).status_code in (
+        404,
+        422,
+    )
+    assert not server.calls
+
+
+def test_the_servers_reasons_for_refusing_a_layout_are_passed_on(
+    browser: TestClient, server: FakeServer
+) -> None:
+    server.routes["PUT /v1/layouts/full"] = (422, {"error": "layout_limit", "limit": 50})
+    server.routes["PUT /v1/layouts/big"] = (
+        413,
+        {"error": "layout_too_large", "limit_bytes": 262144, "size_bytes": 300000},
+    )
+    limit = browser.put("/api/layouts/full", headers=WRITE, json={"data": {}})
+    assert limit.status_code == 422 and limit.json()["code"] == "layout_limit"
+    assert limit.json()["extra"]["limit"] == 50
+    big = browser.put("/api/layouts/big", headers=WRITE, json={"data": {}})
+    assert big.json()["code"] == "layout_too_large" and big.json()["extra"]["limit_bytes"] == 262144
+
+
+def test_a_huge_request_body_is_refused_whatever_it_is_for(
+    browser: TestClient, server: FakeServer
+) -> None:
+    huge = {"data": {"p": "x" * 1_200_000}}
+    assert browser.put("/api/layouts/a", headers=WRITE, json=huge).status_code == 413
+    assert browser.post("/api/alerts/rules", headers=WRITE, json=huge).status_code == 413
+    unauthenticated = browser.put("/api/layouts/a", headers={"Origin": WRITE["Origin"]}, json=huge)
+    assert unauthenticated.status_code == 413  # and it says nothing else about the request
+    assert not server.calls
+
+
+def test_a_body_without_a_declared_length_is_cut_off_too(
+    browser: TestClient, server: FakeServer
+) -> None:
+    def chunks() -> Iterator[bytes]:
+        yield b'{"data": {"p": "'
+        for _ in range(1200):
+            yield b"x" * 1024
+        yield b'"}}'
+
+    response = browser.put("/api/layouts/a", headers=WRITE, content=chunks())
+    assert response.status_code == 413 and not server.calls
+
+
+def test_a_body_within_the_cap_is_still_accepted(browser: TestClient, server: FakeServer) -> None:
+    server.routes["PUT /v1/layouts/a"] = {
+        "name": "a", "created": True, "size_bytes": 300000, "updated_at": p.WHEN,
+    }  # fmt: skip
+    ok = browser.put("/api/layouts/a", headers=WRITE, json={"data": {"p": "x" * 300_000}})
+    assert ok.status_code == 200 and ok.json()["created"] is True
+
+
 # --- writes are protected like every other write ------------------------------------------------
 
 
