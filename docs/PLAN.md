@@ -1860,7 +1860,7 @@ and §7.3 chose it before any measurement, so it is decided by a spike (decision
 | 7.2 — done | Backend data API: server data through `ServerClient` (markets, market, candles, trades, book, analytics, arbitrage, watchlist, alerts) and the live stream relay through `StreamClient` / `BookTracker` (resume, exactly-once); OpenAPI -> generated types check; contract tests |
 | 7.3 — done | Layouts on the server: migration 0020, endpoints, `ServerClient` methods, per-user scoping tests, relayed by the backend |
 | 7.4 — done | Backend trading API: the mode switch of decision 3 (lazy trading runtime, typed phrase, permission check, lapse timers, switching off), account snapshot + live account events, prepare / execute / cancel / amend / kill / resume with the one-time ids and server-side typed confirmation; tests on the Phase 6 fakes (every order endpoint 403 in read-only; wrong phrase, missing permission, expiry); a live read-only check |
-| 7.5 | Front-end scaffold: Node set up, Vite / React / TS, lint, type-check, Vitest, generated types, dockview shell, command bar skeleton, token bootstrap, themes, the CI Node job, and **the grid spike with its measured result** |
+| 7.5 — done | Front-end scaffold: Node set up, Vite / React / TS, lint, type-check, Vitest, generated types, dockview shell, command bar skeleton, token bootstrap, themes, the CI Node job, and **the grid spike with its measured result** |
 | 7.6 | Market panels: market list / search grid, market detail, watchlist, linked-ticker groups; candlestick chart (bars + live tick); order-book ladder and depth chart from `BookTracker` |
 | 7.7 | Live panels: trades tape, alerts (rules and live alerts), analytics and arbitrage panels |
 | 7.8 | Trading panels: the header mode control and its enable dialog, balance by shard, positions, orders, fills; the order ticket (prepare -> verdict -> confirm -> execute), amend / cancel from the orders grid, the always-visible kill switch, the production banner |
@@ -1997,6 +1997,53 @@ matched `kterm balance` ($10.3369 on shard 0, nothing elsewhere, no orders or po
 executed); a 50-contract order was refused with five reasons; disabling returned to read-only and the
 account route to 403. **No order, transfer or kill was sent**; the balance and transferred-today were
 unchanged afterwards.
+
+**7.5 as built.** *Toolchain*: Node 22.23 LTS from Homebrew (`node@22` is keg-only: put
+`/opt/homebrew/opt/node@22/bin` on `PATH`), pinned by `frontend/.nvmrc` and `engines`; exact versions in
+`package.json` + `package-lock.json` (React 19.3, Vite 8.3, TypeScript 5.9 (7.0 exists but
+typescript-eslint is not ready for it), Vitest 5, ESLint 10, `dockview-react` 8.5.1 (the `dockview`
+package no longer exports the React component), Lightweight Charts 5.2 and TanStack Query, both
+installed for 7.6). *App*: `src/lib/token.ts` takes the token from the URL fragment into memory and erases
+it from the address bar (tested); `api.ts` (Bearer fetch, `ApiError`), `ws.ts` (first-message auth),
+`theme.ts` (light / dark, `localStorage` optional), `commands.ts` + `CommandBar.tsx` (Ctrl+K, `HELP`,
+`THEME`; the other mnemonics arrive with their panels), a dockview shell with a Welcome panel, a header
+with mode / environment pills, connection dot and theme switch, and the red production banner.
+`src/api/schema.d.ts` is generated from the committed `openapi.json` (`npm run gen:types`); CI regenerates
+and fails on any diff. `vite build` writes `kalshiterm_client/ui_assets/` (git-ignored), which `kterm ui`
+then serves; initial load 166 KB gzipped JS + 11 KB CSS. Dev: `kterm ui --port 8765 --no-browser`, then
+`KTERM_UI_PORT=8765 npm run dev` (the proxy rewrites Host and Origin for the backend's checks). *CI*: a new
+`frontend` job (npm ci, lint, type-check, Vitest, generated-types check, build). *Verified live* in a real
+headless Chromium against the real `kterm ui` on the production environment (read-only): the page loaded
+with no console errors or warnings under the backend's Content-Security-Policy, the token was gone from
+the address bar, the WebSocket connected (`hello` set the pills `read-only` / `production` and the red
+banner), Ctrl+K opened the command bar, `HELP` and `THEME` worked.
+
+**The grid spike (decision 5), measured 2026-10-14.** One benchmark, identical for all three: 5,000 rows x 10
+columns, a feed of 200 cell updates per second (10 cells per 50 ms) with changed cells flashing, frame
+times from `requestAnimationFrame` over 8 s, then the same feed while the grid is re-sorted on a
+changing column every 0.6 s (12 sorts: call until two frames have painted), then a 2,000 updates / s
+stress run. Production builds, headless Chromium 148 on this Mac (the display ran at 120 Hz: an idle
+two-frame wait is about 15 ms, which is the floor of every sort figure below).
+
+| | TanStack Table 8 + react-virtual | AG Grid Community 36 | Perspective 3.8 (datagrid) |
+|---|---|---|---|
+| Added to the initial load (gzipped) | **about 45 KB** (page 89 KB incl. React) | 310 KB | 85 KB JS + CSS **plus 3.16 MB WASM** |
+| Frame p95 / p99 at 200 updates / s | 9.1 / 9.3 ms | 9.2 / 9.3 ms | 9.1 / 9.3 ms |
+| Frame p95 at 2,000 updates / s | 8.7 ms | 9.2 ms | 9.0 ms |
+| Frames over 33 ms, 200 / s while re-sorting | **0** | 3 | 10 |
+| Re-sort time, median / max | **16.6 / 22.3 ms** | 29 / 34 ms | 33 / 42 ms |
+| Mount (5,000 rows) | 54 ms | 45 ms | 146 ms |
+| Flash on change | about 8 lines (keyed span + CSS animation) | built in | not built in |
+| Keyboard navigation, column resize | **to write** | built in | built in |
+
+All three pass the marks fixed beforehand (p95 frame <= ~17 ms, re-sort < ~50 ms). **Decision: TanStack
+Table + `@tanstack/react-virtual`**, by the stated rule (lightest among those that pass, then least custom
+code): it is the lightest by a wide margin and the smoothest under re-sorting. My recorded expectation was
+AG Grid; the numbers say otherwise. **Known cost and fallback:** keyboard navigation and column resize were
+not part of the measurement and must be written in 7.6; if that proves disproportionate, AG Grid
+Community also passed and is the fallback (a swap before 7.6's panels exist is cheap). Caveat: one
+machine, headless, synthetic data; the real panels re-measure in 7.9. The spike code was discarded after
+measuring; only `@tanstack/react-table` and `react-virtual` stay in `package.json`.
 
 **Decided with the user (2026-10-13):** Node is approved (install **Node 22 LTS via Homebrew** at the
 start of 7.5, pinned in the repo and in CI; slices 7.1-7.4 are Python only); layouts are

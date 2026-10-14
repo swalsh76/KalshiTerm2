@@ -53,3 +53,22 @@ jobs:
           docker compose --env-file /tmp/ci.env -f deploy/docker-compose.yml config --quiet
           COMPOSE_PROFILES=backup KTERM_BACKUP_DIR=/mnt/nas docker compose --env-file /tmp/ci.env -f deploy/docker-compose.yml config --quiet
           KEY_FILE=/dev/null docker compose -f deploy/docker-compose.setup.yml config --quiet
+
+  frontend:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: packages/kalshiterm-client/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: packages/kalshiterm-client/frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: packages/kalshiterm-client/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run check:types
+      - run: npm run build
