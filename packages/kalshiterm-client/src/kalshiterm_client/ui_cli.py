@@ -5,7 +5,7 @@ from typing import Annotated
 import typer
 from kalshi_core.config import KalshiSettings
 
-from kalshiterm_client.cli_common import fail
+from kalshiterm_client.cli_common import State, fail
 
 
 def register(app: typer.Typer) -> None:
@@ -28,6 +28,12 @@ def register(app: typer.Typer) -> None:
         except ValueError as exc:
             raise fail(f"cannot read the Kalshi settings: {exc}") from exc
         try:
-            serve(port=port, open_browser=not no_browser, environment=environment, echo=typer.echo)
+            serve(
+                port=port,
+                open_browser=not no_browser,
+                environment=environment,
+                profile=State.profile,
+                echo=typer.echo,
+            )
         except OSError as exc:
             raise fail(f"cannot listen on 127.0.0.1:{port}: {exc.strerror}") from exc

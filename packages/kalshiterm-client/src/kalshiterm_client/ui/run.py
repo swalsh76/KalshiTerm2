@@ -2,13 +2,19 @@
 
 import socket
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import uvicorn
 
+from kalshiterm_client.client import ServerClient
+from kalshiterm_client.errors import ConnectionProblem
+from kalshiterm_client.profiles import ProfileError, ProfileStore
+from kalshiterm_client.stream import StreamClient
 from kalshiterm_client.ui.app import MAX_WS_MESSAGE_BYTES, create_app
+from kalshiterm_client.ui.data_routes import DataAccess
 from kalshiterm_client.ui.security import new_token
+from kalshiterm_client.ui.stream_hub import StreamFactory, StreamLike
 
 LOOPBACK = "127.0.0.1"
 
@@ -29,11 +35,43 @@ def build_url(port: int, token: str) -> str:
     return f"http://{LOOPBACK}:{port}/#token={token}"
 
 
+def connect_server(profile_name: str | None = None) -> tuple[DataAccess, StreamFactory | None]:
+    """The KalshiTerm server this session reads from, if one is set up.
+
+    A missing profile or token is not an error: the UI still starts (trading does not need the
+    server) and the data panels say why they are empty."""
+    try:
+        profile = ProfileStore().resolve(profile_name)
+    except ProfileError as exc:
+        return DataAccess(None, reason=str(exc)), None
+    try:
+        client = ServerClient.for_profile(profile)
+    except ConnectionProblem as exc:  # no token in the keyring
+        return DataAccess(None, profile=profile.name, url=profile.url, reason=str(exc)), None
+
+    def factory(channels: Sequence[str], tickers: Sequence[str]) -> StreamLike:
+        return StreamClient.for_profile(profile, channels=list(channels), markets=list(tickers))
+
+    access = DataAccess(client, profile=profile.name, url=profile.url, owns_client=True)
+    return access, factory
+
+
 def make_server(
-    sock: socket.socket, token: str, environment: str, assets_dir: Path | None = None
+    sock: socket.socket,
+    token: str,
+    environment: str,
+    assets_dir: Path | None = None,
+    *,
+    data: DataAccess | None = None,
+    stream_factory: StreamFactory | None = None,
 ) -> uvicorn.Server:
     app = create_app(
-        port=sock.getsockname()[1], token=token, environment=environment, assets_dir=assets_dir
+        port=sock.getsockname()[1],
+        token=token,
+        environment=environment,
+        assets_dir=assets_dir,
+        data=data,
+        stream_factory=stream_factory,
     )
     config = uvicorn.Config(
         app,
@@ -51,16 +89,19 @@ def serve(
     port: int = 0,
     open_browser: bool = True,
     environment: str = "demo",
+    profile: str | None = None,
     echo: Callable[[str], None] = print,
 ) -> None:
     """Run until interrupted."""
     sock = bind_loopback(port)
     token = new_token()
     url = build_url(sock.getsockname()[1], token)
-    server = make_server(sock, token, environment)
+    data, stream_factory = connect_server(profile)
+    server = make_server(sock, token, environment, data=data, stream_factory=stream_factory)
     echo(
         f"KalshiTerm UI ({environment}, read-only) listening on {LOOPBACK}:{sock.getsockname()[1]}"
     )
+    echo(f"server: {data.profile or 'none'} ({'configured' if data.client else data.reason})")
     echo(f"open: {url}")
     if open_browser:
         webbrowser.open(url)

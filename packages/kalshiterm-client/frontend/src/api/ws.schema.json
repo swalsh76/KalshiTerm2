@@ -1,0 +1,786 @@
+{
+  "browser_to_server": {
+    "$defs": {
+      "Auth": {
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "title": "Token",
+            "type": "string"
+          },
+          "type": {
+            "const": "auth",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "token"
+        ],
+        "title": "Auth",
+        "type": "object"
+      },
+      "Ping": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "ping",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "Ping",
+        "type": "object"
+      },
+      "SetAlerts": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "type": {
+            "const": "alerts",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "enabled"
+        ],
+        "title": "SetAlerts",
+        "type": "object"
+      },
+      "Subscribe": {
+        "additionalProperties": false,
+        "properties": {
+          "channels": {
+            "items": {
+              "enum": [
+                "ticker",
+                "trades",
+                "book"
+              ],
+              "type": "string"
+            },
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Channels",
+            "type": "array"
+          },
+          "tickers": {
+            "items": {
+              "pattern": "^[A-Za-z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Tickers",
+            "type": "array"
+          },
+          "type": {
+            "const": "subscribe",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "channels",
+          "tickers"
+        ],
+        "title": "Subscribe",
+        "type": "object"
+      },
+      "Unsubscribe": {
+        "additionalProperties": false,
+        "properties": {
+          "channels": {
+            "items": {
+              "enum": [
+                "ticker",
+                "trades",
+                "book"
+              ],
+              "type": "string"
+            },
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Channels",
+            "type": "array"
+          },
+          "tickers": {
+            "items": {
+              "pattern": "^[A-Za-z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Tickers",
+            "type": "array"
+          },
+          "type": {
+            "const": "unsubscribe",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "channels",
+          "tickers"
+        ],
+        "title": "Unsubscribe",
+        "type": "object"
+      }
+    },
+    "discriminator": {
+      "mapping": {
+        "alerts": "#/$defs/SetAlerts",
+        "auth": "#/$defs/Auth",
+        "ping": "#/$defs/Ping",
+        "subscribe": "#/$defs/Subscribe",
+        "unsubscribe": "#/$defs/Unsubscribe"
+      },
+      "propertyName": "type"
+    },
+    "oneOf": [
+      {
+        "$ref": "#/$defs/Auth"
+      },
+      {
+        "$ref": "#/$defs/Ping"
+      },
+      {
+        "$ref": "#/$defs/Subscribe"
+      },
+      {
+        "$ref": "#/$defs/Unsubscribe"
+      },
+      {
+        "$ref": "#/$defs/SetAlerts"
+      }
+    ]
+  },
+  "server_to_browser": {
+    "$defs": {
+      "AlertEvent": {
+        "properties": {
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Acknowledged At"
+          },
+          "alert_cursor": {
+            "title": "Alert Cursor",
+            "type": "integer"
+          },
+          "event_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Event Ticker"
+          },
+          "fired_at": {
+            "format": "date-time",
+            "title": "Fired At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          },
+          "op": {
+            "title": "Op",
+            "type": "string"
+          },
+          "rule_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rule Id"
+          },
+          "rule_name": {
+            "title": "Rule Name",
+            "type": "string"
+          },
+          "threshold": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Threshold",
+            "type": "string"
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ticker"
+          },
+          "type": {
+            "const": "alert",
+            "default": "alert",
+            "title": "Type",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unit"
+          },
+          "value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "alert_cursor",
+          "id",
+          "rule_name",
+          "fired_at",
+          "metric",
+          "op",
+          "threshold",
+          "value"
+        ],
+        "title": "AlertEvent",
+        "type": "object"
+      },
+      "BookMessage": {
+        "additionalProperties": false,
+        "description": "A whole order book (best price first), at most ``MAX_BOOK_DEPTH`` levels a side.",
+        "properties": {
+          "inconsistent": {
+            "default": false,
+            "title": "Inconsistent",
+            "type": "boolean"
+          },
+          "no": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "No",
+            "type": "array"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          },
+          "time": {
+            "format": "date-time",
+            "title": "Time",
+            "type": "string"
+          },
+          "type": {
+            "const": "book",
+            "default": "book",
+            "title": "Type",
+            "type": "string"
+          },
+          "yes": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "Yes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ticker",
+          "time",
+          "yes",
+          "no"
+        ],
+        "title": "BookMessage",
+        "type": "object"
+      },
+      "ErrorMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "type": {
+            "const": "error",
+            "default": "error",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorMessage",
+        "type": "object"
+      },
+      "Hello": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "title": "Environment",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "read-only",
+              "trading"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "type": {
+            "const": "hello",
+            "default": "hello",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "environment"
+        ],
+        "title": "Hello",
+        "type": "object"
+      },
+      "Link": {
+        "additionalProperties": false,
+        "description": "State of the backend's connection to the KalshiTerm server: ``up``, ``down`` (retrying in\n``retry_in`` seconds) or ``failed`` (needs attention; ``error`` says why).",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "retry_in": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry In"
+          },
+          "state": {
+            "enum": [
+              "up",
+              "down",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "type": {
+            "const": "link",
+            "default": "link",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "Link",
+        "type": "object"
+      },
+      "Pong": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "pong",
+            "default": "pong",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "Pong",
+        "type": "object"
+      },
+      "Resync": {
+        "additionalProperties": false,
+        "description": "Something may have been missed: forget the order books; fresh ones follow.",
+        "properties": {
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "type": {
+            "const": "resync",
+            "default": "resync",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "Resync",
+        "type": "object"
+      },
+      "Subscribed": {
+        "additionalProperties": false,
+        "description": "The server's answer to a (re)subscription: which tickers it does not know and which have\nno stored order book (so a ``book`` channel for them stays empty).",
+        "properties": {
+          "no_orderbook": {
+            "items": {
+              "type": "string"
+            },
+            "title": "No Orderbook",
+            "type": "array"
+          },
+          "resumed": {
+            "title": "Resumed",
+            "type": "boolean"
+          },
+          "type": {
+            "const": "subscribed",
+            "default": "subscribed",
+            "title": "Type",
+            "type": "string"
+          },
+          "unknown": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unknown",
+            "type": "array"
+          }
+        },
+        "required": [
+          "unknown",
+          "no_orderbook",
+          "resumed"
+        ],
+        "title": "Subscribed",
+        "type": "object"
+      },
+      "TickerEvent": {
+        "properties": {
+          "cursor": {
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "last_trade_size": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Trade Size"
+          },
+          "open_interest": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Open Interest"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Price"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          },
+          "time": {
+            "format": "date-time",
+            "title": "Time",
+            "type": "string"
+          },
+          "type": {
+            "const": "ticker",
+            "default": "ticker",
+            "title": "Type",
+            "type": "string"
+          },
+          "volume": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Volume"
+          },
+          "yes_ask": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Yes Ask"
+          },
+          "yes_ask_size": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Yes Ask Size"
+          },
+          "yes_bid": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Yes Bid"
+          },
+          "yes_bid_size": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Yes Bid Size"
+          }
+        },
+        "required": [
+          "ticker",
+          "time",
+          "cursor"
+        ],
+        "title": "TickerEvent",
+        "type": "object"
+      },
+      "TradeEvent": {
+        "properties": {
+          "count": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Count",
+            "type": "string"
+          },
+          "cursor": {
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "is_block_trade": {
+            "title": "Is Block Trade",
+            "type": "boolean"
+          },
+          "no_price": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "No Price",
+            "type": "string"
+          },
+          "taker_side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Taker Side"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          },
+          "time": {
+            "format": "date-time",
+            "title": "Time",
+            "type": "string"
+          },
+          "trade_id": {
+            "format": "uuid",
+            "title": "Trade Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "trade",
+            "default": "trade",
+            "title": "Type",
+            "type": "string"
+          },
+          "yes_price": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Yes Price",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "time",
+          "cursor",
+          "trade_id",
+          "yes_price",
+          "no_price",
+          "count",
+          "is_block_trade"
+        ],
+        "title": "TradeEvent",
+        "type": "object"
+      }
+    },
+    "discriminator": {
+      "mapping": {
+        "alert": "#/$defs/AlertEvent",
+        "book": "#/$defs/BookMessage",
+        "error": "#/$defs/ErrorMessage",
+        "hello": "#/$defs/Hello",
+        "link": "#/$defs/Link",
+        "pong": "#/$defs/Pong",
+        "resync": "#/$defs/Resync",
+        "subscribed": "#/$defs/Subscribed",
+        "ticker": "#/$defs/TickerEvent",
+        "trade": "#/$defs/TradeEvent"
+      },
+      "propertyName": "type"
+    },
+    "oneOf": [
+      {
+        "$ref": "#/$defs/Hello"
+      },
+      {
+        "$ref": "#/$defs/Pong"
+      },
+      {
+        "$ref": "#/$defs/ErrorMessage"
+      },
+      {
+        "$ref": "#/$defs/Subscribed"
+      },
+      {
+        "$ref": "#/$defs/Link"
+      },
+      {
+        "$ref": "#/$defs/Resync"
+      },
+      {
+        "$ref": "#/$defs/BookMessage"
+      },
+      {
+        "$ref": "#/$defs/TickerEvent"
+      },
+      {
+        "$ref": "#/$defs/TradeEvent"
+      },
+      {
+        "$ref": "#/$defs/AlertEvent"
+      }
+    ]
+  }
+}
