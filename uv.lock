@@ -836,12 +836,14 @@ version = "0.0.0"
 source = { editable = "packages/kalshiterm-client" }
 dependencies = [
     { name = "cryptography" },
+    { name = "fastapi" },
     { name = "httpx" },
     { name = "kalshi-core" },
     { name = "keyring" },
     { name = "platformdirs" },
     { name = "rich" },
     { name = "typer" },
+    { name = "uvicorn" },
     { name = "websockets" },
     { name = "zeroconf" },
 ]
@@ -849,12 +851,14 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=43" },
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "kalshi-core", editable = "packages/kalshi-core" },
     { name = "keyring", specifier = ">=25" },
     { name = "platformdirs", specifier = ">=4.2" },
     { name = "rich", specifier = ">=13" },
     { name = "typer", specifier = ">=0.12" },
+    { name = "uvicorn", specifier = ">=0.32" },
     { name = "websockets", specifier = ">=14" },
     { name = "zeroconf", specifier = ">=0.132" },
 ]

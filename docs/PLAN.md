@@ -1856,7 +1856,7 @@ and §7.3 chose it before any measurement, so it is decided by a spike (decision
 
 | # | Slice |
 |---|---|
-| 7.1 | Backend skeleton: `kterm ui`, FastAPI + uvicorn, the whole security layer of decision 2 with its tests, a placeholder page, the new dependencies. No data yet |
+| 7.1 — done | Backend skeleton: `kterm ui`, FastAPI + uvicorn, the whole security layer of decision 2 with its tests, a placeholder page, the new dependencies. No data yet |
 | 7.2 | Backend data API: server data through `ServerClient` (markets, market, candles, trades, book, analytics, arbitrage, watchlist, alerts) and the live stream relay through `StreamClient` / `BookTracker` (resume, exactly-once); OpenAPI -> generated types check; contract tests |
 | 7.3 | Layouts on the server: migration 0020, endpoints, `ServerClient` methods, per-user scoping tests, relayed by the backend |
 | 7.4 | Backend trading API: the mode switch of decision 3 (lazy trading runtime, typed phrase, permission check, lapse timers, switching off), account snapshot + live account events, prepare / execute / cancel / amend / kill / resume with the one-time ids and server-side typed confirmation; tests on the Phase 6 fakes (every order endpoint 403 in read-only; wrong phrase, missing permission, expiry); a live read-only check |
@@ -1865,6 +1865,35 @@ and §7.3 chose it before any measurement, so it is decided by a spike (decision
 | 7.7 | Live panels: trades tape, alerts (rules and live alerts), analytics and arbitrage panels |
 | 7.8 | Trading panels: the header mode control and its enable dialog, balance by shard, positions, orders, fills; the order ticket (prepare -> verdict -> confirm -> execute), amend / cancel from the orders grid, the always-visible kill switch, the production banner |
 | 7.9 | Layouts and windows (save / load / delete named layouts, reset, popout windows for multi-monitor as far as dockview supports it), Playwright journeys (browse -> chart -> order ticket -> kill), performance measurements, README, PLAN as-built; **Phase 7 complete** |
+
+**7.1 as built.** `kterm ui [--port N] [--no-browser]` starts the backend (`kalshiterm_client/ui/`:
+`security.py`, `app.py`, `run.py`, plus `ui_cli.py`); FastAPI and uvicorn are now client dependencies.
+It binds a socket on **127.0.0.1 only** (there is no option for another address; port 0 picks a free
+one), creates a 256-bit session token and opens/prints `http://127.0.0.1:PORT/#token=...` (fragment).
+`SecurityMiddleware` (pure ASGI, so it covers HTTP, WebSocket and static files alike): the `Host` header
+must be `127.0.0.1:PORT` or `localhost:PORT` for this exact port (DNS rebinding); `Origin` must be
+`http://127.0.0.1:PORT` or `http://localhost:PORT` on every non-GET request and every WebSocket upgrade,
+and **a missing Origin is refused too**; every `/api` request needs `Authorization: Bearer <token>`
+(constant-time compare; a token in a query string or cookie does not count; an unknown `/api` path is
+401, not 404, until authenticated); the WebSocket (`/api/ws`) authenticates in its **first message**
+within 5 s or closes with 4401 and gets no data (messages are capped at 64 KB). No cookies and no CORS
+headers at all (a preflight gets 403); responses carry `X-Frame-Options: DENY`, `nosniff`,
+`Referrer-Policy: no-referrer`, a same-origin Content-Security-Policy (with `'wasm-unsafe-eval'` for the
+7.5 grid candidates, to be tightened once chosen), `Cache-Control: no-store` on `/api`; no `Server` or
+`Date` header, no request log, no docs/OpenAPI endpoints (the schema for the generated types comes from
+`create_app(...).openapi()`). Routes so far: `GET /api/health`, `GET /api/session` (`mode` is always
+`read-only`), `POST /api/session/touch` (the keep-alive the later idle timeout will use), the
+WebSocket, and the page (the built front end from `ui_assets/` if present, else a short placeholder).
+There are **no order endpoints yet**. Tests: 73 (every Host and Origin variant for HTTP and WebSocket,
+every token variant, no CORS / cookies, headers, static path traversal, real-TCP server and WebSocket,
+the socket is loopback-only, no token in any log), and 18 sabotages of the security layer each caught
+(one apparent survivor, `access_log`, is an equivalent mutant at uvicorn's `warning` level; it is
+pinned by asserting the server configuration). **Verified live** against the real process with curl:
+right token 200; no token, token in the query, hostile Host (right token), hostile Origin, no Origin,
+and a CORS preflight are all refused; headers as above; a request to the machine's LAN address is
+refused; the WebSocket authenticated, answered a ping, closed a wrong token with 4401 and refused a
+hostile Origin with 403. The permission design of decision 3 (`risk.toml` grants, the app switches
+the session) was **confirmed by the user** on 2026-10-13.
 
 **Decided with the user (2026-10-13):** Node is approved (install **Node 22 LTS via Homebrew** at the
 start of 7.5, pinned in the repo and in CI; slices 7.1-7.4 are Python only); layouts are
