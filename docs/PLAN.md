@@ -442,6 +442,8 @@ run` does not rebuild a stale image.
 
 ```bash
 git clone https://github.com/swalsh76/KalshiTerm2 && cd KalshiTerm2/deploy
+# 0. (2.11) preflight: Docker up, the key file is a real file, the data drive is mounted
+host/install.sh check --key-file ~/.kalshiterm/server_key.pem --drive /Volumes/<your SSD>
 # 1. the server's OWN read-only Kalshi key (separate from the dev key); init validates it is
 #    an unencrypted Ed25519 PEM, copies it to secrets/ (mode 600) and prints nothing secret
 #    --host/--ip are the names and address clients will use; the TLS certificate is valid for
@@ -454,6 +456,9 @@ docker compose up -d --build
 docker compose exec ingest kterm-server status
 docker compose exec api kterm-server user add <name>
 docker compose exec api kterm-server token create --user <name> --role admin   # shown once
+# 4. (2.11) the host-side jobs: drive check (and the LAN advertiser); asks for sudo once.
+#    Over SSH use `ssh -t` so sudo can prompt.
+host/install.sh install --drive /Volumes/<your SSD>
 ```
 
 Re-issuing the certificate (same names unless given; every client must then re-confirm the new
@@ -884,6 +889,7 @@ container and run on the Linux CI job only (macOS/Windows runners have no Docker
 | 2.8 — done | Storage governor + `kterm-server status` (includes the data-drive checks: free space, missing/unwritable drive) |
 | 2.9 — done (rehearsed on the MacBook; the Mac Studio itself waits for the SSD) | `kterm-server init`, production Compose, health checks, Mac Studio deployment (TLS certificate generation moves to Phase 3 with the API). Also built because a deployed server needs it: the periodic discovery loop (`ingest --discover-every`), `kterm-server health`, the host-side drive check, SIGTERM-driven graceful stop |
 | 2.10 (a: volume calibration — **not started, not a blocker**; b: hardware qualification — **waiting for the SSD, not a blocker**) | Split because only half of it needs the new hardware (decision 11 puts the volume run on the MacBook). **a:** 48-hour run against production data, then retune retention defaults and settle the open questions. **b:** disk tests and recovery tests with the data on the external SSD, then switch the Mac Studio on as the production host. Full protocol and checklist: §10.2 |
+| 2.11 (host installer) | Added 2026-10-14 by the user after the first stand-up on the Mac Studio: a host-side `deploy/host/install.sh` (preflight, data-volume prompt, LaunchDaemons for the drive check and the advertiser), plus a compose guard and a clearer `init` error for a wrong key path. Spec: §10.2 |
 
 The server uses its own read-only Kalshi key (created at deployment time), separate from the
 dev key.
@@ -905,8 +911,10 @@ Mac Studio. Checklist, in order (show the commands before running any of them on
 1. Format and mount the drive at a stable path; move Docker Desktop's disk image onto it.
 2. Disk tests inside the database container, internal disk versus the SSD: `pg_test_fsync`
    and a write-heavy `pgbench`; record fsync latency. Check the drive's endurance rating.
-3. Create the server's own read-only Kalshi key; `init`; `up` (§8.2); install the host check
-   LaunchDaemon (`deploy/host/`) and confirm `status` shows the drive.
+3. Create the server's own read-only Kalshi key; `host/install.sh check`; `init`; `up` (§8.2);
+   `host/install.sh install` (the host check LaunchDaemon, and the advertiser if wanted) and
+   confirm `status` shows the drive. (2.11 builds the installer; until it is merged, install by
+   hand from the notes in `deploy/host/*.plist.template`.)
 4. Recovery tests while ingest runs: force-unmount or unplug the drive; confirm Postgres
    crash-recovers without corruption (data checksums are on), the gap log and backfill repair
    the trades, and `status` reports the outage and the return.
@@ -958,6 +966,57 @@ APFS. Steps 1 and 2 are done; the drive's own endurance rating is not checked.
 
 Exit criteria: measured numbers recorded in §9 and §11, retention defaults retuned or
 explicitly confirmed, the open questions above closed, the Mac Studio running and healthy.
+
+**2.11 — host installer (decided 2026-10-14, by the user).** The first stand-up on the Mac
+Studio showed that the host-side steps are where a deployment silently goes wrong: a missing key
+file made Docker mount an empty *directory* (`init` then failed with "'/input/key.pem' is a
+directory", and the stray directory stayed behind), and the drive check and advertiser needed
+hand-edited `sed` lines and root commands with a drive path nobody had recorded. `init` cannot fix
+this (it runs in a container with no network and cannot see host mounts or run `launchctl`), so
+the fix is a host-side script plus two small guards:
+
+- `deploy/host/install.sh` (bash 3.2, which is what macOS ships; macOS/launchd only, other systems
+  get a clear "install by hand" message). Run as the normal user: it asks for `sudo` once, for the
+  few commands that need root. Subcommands:
+  - `check [--key-file PATH] [--drive PATH]`: read-only preflight, runs **before** `init`. Docker
+    reachable; the key is a regular, non-empty, unencrypted PEM file (a directory there gets the
+    "Docker created this" explanation; a mode wider than 600 is a warning); the drive is a mount
+    point, writable, with room for the budget. It never prints key contents. It ends by printing
+    the `init` command for this host.
+  - `install [--drive PATH] [--advertise|--no-advertise] [--port N] [--yes] [--dry-run]`: runs
+    **after** `init`. Asks which volume holds the data (numbered list of `/Volumes`; a plain
+    folder on the boot disk only with the explicit `--allow-plain-directory`), validates it,
+    renders both templates (paths checked for characters that would break the plist), lints
+    them, shows the plan, installs the `hostcheck` LaunchDaemon (and `advertise` unless
+    declined), waits for the first fresh `state/host.json` and prints `mounted`/`writable`.
+    Re-running is safe (boot out, then bootstrap). `--dry-run` changes nothing and prints the
+    plists and commands.
+  - `verify`: waits for the next report of the installed drive check and says whether it sees
+    a mounted, writable drive (use it after fixing a permission problem); the same wait ends
+    `install`, which polls for a good report instead of judging the first one.
+  - `uninstall`: boots out and removes both daemons; leaves `state/` alone.
+- `docker-compose.setup.yml` mounts the key with `bind.create_host_path: false`, so a wrong
+  `KEY_FILE` fails at once ("bind source path does not exist") instead of creating a directory;
+  and `init`'s `--key-file` error names that cause.
+- **Found on the Mac Studio (2026-10-14): a launchd job cannot write to an external drive until
+  macOS privacy (TCC, `kTCCServiceSystemPolicyRemovableVolumes`) allows it,** even though the
+  same user, and root run from ssh, can. The drive check reported `mounted: true, writable:
+  false`; `tccd` logged the denial. The script's `#!/usr/bin/env bash` line made `/usr/bin/env`
+  the responsible program (a grant to `env` would be far too broad), so the hostcheck plist now
+  starts `/bin/bash` explicitly and the operator grants Full Disk Access to `/bin/bash` (Mac's
+  screen or Screen Sharing; not possible over ssh). `install` and `verify` print these steps
+  when they see mounted-but-not-writable. Not yet decided: whether the drive check should keep
+  a write probe at all, since the process that really writes the data is Docker Desktop (an
+  app with its own permission); parked below until the Mac Studio run shows how it behaves.
+- Reminded, not automated: Docker Desktop's disk-image location is an app setting the script
+  cannot read reliably; `install` prints the reminder.
+
+Tests: dry-run output (placeholders filled, valid plists, comment block stripped), refusals
+(unsafe or relative paths, a non-mount-point, no `init` yet, no volume without a terminal), the
+key checks, the volume menu, the compose guard and the `init` message; the tests run the script
+with `/bin/bash` on macOS so the CI macOS jobs prove bash 3.2 compatibility. A real install
+needs the Mac Studio, so that run is the user's (2.10b step 3) and is recorded there.
+Exit criteria: the stand-up is `check` -> `init` -> `up` -> `install` with no hand-edited command.
 
 ### 10.3 Phase 3 slices (server API)
 
@@ -2138,6 +2197,7 @@ opt-in (decision 3, changed the same day: switched on and off inside the app, wi
 Ideas raised but **not** in scope. Not to be built until promoted into a phase.
 
 - Automated trading strategies (decision #2: manual first; strategy interface later).
+- Drive check without a write probe (mount status and free space only), so the host job needs no Full Disk Access; the real writer is Docker Desktop, which has its own permission, and Postgres failing is the real alarm. Raised 2026-10-14 from the first Mac Studio install; decide after seeing the Studio run with the permission granted.
 - A trigram index for `/v1/markets?q=` substring search (today a scan of 0.1-0.2 s at 816k markets). Raised 2026-10-08; add if search latency or the market count grows.
 - Run the containers as a non-root user (needs a uid strategy that works on both Docker Desktop and Linux bind mounts). Raised 2026-10-08; today they run as root with a read-only key mount, no published ports and an internal-only database network.
 - Make the first watchlist cycle retry after ~1 minute while there are no trades to rank, instead of waiting the full 5 minutes.

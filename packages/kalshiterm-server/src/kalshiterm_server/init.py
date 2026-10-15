@@ -98,7 +98,19 @@ def run_init(
             "generate a new database password and lock the server out of its existing data. "
             "Use --force only when starting over with an empty database volume."
         )
-    load_private_key(key_file)  # raises AuthError for a missing, encrypted or non-Ed25519 key
+    if key_file.is_dir():
+        raise InitError(
+            f"{key_file} is a directory, not a key file. Run through docker compose, this means "
+            "the host path in KEY_FILE did not exist and Docker created an empty directory there "
+            "(remove it with rmdir, put the key file at that path, and check it with "
+            "`host/install.sh check --key-file PATH`)."
+        )
+    if not key_file.exists():
+        raise InitError(
+            f"{key_file} does not exist. Run through docker compose, check the host path in "
+            "KEY_FILE (`host/install.sh check --key-file PATH` verifies it)."
+        )
+    load_private_key(key_file)  # raises AuthError for an encrypted or non-Ed25519 key
 
     result = InitResult()
     password = secrets.token_urlsafe(32)

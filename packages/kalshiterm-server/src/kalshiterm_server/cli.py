@@ -291,7 +291,8 @@ def init_command(
     key_id: Annotated[str, typer.Option(help="Key ID of the server's own READ-ONLY Kalshi key.")],
     key_file: Annotated[
         Path,
-        typer.Option(exists=True, dir_okay=False, help="Its Ed25519 private key (PEM file)."),
+        # Not exists=True: run_init checks it, so the error can explain the Docker case.
+        typer.Option(help="Its Ed25519 private key (PEM file)."),
     ],
     host: Annotated[
         list[str] | None,

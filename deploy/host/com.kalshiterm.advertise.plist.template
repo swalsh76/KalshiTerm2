@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
+  NORMAL ROUTE: run host/install.sh install (see docs/PLAN.md, section 8.2). It asks which
+  volume holds the data, fills in this template, installs the LAN announcement job and checks
+  that it works. The manual steps below are what it does, for when you cannot use it.
+
   LAN announcement: a LaunchDaemon that publishes the server over mDNS (_kterm._tcp) together
   with its certificate fingerprint, from boot, with no login needed. It is restarted if it dies.
 

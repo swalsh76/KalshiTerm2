@@ -1,6 +1,7 @@
 # One-off first-time setup: writes .env, secrets/ and config/ next to this file.
 # Kept apart from docker-compose.yml because that file refuses to load until .env exists.
 #
+#   host/install.sh check --key-file ~/.kalshiterm/server_key.pem     # first: is the key really there?
 #   KEY_FILE=~/.kalshiterm/server_key.pem docker compose -f docker-compose.setup.yml run --build --rm \
 #     init --key-id <the server key's id> --host <name clients use> --ip <its LAN address>
 # Later, to re-issue the TLS certificate (same names; clients must re-confirm the fingerprint):
@@ -20,7 +21,15 @@ services:
     entrypoint: ["kterm-server", "init", "--out", "/out", "--key-file", "/input/key.pem"]
     volumes:
       - ./:/out
-      - ${KEY_FILE:?set KEY_FILE to the server key (PEM file)}:/input/key.pem:ro
+      # Long form on purpose: with create_host_path off, a wrong KEY_FILE stops here with "bind
+      # source path does not exist" instead of Docker creating an empty DIRECTORY at that path
+      # (which made `init` fail with "'/input/key.pem' is a directory" and left it behind).
+      - type: bind
+        source: ${KEY_FILE:?set KEY_FILE to the server key (PEM file)}
+        target: /input/key.pem
+        read_only: true
+        bind:
+          create_host_path: false
     network_mode: none # setup needs no network at all
 
   cert:

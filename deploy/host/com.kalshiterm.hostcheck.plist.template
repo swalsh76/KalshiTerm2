@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
+  NORMAL ROUTE: run host/install.sh install (see docs/PLAN.md, section 8.2). It asks which
+  volume holds the data, fills in this template, installs the drive check job and checks
+  that it works. The manual steps below are what it does, for when you cannot use it.
+
   Data-drive check: a LaunchDaemon that runs every 60 s, from boot, with no login needed.
 
   WHY: the server runs in a container and cannot see whether macOS mounted the SSD. This job runs
@@ -31,6 +35,15 @@
     cat state/host.json     "mounted" and "writable" should be true; "checked_at" is recent
     docker compose exec ingest kterm-server status     the "host drive" problem is gone
 
+  macOS PRIVACY (found on the first Mac Studio install): a background job is not allowed to write
+  to an external drive until it is granted access, even though you can. The symptom is a report
+  with "mounted": true and "writable": false. The job is started as /bin/bash on purpose: if the
+  script were started directly, its first line would make /usr/bin/env the responsible program,
+  and the permission would have to go to env, which is far too broad. Grant it to /bin/bash:
+  System Settings > Privacy & Security > Full Disk Access > "+" > Cmd-Shift-G > /bin/bash
+  (on the Mac itself or over Screen Sharing; it cannot be done over ssh). Then check with:
+  host/install.sh verify
+
   TROUBLESHOOTING:
     "Bootstrap failed: 5: Input/output error": it is already loaded, or the file is not
       root:wheel with mode 644. Run the bootout line below, fix the file, bootstrap again.
@@ -50,6 +63,7 @@
   <string>com.kalshiterm.hostcheck</string>
   <key>ProgramArguments</key>
   <array>
+    <string>/bin/bash</string>
     <string>__DEPLOY_DIR__/host/check-data-drive.sh</string>
     <string>__DRIVE_PATH__</string>
     <string>__DEPLOY_DIR__/state/host.json</string>

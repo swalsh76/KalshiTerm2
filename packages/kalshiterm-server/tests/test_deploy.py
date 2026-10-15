@@ -140,7 +140,13 @@ def test_setup_is_a_separate_file_with_no_network_so_the_main_file_can_stay_stri
     assert cert["entrypoint"] == ["kterm-server", "cert"]
     assert cert["environment"]["KTERM_DEPLOY_DIR"] == "/out"  # `run ... cert rotate` keeps it
     assert "init" not in load("docker-compose.yml")["services"]
-    assert any(v.endswith(":/input/key.pem:ro") for v in setup["volumes"])  # key mounted read-only
+    key = next(
+        v for v in setup["volumes"] if isinstance(v, dict) and v["target"] == "/input/key.pem"
+    )
+    assert key["read_only"] is True  # the key is mounted read-only
+    # a wrong KEY_FILE must fail, not make Docker create a directory where the file belongs
+    assert key["type"] == "bind" and key["bind"] == {"create_host_path": False}
+    assert key["source"].startswith("${KEY_FILE:?")
 
 
 # ---------------------------------------------------------------- the host-side drive check
