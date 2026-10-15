@@ -2122,10 +2122,24 @@ slice closes them and nothing else. **No behaviour changes**: every existing tes
 | C1.2 | Oversized functions on important paths: `risk.check` (141 lines, the order-safety layer) and the CLI `register()` functions (up to 272 lines, every command a closure); `server/cli.py` is 744 lines | Split into module-level functions that are readable and testable one at a time, with a docstring on each of the ~10 largest undocumented functions. Rules and messages stay the same |
 | C1.3 | Small copies: `for_profile` is identical in `client.py` and `stream.py`; `money` and `aware` are each defined twice | Merge the identical ones; leave the ones whose behaviour genuinely differs |
 
+Done (merged 2026-10-14, CI green): C1.1, C1.2 (the `register()` hoist, the `risk.check` split and
+the eleven docstrings) and C1.3. (C1.2 also named `server/cli.py`; that part was not done and is C1.6.) The review's
+other findings, scheduled by the user the same day:
+
+| Step | Work | Approach and check |
+|---|---|---|
+| C1.4 | The slow pinning tests (~20 tests x 1.5 s) | The cost is not certificate generation (the test certificates are elliptic-curve and take milliseconds). `kterm server trust` listens for a LAN announcement for 1.5 s (section 8.5), and the tests do not need it: pass `--no-mdns` everywhere except the tests about discovery. Saves ~30 s of a 157 s run; no production code changes |
+| C1.5 | The five remaining public functions of 40+ lines without a docstring (`cli.run` and `live_cli.work`, nested closures; `api/stream.event_for`, `market_metrics.run`, `ui/trading.enable`) | Docstrings only. Check as before: the syntax tree of every touched file is identical once docstrings are ignored |
+| C1.6 | `server/cli.py` is 744 lines, and `ingest_command` is 130 lines (complexity 16) | Split `ingest_command` into small functions and move the backup, analyze and token command groups into their own modules, with the same flat `register()` pattern as the client; `cli.py` keeps the wiring. No option, help text or behaviour changes: `kterm-server --help` and every group's `--help` byte-identical before and after, all tests pass |
+| C1.7 | The root `README.md` is five lines | A quickstart of about 100 lines for a public repository: what it is and its status, requirements, running the tests, standing up the server (pointing at `deploy/host/install.sh` and section 8), pointing the client at it (`kterm config add`, `kterm server trust`, the UI), and the safety defaults (demo environment, trading limits, trades never go through the server). Links to the design instead of repeating it |
+| C1.8 | PLAN.md is 2,214 lines and 57% of it is section 10, a dated build journal (rehearsals, measurements, "as built" notes) that buries the durable design | Move section 10 verbatim to `docs/BUILD-LOG.md`, **keeping its `10.x` numbering**; PLAN.md keeps the phase table and a pointer. Update the 23 references in code, tests and docs (mostly `PLAN section 10.x`) and the "Start here" line in CLAUDE.md. Last, because the other steps add references. Check: every reference resolves to a heading in one of the two files (a one-off script, not a test) |
+
+Suggested order: C1.4, C1.5, C1.6, C1.7, C1.8: quick wins first, the one that touches the most files last.
+
 Out of scope on purpose (reviewed and rejected): blanket docstring coverage, deleting or merging
-tests, splitting large test files, a docstring lint rule. Not in this slice, raised in the same
-review and left for the user to schedule: a README quickstart, splitting this file into design
-and build log, and the slower pinning tests (a shared TLS fixture).
+tests, splitting large test files, a docstring lint rule. Reviewed and left alone because they only
+share a name: the two `money()` functions (a `Decimal` with a dash for "missing" vs integer
+millionths) and the two `aware()` functions (the client UI raises HTTP 400, the server its own 422).
 
 ## 11. Risks & Notes
 
