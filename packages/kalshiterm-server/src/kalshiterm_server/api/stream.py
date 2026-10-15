@@ -334,6 +334,17 @@ class Session:
 
     # ------------------------------------------------------------ the subscription
     async def subscribe(self, message: dict[str, Any]) -> None:
+        """Handle a client's ``subscribe`` message: validate it, register it and answer
+        ``subscribed``.
+
+        A bad field is answered with an ``invalid_parameter`` error that names it, and nothing is
+        subscribed: an unknown channel, malformed or too many markets, a ``since`` or
+        ``alerts_since`` cursor that is not a digit string or is ahead of the server
+        (``in_the_future``), or ``since`` on an alerts-only subscription. ``since`` resumes the
+        market channels from that cursor and ``alerts_since`` resumes alerts. Without a cursor the
+        stream starts at the current head, with an orderbook snapshot per market. A cursor older
+        than the catch-up horizon gets a ``gap`` and starts from the head instead.
+        """
         channels: Any = message.get("channels")
         markets: Any = message.get("markets", [])
         since = message.get("since")

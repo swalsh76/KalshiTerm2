@@ -415,6 +415,12 @@ def _size(n: int | None) -> str:
 
 
 def render(report: dict[str, Any]) -> str:
+    """Format a status report (from ``collect_status``) as the text ``kterm-server status`` prints.
+
+    What needs attention comes first, then storage, the host drive, the streams, gaps, background
+    jobs, discovery, the watchlist, analyzers and backup, and what to do next. It only formats: the
+    checks that produce the problems list are in ``collect_status``.
+    """
     lines: list[str] = []
     problems = report["problems"]
     lines.append(f"KalshiTerm server status  {report['time']}")

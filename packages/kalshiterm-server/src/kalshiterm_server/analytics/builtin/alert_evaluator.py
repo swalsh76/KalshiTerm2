@@ -87,6 +87,17 @@ class AlertEvaluator:
     )
 
     async def run(self, ctx: AnalysisContext) -> Sequence[Result]:
+        """Check every enabled alert rule against the newest value of its metric, and fire or re-arm
+        it.
+
+        For each market and event rule it takes the latest analysis result within ``LOOKBACK``; a
+        value older than the metric's freshness window counts as missing. ``decide`` says whether
+        the rule fires, re-arms or stays as it is. Re-arming clears ``active``. Firing first claims
+        the rule with a guarded UPDATE, so two overlapping runs cannot fire it twice, then stores
+        the alert and notifies listeners (``pg_notify``) so connected clients hear about it. Alerts
+        older than ``KEEP_ALERTS`` are deleted. It returns no results: its output is the alerts
+        themselves.
+        """
         params = {"since": ctx.now - LOOKBACK, "now": ctx.now}
         async with ctx.engine.connect() as conn:
             rows: list[Any] = []

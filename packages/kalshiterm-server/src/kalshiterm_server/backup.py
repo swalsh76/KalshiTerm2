@@ -265,6 +265,16 @@ async def run_backup(
     keep_weekly: int = 4,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> BackupResult:
+    """Take one backup of the database into ``target``, then prune old ones.
+
+    Records the run, checks there is room (about 120% of the last backup), takes a consistent
+    exported snapshot, counts the rows in it for the manifest and ``pg_dump``s that snapshot to a
+    ``.partial`` file. It then checks the dump has table data, writes a manifest (counts, size,
+    sha256) beside it and renames the dump into place atomically, and keeps ``keep_daily`` daily
+    and ``keep_weekly`` weekly backups. On any failure the partial file is removed, the run is
+    recorded as failed and the error is re-raised, so a half-written backup is never mistaken for
+    a good one.
+    """
     started = now()
     run_id = await _record_start(engine, started)
     partial = target / f".partial-{started:%Y%m%d-%H%M%S}.dump"

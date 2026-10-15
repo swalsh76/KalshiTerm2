@@ -102,6 +102,12 @@ def market_view(
     *,
     all_rules: bool = False,
 ) -> RenderableType:
+    """The page for ``kterm market``: one market in detail.
+
+    Ticker and status, event, yes/no labels, open, close and expiry times, strike and the result
+    if it has settled; then the last quote and the analytics when given, and the rules text (cut
+    to 400 characters unless ``all_rules``).
+    """
     head = Text()
     head.append(market.ticker, style="bold")
     head.append(f"   {market.status}")

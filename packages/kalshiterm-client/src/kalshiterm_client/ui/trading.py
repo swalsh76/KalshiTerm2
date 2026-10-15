@@ -324,6 +324,13 @@ class TradingSession:
         return self._runtime
 
     def account(self) -> tm.AccountView:
+        """The account page of the trading UI, formatted for display.
+
+        Cash and free cash per shard, the non-zero positions, the resting orders and the most recent
+        fills, plus today's realized loss, transfers and exposure and whether trading is halted.
+        ``synced`` is false when the account stream is down or there is no snapshot yet. Needs
+        trading to be switched on.
+        """
         runtime = self._require()
         assert runtime.tracker is not None
         tracker, state = runtime.tracker, runtime.state
