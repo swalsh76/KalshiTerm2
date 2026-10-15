@@ -341,12 +341,12 @@ async def test_no_analyzers_at_all_is_not_a_problem(engine: AsyncEngine, tmp_pat
 
 
 def test_the_list_and_run_commands(migrated_db_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    from kalshiterm_server import cli
+    from kalshiterm_server import cli_analyze
     from kalshiterm_server.analytics.registry import Discovery
 
     fake = Fake("demo")
     found = Discovery({"demo": fake}, {"demo": "kterm-demo: kterm_demo:Demo"}, [])
-    monkeypatch.setattr(cli, "_discover", lambda: found)
+    monkeypatch.setattr(cli_analyze, "_discover", lambda: found)
     monkeypatch.setenv("KTERM_DB_URL", migrated_db_url)
     runner = CliRunner()
     listed = runner.invoke(app, ["analyze", "list"])
