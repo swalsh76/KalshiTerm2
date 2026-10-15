@@ -81,6 +81,14 @@ def read_signer(settings: KalshiSettings) -> KalshiSigner:
 async def open_runtime(
     mode: Mode, settings: KalshiSettings | None = None
 ) -> AsyncIterator[Runtime]:
+    """Open what a command needs for ``mode`` and close it again (an async context manager).
+
+    ``read`` is the read-only key and a REST client, nothing else. ``preview`` tracks the account
+    but swaps the trading client for one that refuses every send (a dry run). ``exit`` builds the
+    order service with the real trading client but does not start the account stream. ``trade``
+    starts the stream and sends for real. Production orders need ``production_enabled`` in
+    ``risk.toml`` (``production_allowed``).
+    """
     settings = settings or KalshiSettings()
     policy = load_policy()
     state = TradingState.load()

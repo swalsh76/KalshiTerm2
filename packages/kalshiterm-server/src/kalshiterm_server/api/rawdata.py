@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request
+from kalshi_core.fixedpoint import E6
 from sqlalchemy import text
 
 from kalshiterm_server.api import format as fmt
@@ -15,7 +16,6 @@ router = APIRouter(prefix="/v1")
 
 MAX_ROWS = 1_000
 NIL_UUID = "00000000-0000-0000-0000-000000000000"
-ONE_DOLLAR_E6 = 1_000_000
 
 
 async def market_id(request: Request, ticker: str) -> int:
@@ -52,7 +52,7 @@ def trade_json(r: Any) -> dict[str, Any]:
         "time": fmt.moment(r.ts),
         "trade_id": str(r.trade_id),
         "yes_price": fmt.dollars(r.yes_price_e6),
-        "no_price": fmt.dollars(ONE_DOLLAR_E6 - r.yes_price_e6),
+        "no_price": fmt.dollars(E6 - r.yes_price_e6),
         "count": fmt.count(r.count_e2),
         "taker_side": r.taker_side,
         "is_block_trade": r.is_block_trade,
@@ -307,8 +307,8 @@ async def orderbook(
         "no": side_json(no, depth),
         "best_yes_bid": fmt.dollars(best_yes),
         "best_no_bid": fmt.dollars(best_no),
-        "best_yes_ask": fmt.dollars(None if best_no is None else ONE_DOLLAR_E6 - best_no),
-        "best_no_ask": fmt.dollars(None if best_yes is None else ONE_DOLLAR_E6 - best_yes),
+        "best_yes_ask": fmt.dollars(None if best_no is None else E6 - best_no),
+        "best_no_ask": fmt.dollars(None if best_yes is None else E6 - best_yes),
     }
 
 

@@ -196,6 +196,16 @@ class BookTracker:
         return events
 
     def process(self, message: WsMessage) -> list[BookEvent]:
+        """Feed one stream message to the books and return what it means, as ``BookEvent``s.
+
+        A reconnect clears every book and the sequence state (sequence numbers and sids restart).
+        Control messages are counted, and other message types pass through unchanged. A snapshot
+        replaces the market's book and a delta is applied to it. Sequence numbers are checked per
+        subscription: a skipped number marks that subscription's markets stale and yields a GAP (a
+        stale book ignores deltas until a fresh snapshot), and so does a delta that would make a
+        quantity negative. A message for a market that was removed counts in the sequence and is
+        otherwise ignored.
+        """
         if message.type == RECONNECTED:
             self.books.clear()
             self.stale.clear()

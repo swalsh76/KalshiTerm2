@@ -175,275 +175,284 @@ def confirm(runtime: Runtime, prepared: Prepared, yes: bool) -> None:
         raise fail("not sent")
 
 
-def register(app: typer.Typer) -> None:
-    # ------------------------------------------------------------------ placing orders
+# ------------------------------------------------------------------ placing orders
 
-    def place(
-        action: Action,
-        ticker: str,
-        count: str,
-        price: str,
-        side: Side,
-        ioc: bool,
-        post_only: bool,
-        dry_run: bool,
-        yes: bool,
-        as_json: bool,
-    ) -> None:
-        request = OrderRequest(
-            ticker,
-            action,
-            Outcome(side.value),
-            decimal_arg("count", count),
-            decimal_arg("price", price),
-            TimeInForce.IMMEDIATE_OR_CANCEL if ioc else TimeInForce.GOOD_TILL_CANCELED,
-            post_only,
-        )
 
-        async def work(runtime: Runtime) -> None:
-            assert runtime.service is not None
-            banner(runtime)
-            prepared = await runtime.service.prepare(request)
-            if as_json:
-                emit_json(verdict_data(prepared))
-            else:
-                for line in describe(prepared):
-                    typer.echo(line)
-            if not prepared.verdict.ok:
-                raise typer.Exit(code=1)
-            if dry_run:
-                if not as_json:
-                    typer.echo("dry run: nothing was sent")
-                return
-            confirm(runtime, prepared, yes)
-            placement = await runtime.service.execute(prepared)
-            for line in trade_views.placement_lines(placement):
-                typer.echo(line)
+def _place(
+    action: Action,
+    ticker: str,
+    count: str,
+    price: str,
+    side: Side,
+    ioc: bool,
+    post_only: bool,
+    dry_run: bool,
+    yes: bool,
+    as_json: bool,
+) -> None:
+    request = OrderRequest(
+        ticker,
+        action,
+        Outcome(side.value),
+        decimal_arg("count", count),
+        decimal_arg("price", price),
+        TimeInForce.IMMEDIATE_OR_CANCEL if ioc else TimeInForce.GOOD_TILL_CANCELED,
+        post_only,
+    )
 
-        run_trading("preview" if dry_run else "trade", work)
-
-    @app.command("buy")
-    def buy(
-        ticker: Annotated[str, typer.Argument(help="Market ticker.")],
-        count: Annotated[str, typer.Argument(help="Contracts, e.g. 2 or 0.5.")],
-        price: Annotated[str, typer.Argument(help="Limit price in dollars of the side you buy.")],
-        side: Annotated[Side, typer.Option(help="Which side to buy.")] = Side.YES,
-        ioc: Annotated[bool, typer.Option("--ioc", help="Immediate-or-cancel.")] = False,
-        post_only: Annotated[bool, typer.Option("--post-only")] = False,
-        dry_run: DryRunOption = False,
-        yes: YesOption = False,
-        as_json: JsonOption = False,
-    ) -> None:
-        """Buy contracts at a limit price (checked against your risk limits first)."""
-        place(Action.BUY, ticker, count, price, side, ioc, post_only, dry_run, yes, as_json)
-
-    @app.command("sell")
-    def sell(
-        ticker: Annotated[str, typer.Argument(help="Market ticker.")],
-        count: Annotated[str, typer.Argument(help="Contracts, e.g. 2 or 0.5.")],
-        price: Annotated[str, typer.Argument(help="Limit price in dollars of the side you sell.")],
-        side: Annotated[Side, typer.Option(help="Which side to sell.")] = Side.YES,
-        ioc: Annotated[bool, typer.Option("--ioc", help="Immediate-or-cancel.")] = False,
-        post_only: Annotated[bool, typer.Option("--post-only")] = False,
-        dry_run: DryRunOption = False,
-        yes: YesOption = False,
-        as_json: JsonOption = False,
-    ) -> None:
-        """Sell contracts at a limit price (checked against your risk limits first)."""
-        place(Action.SELL, ticker, count, price, side, ioc, post_only, dry_run, yes, as_json)
-
-    @app.command("amend")
-    def amend(
-        order_id: Annotated[str, typer.Argument(help="The resting order to change.")],
-        price: Annotated[
-            str | None, typer.Option(help="New YES price in dollars, as `kterm orders` shows it.")
-        ] = None,
-        count: Annotated[str | None, typer.Option(help="New TOTAL count.")] = None,
-        dry_run: DryRunOption = False,
-        yes: YesOption = False,
-        as_json: JsonOption = False,
-    ) -> None:
-        """Change a resting order's price and/or count (checked like a new order)."""
-        new_price = decimal_arg("price", price) if price is not None else None
-        new_count = decimal_arg("count", count) if count is not None else None
-
-        async def work(runtime: Runtime) -> None:
-            assert runtime.service is not None
-            banner(runtime)
-            try:
-                prepared = await runtime.service.prepare_amend(
-                    order_id, price=new_price, count=new_count
-                )
-            except (ValueError, TypeError) as exc:
-                raise fail(str(exc)) from exc
-            if as_json:
-                emit_json(verdict_data(prepared))
-            else:
-                typer.echo(f"amend order {order_id}:")
-                for line in describe(prepared):
-                    typer.echo(line)
-            if not prepared.verdict.ok:
-                raise typer.Exit(code=1)
-            if dry_run:
-                if not as_json:
-                    typer.echo("dry run: nothing was sent")
-                return
-            confirm(runtime, prepared, yes)
-            amendment = await runtime.service.execute_amend(prepared)
-            for line in trade_views.amendment_lines(amendment):
-                typer.echo(line)
-
-        run_trading("preview" if dry_run else "trade", work)
-
-    # ------------------------------------------------------------------ getting out
-
-    @app.command("cancel")
-    def cancel(
-        order_ids: Annotated[list[str], typer.Argument(help="Order ids (see kterm orders).")],
-        as_json: JsonOption = False,
-    ) -> None:
-        """Cancel resting orders. Never refused by the risk layer, works while halted."""
-
-        async def work(runtime: Runtime) -> list[Any]:
-            assert runtime.trading is not None
-            banner(runtime)
-            return await cancel_by_ids(runtime.rest, runtime.trading, order_ids)
-
-        outcomes = run_trading("exit", work)
+    async def work(runtime: Runtime) -> None:
+        assert runtime.service is not None
+        banner(runtime)
+        prepared = await runtime.service.prepare(request)
         if as_json:
-            emit_json(
-                [{"order_id": o.order_id, "ok": o.ok, "message": o.message} for o in outcomes]
-            )
+            emit_json(verdict_data(prepared))
         else:
-            for o in outcomes:
-                typer.echo(f"{o.order_id}: {o.message}")
-        if not all(o.ok for o in outcomes):
+            for line in describe(prepared):
+                typer.echo(line)
+        if not prepared.verdict.ok:
             raise typer.Exit(code=1)
-
-    @app.command("kill")
-    def kill(as_json: JsonOption = False) -> None:
-        """Halt new orders and cancel every open order, then check until none remain."""
-
-        async def work(runtime: Runtime) -> Any:
-            assert runtime.service is not None
-            banner(runtime)
-            return await runtime.service.kill("kill switch (kterm kill)")
-
-        report = run_trading("exit", work)
-        if as_json:
-            emit_json(
-                {
-                    "cancelled": report.cancelled,
-                    "remaining": report.remaining,
-                    "errors": report.errors,
-                    "clean": report.clean,
-                }
-            )
-        else:
-            typer.echo("trading is HALTED (new orders refused until `kterm resume`)")
-            typer.echo(f"cancelled {len(report.cancelled)} order(s) in the follow-up passes")
-            if report.remaining:
-                typer.echo(f"STILL RESTING: {', '.join(report.remaining)}", err=True)
-            for error in report.errors:
-                typer.echo(f"problem: {error}", err=True)
-            if report.clean:
-                typer.echo("no orders are resting")
-        if not report.clean:
-            raise typer.Exit(code=1)
-
-    @app.command("resume")
-    def resume(yes: YesOption = False) -> None:
-        """Clear the halt left by the kill switch so new orders are allowed again."""
-        try:
-            state = TradingState.load()
-        except ProfileError as exc:
-            raise fail(str(exc)) from exc
-        if not state.halted:
-            typer.echo("trading is not halted")
+        if dry_run:
+            if not as_json:
+                typer.echo("dry run: nothing was sent")
             return
-        typer.echo(f"trading is halted: {state.halt_reason or 'kill switch'}")
-        if not yes and not typer.confirm("Allow new orders again?", default=False):
-            raise fail("still halted")
-        state.clear_halt()
-        typer.echo("halt cleared")
+        confirm(runtime, prepared, yes)
+        placement = await runtime.service.execute(prepared)
+        for line in trade_views.placement_lines(placement):
+            typer.echo(line)
 
-    # ------------------------------------------------------------------ looking
+    run_trading("preview" if dry_run else "trade", work)
 
-    @app.command("balance")
-    def balance(as_json: JsonOption = False) -> None:
-        """Your balance on each exchange shard."""
 
-        async def work(runtime: Runtime) -> Any:
-            return await runtime.rest.balance(), runtime.state
+def buy(
+    ticker: Annotated[str, typer.Argument(help="Market ticker.")],
+    count: Annotated[str, typer.Argument(help="Contracts, e.g. 2 or 0.5.")],
+    price: Annotated[str, typer.Argument(help="Limit price in dollars of the side you buy.")],
+    side: Annotated[Side, typer.Option(help="Which side to buy.")] = Side.YES,
+    ioc: Annotated[bool, typer.Option("--ioc", help="Immediate-or-cancel.")] = False,
+    post_only: Annotated[bool, typer.Option("--post-only")] = False,
+    dry_run: DryRunOption = False,
+    yes: YesOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Buy contracts at a limit price (checked against your risk limits first)."""
+    _place(Action.BUY, ticker, count, price, side, ioc, post_only, dry_run, yes, as_json)
 
-        result, state = run_trading("read", work)
-        if as_json:
-            return emit_json({"balance": result, "halted": state.halted})
-        show(
-            trade_views.balance_view(
-                result, (state.halt_reason or "kill switch") if state.halted else None
+
+def sell(
+    ticker: Annotated[str, typer.Argument(help="Market ticker.")],
+    count: Annotated[str, typer.Argument(help="Contracts, e.g. 2 or 0.5.")],
+    price: Annotated[str, typer.Argument(help="Limit price in dollars of the side you sell.")],
+    side: Annotated[Side, typer.Option(help="Which side to sell.")] = Side.YES,
+    ioc: Annotated[bool, typer.Option("--ioc", help="Immediate-or-cancel.")] = False,
+    post_only: Annotated[bool, typer.Option("--post-only")] = False,
+    dry_run: DryRunOption = False,
+    yes: YesOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Sell contracts at a limit price (checked against your risk limits first)."""
+    _place(Action.SELL, ticker, count, price, side, ioc, post_only, dry_run, yes, as_json)
+
+
+def amend(
+    order_id: Annotated[str, typer.Argument(help="The resting order to change.")],
+    price: Annotated[
+        str | None, typer.Option(help="New YES price in dollars, as `kterm orders` shows it.")
+    ] = None,
+    count: Annotated[str | None, typer.Option(help="New TOTAL count.")] = None,
+    dry_run: DryRunOption = False,
+    yes: YesOption = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Change a resting order's price and/or count (checked like a new order)."""
+    new_price = decimal_arg("price", price) if price is not None else None
+    new_count = decimal_arg("count", count) if count is not None else None
+
+    async def work(runtime: Runtime) -> None:
+        assert runtime.service is not None
+        banner(runtime)
+        try:
+            prepared = await runtime.service.prepare_amend(
+                order_id, price=new_price, count=new_count
             )
+        except (ValueError, TypeError) as exc:
+            raise fail(str(exc)) from exc
+        if as_json:
+            emit_json(verdict_data(prepared))
+        else:
+            typer.echo(f"amend order {order_id}:")
+            for line in describe(prepared):
+                typer.echo(line)
+        if not prepared.verdict.ok:
+            raise typer.Exit(code=1)
+        if dry_run:
+            if not as_json:
+                typer.echo("dry run: nothing was sent")
+            return
+        confirm(runtime, prepared, yes)
+        amendment = await runtime.service.execute_amend(prepared)
+        for line in trade_views.amendment_lines(amendment):
+            typer.echo(line)
+
+    run_trading("preview" if dry_run else "trade", work)
+
+
+# ------------------------------------------------------------------ getting out
+
+
+def cancel(
+    order_ids: Annotated[list[str], typer.Argument(help="Order ids (see kterm orders).")],
+    as_json: JsonOption = False,
+) -> None:
+    """Cancel resting orders. Never refused by the risk layer, works while halted."""
+
+    async def work(runtime: Runtime) -> list[Any]:
+        assert runtime.trading is not None
+        banner(runtime)
+        return await cancel_by_ids(runtime.rest, runtime.trading, order_ids)
+
+    outcomes = run_trading("exit", work)
+    if as_json:
+        emit_json([{"order_id": o.order_id, "ok": o.ok, "message": o.message} for o in outcomes])
+    else:
+        for o in outcomes:
+            typer.echo(f"{o.order_id}: {o.message}")
+    if not all(o.ok for o in outcomes):
+        raise typer.Exit(code=1)
+
+
+def kill(as_json: JsonOption = False) -> None:
+    """Halt new orders and cancel every open order, then check until none remain."""
+
+    async def work(runtime: Runtime) -> Any:
+        assert runtime.service is not None
+        banner(runtime)
+        return await runtime.service.kill("kill switch (kterm kill)")
+
+    report = run_trading("exit", work)
+    if as_json:
+        emit_json(
+            {
+                "cancelled": report.cancelled,
+                "remaining": report.remaining,
+                "errors": report.errors,
+                "clean": report.clean,
+            }
         )
+    else:
+        typer.echo("trading is HALTED (new orders refused until `kterm resume`)")
+        typer.echo(f"cancelled {len(report.cancelled)} order(s) in the follow-up passes")
+        if report.remaining:
+            typer.echo(f"STILL RESTING: {', '.join(report.remaining)}", err=True)
+        for error in report.errors:
+            typer.echo(f"problem: {error}", err=True)
+        if report.clean:
+            typer.echo("no orders are resting")
+    if not report.clean:
+        raise typer.Exit(code=1)
 
-    @app.command("positions")
-    def positions(
-        all_: Annotated[
-            bool, typer.Option("--all", help="Include flat and settled markets.")
-        ] = False,
-        as_json: JsonOption = False,
-    ) -> None:
-        """Your market positions."""
 
-        async def work(runtime: Runtime) -> list[Any]:
-            params = {"settlement_status": "all"} if all_ else {}
-            return [p async for p in runtime.rest.iter_positions(**params)]
+def resume(yes: YesOption = False) -> None:
+    """Clear the halt left by the kill switch so new orders are allowed again."""
+    try:
+        state = TradingState.load()
+    except ProfileError as exc:
+        raise fail(str(exc)) from exc
+    if not state.halted:
+        typer.echo("trading is not halted")
+        return
+    typer.echo(f"trading is halted: {state.halt_reason or 'kill switch'}")
+    if not yes and not typer.confirm("Allow new orders again?", default=False):
+        raise fail("still halted")
+    state.clear_halt()
+    typer.echo("halt cleared")
 
-        found = run_trading("read", work)
-        shown = found if all_ else [p for p in found if p.position_fp != 0]
-        if as_json:
-            return emit_json(shown)
-        show(trade_views.positions_table(shown))
 
-    @app.command("orders")
-    def orders(
-        status: Annotated[
-            str, typer.Option(help="resting, canceled, executed, or all.")
-        ] = "resting",
-        limit: Annotated[int, typer.Option(min=1, max=1000, help="Most recent N.")] = 50,
-        as_json: JsonOption = False,
-    ) -> None:
-        """Your orders (resting ones by default)."""
-        if status not in ("resting", "canceled", "executed", "all"):
-            raise fail("status must be resting, canceled, executed or all")
+# ------------------------------------------------------------------ looking
 
-        async def work(runtime: Runtime) -> list[Any]:
-            params = {} if status == "all" else {"status": status}
-            return [o async for o in runtime.rest.iter_orders(**params)]
 
-        found = run_trading("read", work)
-        found.sort(key=lambda o: o.created_time.timestamp() if o.created_time else 0, reverse=True)
-        shown = found[:limit]
-        if as_json:
-            return emit_json(shown)
-        show(trade_views.orders_table(shown))
-        if shown:
-            typer.echo(trade_views.ORDERS_NOTE)
+def balance(as_json: JsonOption = False) -> None:
+    """Your balance on each exchange shard."""
 
-    @app.command("fills")
-    def fills(
-        limit: Annotated[int, typer.Option(min=1, max=1000, help="Most recent N.")] = 20,
-        as_json: JsonOption = False,
-    ) -> None:
-        """Your recent fills."""
+    async def work(runtime: Runtime) -> Any:
+        return await runtime.rest.balance(), runtime.state
 
-        async def work(runtime: Runtime) -> list[Any]:
-            return [f async for f in runtime.rest.iter_fills()]
+    result, state = run_trading("read", work)
+    if as_json:
+        return emit_json({"balance": result, "halted": state.halted})
+    show(
+        trade_views.balance_view(
+            result, (state.halt_reason or "kill switch") if state.halted else None
+        )
+    )
 
-        found = run_trading("read", work)
-        found.sort(key=lambda f: f.ts or 0, reverse=True)
-        shown = found[:limit]
-        if as_json:
-            return emit_json(shown)
-        show(trade_views.fills_table(shown))
-        if shown:
-            typer.echo(trade_views.ORDERS_NOTE)
+
+def positions(
+    all_: Annotated[bool, typer.Option("--all", help="Include flat and settled markets.")] = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Your market positions."""
+
+    async def work(runtime: Runtime) -> list[Any]:
+        params = {"settlement_status": "all"} if all_ else {}
+        return [p async for p in runtime.rest.iter_positions(**params)]
+
+    found = run_trading("read", work)
+    shown = found if all_ else [p for p in found if p.position_fp != 0]
+    if as_json:
+        return emit_json(shown)
+    show(trade_views.positions_table(shown))
+
+
+def orders(
+    status: Annotated[str, typer.Option(help="resting, canceled, executed, or all.")] = "resting",
+    limit: Annotated[int, typer.Option(min=1, max=1000, help="Most recent N.")] = 50,
+    as_json: JsonOption = False,
+) -> None:
+    """Your orders (resting ones by default)."""
+    if status not in ("resting", "canceled", "executed", "all"):
+        raise fail("status must be resting, canceled, executed or all")
+
+    async def work(runtime: Runtime) -> list[Any]:
+        params = {} if status == "all" else {"status": status}
+        return [o async for o in runtime.rest.iter_orders(**params)]
+
+    found = run_trading("read", work)
+    found.sort(key=lambda o: o.created_time.timestamp() if o.created_time else 0, reverse=True)
+    shown = found[:limit]
+    if as_json:
+        return emit_json(shown)
+    show(trade_views.orders_table(shown))
+    if shown:
+        typer.echo(trade_views.ORDERS_NOTE)
+
+
+def fills(
+    limit: Annotated[int, typer.Option(min=1, max=1000, help="Most recent N.")] = 20,
+    as_json: JsonOption = False,
+) -> None:
+    """Your recent fills."""
+
+    async def work(runtime: Runtime) -> list[Any]:
+        return [f async for f in runtime.rest.iter_fills()]
+
+    found = run_trading("read", work)
+    found.sort(key=lambda f: f.ts or 0, reverse=True)
+    shown = found[:limit]
+    if as_json:
+        return emit_json(shown)
+    show(trade_views.fills_table(shown))
+    if shown:
+        typer.echo(trade_views.ORDERS_NOTE)
+
+
+def register(app: typer.Typer) -> None:
+    app.command("buy")(buy)
+    app.command("sell")(sell)
+    app.command("amend")(amend)
+    app.command("cancel")(cancel)
+    app.command("kill")(kill)
+    app.command("resume")(resume)
+    app.command("balance")(balance)
+    app.command("positions")(positions)
+    app.command("orders")(orders)
+    app.command("fills")(fills)

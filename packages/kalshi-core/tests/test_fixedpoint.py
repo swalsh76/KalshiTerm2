@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 import pytest
-from kalshiterm_server.fixedpoint import PrecisionError, from_e2, from_e6, to_e2, to_e6
+from kalshi_core.fixedpoint import PrecisionError, from_e2, from_e6, to_e2, to_e6
 
 
 @pytest.mark.parametrize(
@@ -18,12 +18,12 @@ from kalshiterm_server.fixedpoint import PrecisionError, from_e2, from_e6, to_e2
     ],
 )
 def test_to_e6_is_exact(value: object, expected: int) -> None:
-    assert to_e6(value) == expected  # type: ignore[arg-type]
+    assert to_e6(value) == expected  # type: ignore[call-overload]
 
 
 @pytest.mark.parametrize(("value", "expected"), [("104.24", 10_424), ("0.03", 3), (7, 700)])
 def test_to_e2_is_exact(value: object, expected: int) -> None:
-    assert to_e2(value) == expected  # type: ignore[arg-type]
+    assert to_e2(value) == expected  # type: ignore[call-overload]
 
 
 def test_none_stays_none() -> None:
@@ -33,7 +33,7 @@ def test_none_stays_none() -> None:
 @pytest.mark.parametrize("value", ["0.1234567", "0.0000001", 0.1 + 0.2, "1e-7"])
 def test_finer_than_the_scale_is_refused_not_rounded(value: object) -> None:
     with pytest.raises(PrecisionError):
-        to_e6(value)  # type: ignore[arg-type]
+        to_e6(value)  # type: ignore[call-overload]
 
 
 def test_counts_finer_than_hundredths_are_refused() -> None:
@@ -44,7 +44,7 @@ def test_counts_finer_than_hundredths_are_refused() -> None:
 @pytest.mark.parametrize("value", ["NaN", "Infinity", "abc", float("inf")])
 def test_non_numbers_are_refused(value: object) -> None:
     with pytest.raises(PrecisionError):
-        to_e6(value)  # type: ignore[arg-type]
+        to_e6(value)  # type: ignore[call-overload]
 
 
 def test_values_beyond_bigint_are_refused() -> None:
@@ -55,8 +55,8 @@ def test_values_beyond_bigint_are_refused() -> None:
 
 @pytest.mark.parametrize("text", ["0.4100", "0.000001", "118.749900", "-3.500000", "0"])
 def test_e6_round_trip(text: str) -> None:
-    assert from_e6(to_e6(text)) == Decimal(text)  # type: ignore[arg-type]
+    assert from_e6(to_e6(text)) == Decimal(text)
 
 
 def test_e2_round_trip() -> None:
-    assert from_e2(to_e2("104.24")) == Decimal("104.24")  # type: ignore[arg-type]
+    assert from_e2(to_e2("104.24")) == Decimal("104.24")

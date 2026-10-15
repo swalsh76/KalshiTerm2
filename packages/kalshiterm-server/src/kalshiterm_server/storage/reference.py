@@ -5,12 +5,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from kalshi_core.fixedpoint import to_e6
 from kalshi_core.models import Event, Market, Series
 from sqlalchemy import Table, func, literal_column, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from kalshiterm_server.fixedpoint import to_e6
 from kalshiterm_server.storage import tables
 
 MAX_BIND_PARAMS = 30_000  # PostgreSQL/asyncpg allow 32,767 per statement

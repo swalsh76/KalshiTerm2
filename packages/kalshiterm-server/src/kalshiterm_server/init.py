@@ -69,6 +69,14 @@ def run_init(
     backup_dir: Path | None = None,
     force: bool = False,
 ) -> InitResult:
+    """Write ``.env``, the Kalshi key, the TLS certificate and a starter watchlist into ``out``.
+
+    Everything is validated first (key id, budget, backup path, names for the certificate, the key
+    file), so a bad argument writes nothing. An existing deployment is refused unless ``force``: a
+    new database password would lock the server out of its existing data. Secrets are written with
+    owner-only permissions and never printed. Returns what was written and kept, and the
+    certificate's fingerprint.
+    """
     if not out.is_dir():
         raise InitError(f"{out} is not a directory")
     if not key_id.strip():

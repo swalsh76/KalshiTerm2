@@ -293,7 +293,7 @@ One Docker image, three service roles: `kterm-server ingest`, `kterm-server anal
 No `numeric`, no `float`, no `int4` in the schema. Two scales, carried in column names:
 dollar amounts and strike levels in millionths (`*_e6`, e.g. `price_e6`, `floor_strike_e6`),
 contract counts in hundredths (`*_e2`, e.g. `size_e2`, `volume_e2`). One Python module
-(`kalshiterm_server.fixedpoint`) converts at the edge and **raises** on any value finer than
+(`kalshi_core.fixedpoint`) converts at the edge and **raises** on any value finer than
 the scale — never rounds silently. SQL views expose readable decimals. Measured (2 M synthetic
 ticker rows, compressed): `bigint` 10⁻⁴/10⁻² = 11.7 B/row, with 10⁻⁶ dollars = 16.1 B/row,
 `numeric` 33.5, `float8` 54.0; declared integer width does not matter after compression, but
@@ -2108,6 +2108,24 @@ measuring; only `@tanstack/react-table` and `react-virtual` stay in `package.jso
 start of 7.5, pinned in the repo and in CI; slices 7.1-7.4 are Python only); layouts are
 **server-stored per user** (decision 6); `kterm ui` is **read-only by default** with trading as an
 opt-in (decision 3, changed the same day: switched on and off inside the app, with `risk.toml` still granting permission); the grid is **decided by the measured spike** (decision 5).
+
+### 10.9 Cleanup C1: reuse and maintainability (decided 2026-10-14, by the user)
+
+A review of the code base (layering, duplication, function size, documentation, test weight)
+found the structure sound and the tests not overbuilt, with three maintainability gaps. This
+slice closes them and nothing else. **No behaviour changes**: every existing test keeps passing
+(none is deleted or weakened), and each step is its own commit so it can be reviewed alone.
+
+| Step | Gap | Work |
+|---|---|---|
+| C1.1 | Money scaling is copied across all three packages: the scale constants are defined ten times and `1_000_000` appears inline thirteen more; the server and the client each have their own `to_e6` with different edge behaviour | One `kalshi_core.fixedpoint` (the server's exact, range-checked conversion moves there with its tests); the server module and the scattered constants go away; the client keeps a thin wrapper only where its user-input error message differs |
+| C1.2 | Oversized functions on important paths: `risk.check` (141 lines, the order-safety layer) and the CLI `register()` functions (up to 272 lines, every command a closure); `server/cli.py` is 744 lines | Split into module-level functions that are readable and testable one at a time, with a docstring on each of the ~10 largest undocumented functions. Rules and messages stay the same |
+| C1.3 | Small copies: `for_profile` is identical in `client.py` and `stream.py`; `money` and `aware` are each defined twice | Merge the identical ones; leave the ones whose behaviour genuinely differs |
+
+Out of scope on purpose (reviewed and rejected): blanket docstring coverage, deleting or merging
+tests, splitting large test files, a docstring lint rule. Not in this slice, raised in the same
+review and left for the user to schedule: a README quickstart, splitting this file into design
+and build log, and the slower pinning tests (a shared TLS fixture).
 
 ## 11. Risks & Notes
 

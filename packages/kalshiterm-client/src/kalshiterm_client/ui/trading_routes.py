@@ -118,6 +118,14 @@ def _json(status: int, error: str, detail: str, **extra: Any) -> JSONResponse:
 
 
 def register_trading_errors(app: FastAPI) -> None:
+    """Turn the trading layer's exceptions into JSON errors the browser can act on.
+
+    Each has a stable ``code`` and a message, and an HTTP status chosen per exception: 403 when
+    trading is switched off, 404 when a prepared order has expired, 409 when the plan changed or
+    funding fell short, 422 for a refused order (listing each refusal) or a wrong confirmation
+    phrase, and so on for the rest below.
+    """
+
     @app.exception_handler(TradingOff)
     async def _off(_: Request, exc: TradingOff) -> JSONResponse:
         return _json(403, "trading_off", "trading is switched off: switch it on first")

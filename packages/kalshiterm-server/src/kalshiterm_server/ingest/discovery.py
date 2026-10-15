@@ -16,12 +16,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from kalshi_core.fixedpoint import PrecisionError
 from kalshi_core.models import Event, Market
 from kalshi_core.rest import KalshiRestClient
 from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from kalshiterm_server.fixedpoint import PrecisionError
 from kalshiterm_server.storage import reference, tables
 
 log = logging.getLogger("kalshiterm_server")
@@ -141,6 +141,16 @@ async def discover(
     full: bool = False,
     full_refresh_every: timedelta = timedelta(hours=24),
 ) -> DiscoveryReport:
+    """One discovery cycle: bring the series, event and market tables up to date from Kalshi.
+
+    A *full* cycle (the first run, ``full=True``, or the last full one older than
+    ``full_refresh_every``) lists every open event and market and the markets settled since the last
+    bookmark (``first_run_lookback`` back on the first run). An *incremental* cycle asks only for
+    what changed since the bookmark. Either way, markets the stream saw before discovery did (the
+    placeholders) are then looked up by ticker. Combo markets are not listed here. The bookmarks
+    advance only after everything succeeded, so a failed cycle is retried from the same point.
+    Returns a ``DiscoveryReport`` of what was added or updated.
+    """
     started = time.monotonic()
     cycle_start = now()
     since = await _int_state(engine, UPDATED_KEY)
