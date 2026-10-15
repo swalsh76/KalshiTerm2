@@ -42,19 +42,19 @@ class ServerSettings(BaseSettings):
     auth_failure_limit: int = 10  # failed logins from one address ...
     auth_failure_window_seconds: float = 60.0  # ... within this window lock it out for a while
 
-    # Backups (PLAN §10.4, slice 3b.1): a nightly pg_dump to a directory on another machine.
+    # Backups (BUILD-LOG §10.4, slice 3b.1): a nightly pg_dump to a directory on another machine.
     backup_target: str | None = None  # the mounted NAS directory (must hold the marker file)
     backup_at: str = "07:00"  # UTC, HH:MM
     backup_keep_daily: int = 7
     backup_keep_weekly: int = 4
     backup_retry_minutes: float = 30.0
 
-    # Analytics (PLAN §10.5, Phase 4)
+    # Analytics (BUILD-LOG §10.5, Phase 4)
     analyzers_disabled: str = ""  # comma-separated analyzer names to leave out
     analyze_max_results: int = 50_000  # per run; more fails the run
     analyze_retry_minutes: float = 5.0  # after a failed run, retry this soon (at most the interval)
 
-    # Alerts (PLAN §10.5, slice 4.4)
+    # Alerts (BUILD-LOG §10.5, slice 4.4)
     alert_rules_max_per_user: int = 50
     layouts_max_per_user: int = 50
     layout_max_bytes: int = 262_144  # of compact JSON, per saved layout

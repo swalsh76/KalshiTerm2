@@ -1,4 +1,4 @@
-"""The server API as typed async methods (PLAN §10.6).
+"""The server API as typed async methods (BUILD-LOG §10.6).
 
 One ``ServerClient`` holds one HTTP connection pool, the profile's token and TLS that trusts only
 the pinned certificate, so the token is never sent to an untrusted or changed server. Reads

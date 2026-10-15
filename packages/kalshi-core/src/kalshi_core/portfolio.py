@@ -1,6 +1,6 @@
 """Typed models for the account (portfolio) endpoints: balance, positions, orders, fills.
 
-Read side only. Shapes were measured on a live account on 2026-10-13 (PLAN §10.7, slice 6.1):
+Read side only. Shapes were measured on a live account on 2026-10-13 (BUILD-LOG §10.7, slice 6.1):
 money is a fixed-point dollar string (4 or 6 decimals) or, on a few older fields, integer cents;
 counts are fixed-point strings with two decimals; everything is parsed to ``Decimal`` / ``int``,
 never ``float``. Kalshi keeps every order on the YES book, so ``side`` is always ``yes``; the

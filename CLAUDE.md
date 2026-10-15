@@ -3,7 +3,8 @@
 ## Start here
 
 **Read [docs/PLAN.md](docs/PLAN.md) before doing anything.** It is the source of truth for
-architecture, packaging, deployment, and build order. Update it when decisions change.
+architecture, packaging, deployment, and build order. How each slice was built and verified is in
+[docs/BUILD-LOG.md](docs/BUILD-LOG.md). Update it when decisions change.
 
 ## Status
 
@@ -13,7 +14,7 @@ pinning, mDNS discovery) and 4 (analytics: plugin framework, market metrics, arb
 alerts, analytics REST and alert push), 5 (client data side: typed API and stream client, CLI
 data and account views) and 6 (client trading: risk layer, orders, kill switch, shard funding, CLI;
 verified live) are complete and merged to `main`. Remaining hardware/measurement work
-(2.10b steps 3-6) is tracked in PLAN.md §10.2 and does **not** block later phases; the 48-hour
+(2.10b steps 3-6) is tracked in BUILD-LOG.md §10.2 and does **not** block later phases; the 48-hour
 calibration (2.10a) was dropped. Next: Phase 7 (terminal UI). Decisions made: web UI + Typer CLI, manual trading
 first, multi-user server, MIT license, no PyPI publishing, public GitHub repository (since 2026-10-08), multivariate markets kept,
 read-only production key for dev. No **[OPEN]** items remain in PLAN.md §12.
@@ -31,7 +32,7 @@ packages/kalshi-core/tests/test_live.py -s` (read-only; skipped by default and i
   refuses production unless `production_enabled = true` in `risk.toml`, and can only reach a fixed
   list of order routes. The user decided on 2026-10-13 to verify trading on the live (~$10)
   account instead of the demo. Every order passes the client risk layer (tiny limits in
-  `risk.toml`, PLAN.md §10.7) and, in production, a typed confirmation; get the user's go-ahead
+  `risk.toml`, BUILD-LOG.md §10.7) and, in production, a typed confirmation; get the user's go-ahead
   before sending any real order yourself.
 - Client runs natively (Windows/macOS), not in Docker.
 - Server deploys **only via Docker Compose** on a remote LAN host; API is the only exposed
@@ -47,7 +48,8 @@ packages/kalshi-core/tests/test_live.py -s` (read-only; skipped by default and i
 
 KalshiTerm 1 died of feature creep and directional changes. Guard against it:
 
-- Build only the current phase in PLAN.md §10. Anything else is out of scope until the
+- Build only the current phase in PLAN.md §10 (the phase table; the slice-by-slice detail is in
+  docs/BUILD-LOG.md). Anything else is out of scope until the
   user says otherwise.
 - If a request, idea or "while we're here" improvement isn't in the plan, **say so
   explicitly** ("this is scope creep: ...") before doing anything, and ask whether to
