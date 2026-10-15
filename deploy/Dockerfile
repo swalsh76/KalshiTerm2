@@ -1,4 +1,4 @@
-FROM python:3.12-slim-trixie
+FROM python:3.14-slim-trixie
 # pg_dump/pg_restore must be at least as new as the server (PostgreSQL 18); Debian ships 17.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
