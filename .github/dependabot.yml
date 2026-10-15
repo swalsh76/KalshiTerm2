@@ -1,0 +1,33 @@
+# Keeps the pinned things current without burying a solo maintainer: monthly, a few open pull
+# requests at a time, minor and patch updates grouped. Nothing here merges by itself.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: docker # the base image and the pinned uv image in deploy/Dockerfile
+    directory: /deploy
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: npm # the web UI's front end
+    directory: /packages/kalshiterm-client/frontend
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      frontend-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: uv # the Python workspace (uv.lock)
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]

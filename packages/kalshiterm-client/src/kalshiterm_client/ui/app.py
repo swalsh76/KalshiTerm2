@@ -40,7 +40,10 @@ PLACEHOLDER = """<!doctype html>
 code{background:#8882;padding:.1em .3em;border-radius:3px}</style></head>
 <body><h1>KalshiTerm backend is running</h1>
 <p>The browser front end has not been built yet, so there is nothing to show here.
-The backend answers on <code>/api</code> with the session token this page was opened with.</p>
+Build it once (needs Node 22), then restart <code>kterm ui</code>:</p>
+<p><code>cd packages/kalshiterm-client/frontend &amp;&amp; npm ci
+&amp;&amp; npm run build</code></p>
+<p>The backend answers on <code>/api</code> with the session token this page was opened with.</p>
 <p>Mode: <strong>read-only</strong>.</p></body></html>
 """
 

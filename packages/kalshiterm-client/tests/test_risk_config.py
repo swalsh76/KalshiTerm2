@@ -51,11 +51,20 @@ def test_values_are_read_exactly(tmp_path: Path) -> None:
         ("[trading]\nlive = true\n", "unknown setting"),
         ("[other]\nx = 1\n", "unknown section"),
         ("[limits\n", "not valid TOML"),
+        ("limits = 5\n", "must be tables"),
+        ("trading = 1\n", "must be tables"),
     ],
 )
 def test_mistakes_are_refused_with_the_key_named(tmp_path: Path, text: str, fragment: str) -> None:
     with pytest.raises(RiskConfigError, match=fragment):
         load_policy(write(tmp_path, text))
+
+
+def test_a_file_that_cannot_be_read_is_an_error_not_silently_the_defaults(tmp_path: Path) -> None:
+    unreadable = tmp_path / "risk.toml"
+    unreadable.mkdir()  # reading a directory fails the way a permission problem does
+    with pytest.raises(RiskConfigError, match="cannot read"):
+        load_policy(unreadable)
 
 
 def test_the_file_lives_in_the_config_directory(

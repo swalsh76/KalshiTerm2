@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from kalshi_core.ws_models import WsMessage
 from kalshiterm_client.account import (
     TrackedOrder,
     to_e2,
@@ -161,6 +162,52 @@ async def test_order_messages_replace_the_order_and_older_ones_are_ignored(tmp_p
         ws.push("user_order", user_order(status="canceled", last_updated_ts_ms=3000))
         await settle()
         assert tracker.resting_orders() == [] and tracker.snapshot().open_orders == 0  # type: ignore[union-attr]
+    finally:
+        await tracker.stop()
+
+
+async def test_finished_orders_are_trimmed_but_resting_ones_are_never_dropped(
+    tmp_path: Path,
+) -> None:
+    tracker, _, _, _ = make(tmp_path)
+    await tracker.start()
+    try:
+        for n in range(3):
+            message = user_order(order_id=f"live-{n}", last_updated_ts_ms=1)
+            tracker.apply(WsMessage(type="user_order", msg=message))
+        for n in range(1200):
+            message = user_order(
+                order_id=f"done-{n}",
+                status="canceled",
+                remaining_count_fp="0.00",
+                last_updated_ts_ms=2 + n,
+            )
+            tracker.apply(WsMessage(type="user_order", msg=message))
+        assert {o.order_id for o in tracker.resting_orders()} == {"live-0", "live-1", "live-2"}
+        assert len(tracker.orders) < 1203  # it did trim,
+        assert len(tracker.orders) <= 1000  # and stays bounded
+    finally:
+        await tracker.stop()
+
+
+async def test_a_resting_order_with_nothing_left_adds_nothing_to_the_limits(tmp_path: Path) -> None:
+    tracker, _, ws, _ = make(tmp_path)
+    await tracker.start()
+    try:
+        ws.push("user_order", user_order(order_id="live", last_updated_ts_ms=1))
+        ws.push(
+            "user_order",
+            user_order(
+                order_id="spent",
+                fill_count_fp="2.00",
+                remaining_count_fp="0.00",
+                last_updated_ts_ms=1,
+            ),
+        )
+        await settle()
+        snap = tracker.snapshot()
+        assert snap is not None
+        assert snap.markets["KXA-1"].resting_yes_e2 == 200  # only the live order's two contracts
     finally:
         await tracker.stop()
 

@@ -1,5 +1,6 @@
 import base64
 import json
+import uuid
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from kalshi_core.trading import (
     TradingRefused,
     WriteOutcomeUnknown,
     fixed_point,
+    new_client_order_id,
 )
 
 BASE = "https://external-api.demo.kalshi.co/trade-api/v2"
@@ -389,6 +391,101 @@ async def test_batch_cancel_reports_each_order_and_cancel_all_sends_nothing_else
         ]
     }
     assert every.call_count == 1 and not every.calls.last.request.content
+
+
+# --- requests that are safe to repeat are repeated; the others are not -------------------------
+# find_order, cancel_orders and cancel_all are idempotent: asking twice does no harm, so a lost
+# answer is retried with growing pauses (0.5 s, 1 s, 2 s) and then given up on. Anything Kalshi
+# answers with a client error is final.
+
+LISTING = f"{BASE}/portfolio/orders"
+
+
+@respx.mock
+async def test_a_lookup_that_loses_its_connection_is_retried_with_growing_pauses() -> None:
+    route = respx.get(LISTING)
+    route.side_effect = [
+        httpx.ConnectError("down"),
+        httpx.ConnectError("down"),
+        httpx.Response(200, json={"orders": [RESTING]}),
+    ]
+    pauses = Pauses()
+    async with client(pauses) as c:
+        found = await c.find_order(COID, "KXA-1", 0)
+    assert found is not None and found.order_id == "o-1"
+    assert route.call_count == 3 and pauses.sleeps == [0.5, 1.0]
+
+
+@respx.mock
+async def test_a_lookup_gives_up_after_the_last_pause_and_raises_the_network_error() -> None:
+    route = respx.get(LISTING)
+    route.side_effect = [httpx.ConnectError("down")] * 10
+    pauses = Pauses()
+    async with client(pauses) as c:
+        with pytest.raises(httpx.ConnectError):
+            await c.find_order(COID, "KXA-1", 0)
+    assert route.call_count == 4 and pauses.sleeps == [0.5, 1.0, 2.0]  # one try + three retries
+
+
+@respx.mock
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+async def test_a_lookup_answered_with_a_server_error_is_retried(status: int) -> None:
+    route = respx.get(LISTING)
+    route.side_effect = [
+        httpx.Response(status),
+        httpx.Response(200, json={"orders": [RESTING]}),
+    ]
+    pauses = Pauses()
+    async with client(pauses) as c:
+        assert (await c.find_order(COID, "KXA-1", 0)) is not None
+    assert route.call_count == 2 and pauses.sleeps == [0.5]
+
+
+@respx.mock
+async def test_a_lookup_that_keeps_getting_a_server_error_raises_the_api_error() -> None:
+    route = respx.get(LISTING)
+    route.side_effect = [httpx.Response(503, text="busy")] * 10
+    pauses = Pauses()
+    async with client(pauses) as c:
+        with pytest.raises(KalshiAPIError) as raised:
+            await c.find_order(COID, "KXA-1", 0)
+    assert raised.value.status == 503
+    assert route.call_count == 4 and pauses.sleeps == [0.5, 1.0, 2.0]
+
+
+@respx.mock
+async def test_a_client_error_is_final_and_never_retried() -> None:
+    route = respx.get(LISTING).respond(400, json={"error": "bad request"})
+    pauses = Pauses()
+    async with client(pauses) as c:
+        with pytest.raises(KalshiAPIError) as raised:
+            await c.find_order(COID, "KXA-1", 0)
+    assert raised.value.status == 400
+    assert route.call_count == 1 and pauses.sleeps == []
+
+
+@respx.mock
+async def test_cancelling_is_repeated_when_the_answer_is_lost_because_twice_is_harmless() -> None:
+    batch = respx.delete(f"{ORDERS}/batched")
+    batch.side_effect = [
+        httpx.Response(502),
+        httpx.Response(200, json={"orders": [{"order_id": "o-1", "reduced_by": "2.00"}]}),
+    ]
+    every = respx.delete(ORDERS)
+    every.side_effect = [httpx.ReadTimeout("slow"), httpx.Response(204)]
+    pauses = Pauses()
+    async with client(pauses) as c:
+        results = await c.cancel_orders([TARGET])
+        await c.cancel_all()
+    assert [r.order_id for r in results] == ["o-1"] and results[0].error is None
+    assert batch.call_count == 2 and every.call_count == 2
+    assert pauses.sleeps == [0.5, 0.5]
+
+
+def test_client_order_ids_are_unique_uuids() -> None:
+    first, second = new_client_order_id(), new_client_order_id()
+    assert first != second
+    assert str(uuid.UUID(first)) == first  # the form Kalshi accepts and the order lookup matches on
 
 
 # --- amend, decrease, transfer ----------------------------------------------------------------

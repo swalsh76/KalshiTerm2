@@ -66,7 +66,7 @@ Never commit API keys, private keys, `.env` files or TLS material; see [SECURITY
 ## Requirements
 
 Python 3.11+ and [uv](https://docs.astral.sh/uv/). Docker for the server and for the database tests.
-Node 22 only if you work on the web UI's front end. The server host needs an accurate clock (Kalshi
+Node 22 to build the web UI's front end (once, until it is packaged) and to work on it. The server host needs an accurate clock (Kalshi
 rejects requests signed with a skewed one) and, if you follow the macOS host steps below, an
 external drive for the data.
 
@@ -169,8 +169,10 @@ uv run kterm buy <TICKER> 1 0.45 --side yes --dry-run   # shows the cost, the fe
 
 Leave out `--dry-run` to send the order: you are asked y/N first (`--yes` skips that), and in
 production you must also type a confirmation that `--yes` never skips. `kterm kill` halts new orders and cancels everything that
-is open, and `kterm resume` clears the halt. `uv run kterm ui` opens the web UI, which is
-read-only until you switch trading on in it.
+is open, and `kterm resume` clears the halt. `uv run kterm ui` opens the local web UI, which is
+read-only until you switch trading on in it. The front end is not packaged yet (Phase 8), so build it
+once first: `cd packages/kalshiterm-client/frontend && npm ci && npm run build` (Node 22). Without
+that the page only says the front end has not been built.
 
 ## When something goes wrong
 
