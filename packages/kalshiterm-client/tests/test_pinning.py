@@ -52,7 +52,7 @@ def fingerprint(server: FakeServer) -> str:
 def trusted(servers: list[FakeServer], **kw: object) -> FakeServer:
     server = serve(servers, cert=make_certificate(), **kw)
     add_profile(server)
-    code, out = run("server", "trust", "--fingerprint", fingerprint(server))
+    code, out = run("server", "trust", "--no-mdns", "--fingerprint", fingerprint(server))
     assert code == 0, out
     return server
 
@@ -81,7 +81,7 @@ def test_trusting_with_the_right_fingerprint_pins_the_certificate_and_status_wor
 def test_a_wrong_fingerprint_pins_nothing(servers: list[FakeServer]) -> None:
     server = serve(servers, cert=make_certificate())
     add_profile(server)
-    code, out = run("server", "trust", "--fingerprint", "00" * 32)
+    code, out = run("server", "trust", "--no-mdns", "--fingerprint", "00" * 32)
     assert code == 1 and "not 00:00" in out and "Nothing pinned" in out
     assert ProfileStore().get("lab").fingerprint is None and not pin_path("lab").exists()
 
@@ -91,17 +91,17 @@ def test_interactive_trust_shows_the_certificate_and_defaults_to_no(
 ) -> None:
     server = serve(servers, cert=make_certificate())
     add_profile(server)
-    code, out = run("server", "trust", input="\n")  # just Enter
+    code, out = run("server", "trust", "--no-mdns", input="\n")  # just Enter
     assert code == 1 and "not trusted" in out
     assert fingerprint(server) in out and "127.0.0.1" in out and "localhost" in out
     assert ProfileStore().get("lab").fingerprint is None
-    code, out = run("server", "trust", input="y\n")
+    code, out = run("server", "trust", "--no-mdns", input="y\n")
     assert code == 0 and ProfileStore().get("lab").fingerprint == fingerprint(server)
 
 
 def test_trusting_again_when_nothing_changed_just_says_so(servers: list[FakeServer]) -> None:
     trusted(servers)
-    code, out = run("server", "trust")
+    code, out = run("server", "trust", "--no-mdns")
     assert code == 0 and "already trusts this certificate" in out
 
 
@@ -125,11 +125,11 @@ def test_a_changed_certificate_is_refused_before_anything_is_sent_and_needs_a_de
     assert "impersonating" in out
     assert new.requests == []  # the token never reached it
 
-    code, out = run("server", "trust", input="\n")  # the default answer is No
+    code, out = run("server", "trust", "--no-mdns", input="\n")  # the default answer is No
     assert code == 1 and "WARNING" in out and fingerprint(old) in out
     assert ProfileStore().get("lab").fingerprint == fingerprint(old)
 
-    assert run("server", "trust", input="y\n")[0] == 0
+    assert run("server", "trust", "--no-mdns", input="y\n")[0] == 0
     code, out = run("server", "status")
     assert code == 0 and new.requests == [("/v1/status", f"Bearer {TOKEN}")]
 
@@ -151,7 +151,7 @@ def test_an_expired_certificate_is_reported_as_expired_not_as_changed(
 ) -> None:
     server = serve(servers, cert=make_certificate(expired=True))
     add_profile(server)
-    assert run("server", "trust", "--fingerprint", fingerprint(server))[0] == 0
+    assert run("server", "trust", "--no-mdns", "--fingerprint", fingerprint(server))[0] == 0
     code, out = run("server", "status")
     assert code == 1 and "no longer acceptable" in out and "expired" in out
     assert "CHANGED" not in out and server.requests == []
@@ -162,7 +162,7 @@ def test_a_name_the_certificate_does_not_cover_is_a_name_problem_not_a_change(
 ) -> None:
     server = serve(servers, cert=make_certificate(ips=("10.9.9.9",), dns=("other.example",)))
     add_profile(server)
-    assert run("server", "trust", "--fingerprint", fingerprint(server))[0] == 0
+    assert run("server", "trust", "--no-mdns", "--fingerprint", fingerprint(server))[0] == 0
     code, out = run("server", "status")
     assert code == 1 and "no longer acceptable" in out and "CHANGED" not in out
     assert server.requests == []
@@ -189,7 +189,7 @@ def test_server_refusals_are_explained(
 def test_a_missing_token_is_explained_and_nothing_is_sent(servers: list[FakeServer]) -> None:
     server = serve(servers, cert=make_certificate())
     add_profile(server, token=False)
-    run("server", "trust", "--fingerprint", fingerprint(server))
+    run("server", "trust", "--no-mdns", "--fingerprint", fingerprint(server))
     code, out = run("server", "status")
     assert code == 1 and "no token for lab" in out and server.requests == []
 
@@ -208,7 +208,7 @@ def test_plain_http_to_this_machine_needs_no_pin_and_has_no_certificate_to_trust
     add_profile(server)
     code, out = run("server", "status")
     assert code == 0 and server.requests == [("/v1/status", f"Bearer {TOKEN}")]
-    code, out = run("server", "trust")
+    code, out = run("server", "trust", "--no-mdns")
     assert code == 1 and "no certificate to trust" in out
 
 
@@ -256,5 +256,5 @@ def test_show_reports_the_pin_or_that_there_is_none(servers: list[FakeServer]) -
     server = serve(servers, cert=make_certificate())
     add_profile(server)
     assert "pin:   NOT YET" in run("config", "show", "lab")[1]
-    run("server", "trust", "--fingerprint", fingerprint(server))
+    run("server", "trust", "--no-mdns", "--fingerprint", fingerprint(server))
     assert f"pin:   {fingerprint(server)}" in run("config", "show", "lab")[1]
