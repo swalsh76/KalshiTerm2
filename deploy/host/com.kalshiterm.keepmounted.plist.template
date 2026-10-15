@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keeps the NAS share mounted: a LaunchAgent (it runs in your login session, not at boot, because
+  the saved password lives in your login keychain) that runs keep-mounted.sh at login and every 60
+  seconds. With FileVault on, a restart waits at the unlock screen, so this starts after you unlock.
+
+  BEFORE YOU START:
+    1. Mount the share once by hand (Finder: Go > Connect to Server) and tick "Remember this
+       password in my keychain". keep-mounted.sh refuses to try without a saved password.
+    2. Use absolute paths. launchd does not expand ~ or $HOME.
+
+  INSTALL (as your own user; no sudo; the second line is yours to set):
+    cd /Users/YOU/KalshiTerm2/deploy
+    DEPLOY_DIR="$PWD"; SHARE_URL=smb://YOU@navi/kdb; MOUNT_POINT=/Volumes/kdb
+    sed -e "s|__DEPLOY_DIR__|$DEPLOY_DIR|g" -e "s|__SHARE_URL__|$SHARE_URL|g" \
+        -e "s|__MOUNT_POINT__|$MOUNT_POINT|g" host/com.kalshiterm.keepmounted.plist.template \
+      > ~/Library/LaunchAgents/com.kalshiterm.keepmounted.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kalshiterm.keepmounted.plist
+
+  VERIFY:
+    launchctl print gui/$(id -u)/com.kalshiterm.keepmounted | grep -E "state|runs|last exit"
+    tail ~/Library/Logs/kalshiterm-keep-mounted.log    (a healthy share logs nothing)
+    To prove it: unmount the share and wait a minute; it comes back by itself.
+
+  TROUBLESHOOTING:
+    "no saved password": do step 1 above.
+    "FAILED to mount": the NAS is unreachable or refuses the saved password; mount it by hand once
+      to see the real error.
+    After editing the file: bootout, then bootstrap again.
+
+  REMOVE:
+    launchctl bootout gui/$(id -u)/com.kalshiterm.keepmounted
+    rm ~/Library/LaunchAgents/com.kalshiterm.keepmounted.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kalshiterm.keepmounted</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__DEPLOY_DIR__/host/keep-mounted.sh</string>
+    <string>__SHARE_URL__</string>
+    <string>__MOUNT_POINT__</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
