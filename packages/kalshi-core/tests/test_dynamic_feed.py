@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from hang_guard import HANG_GUARD
 from kalshi_core.auth import KalshiSigner
 from kalshi_core.config import KalshiSettings
 from kalshi_core.orderbook import (
@@ -133,7 +134,7 @@ async def test_update_subscription_returns_the_full_set_and_updates_the_reconnec
     None
 ):
     server = FakeBookServer()
-    async with running(server) as url, asyncio.timeout(10):
+    async with running(server) as url, asyncio.timeout(HANG_GUARD):
         ws, _ = make(url, [])
         async with ws:
             sid = await ws.subscribe("orderbook_delta", market_tickers=["A", "B"])
@@ -147,7 +148,7 @@ async def test_update_subscription_returns_the_full_set_and_updates_the_reconnec
 
 async def test_replies_that_consume_a_sequence_number_appear_as_ordered_control_markers() -> None:
     server = FakeBookServer()
-    async with running(server) as url, asyncio.timeout(10):
+    async with running(server) as url, asyncio.timeout(HANG_GUARD):
         ws, _ = make(url, [])
         async with ws:
             sid = await ws.subscribe("orderbook_delta", market_tickers=["A"])
@@ -171,7 +172,7 @@ async def test_an_update_that_gets_no_market_set_back_is_an_error() -> None:
                 reply = {"id": cmd["id"], "type": "ok", "sid": 1, "seq": 1, "msg": {}}
             await ws.send(json.dumps(reply))
 
-    async with serve(handler, "127.0.0.1", 0) as s, asyncio.timeout(10):
+    async with serve(handler, "127.0.0.1", 0) as s, asyncio.timeout(HANG_GUARD):
         url = f"ws://127.0.0.1:{s.sockets[0].getsockname()[1]}/trade-api/ws/v2"
         ws, _ = make(url, [])
         async with ws:
@@ -249,7 +250,7 @@ def test_a_gap_after_a_removal_never_resyncs_the_removed_market() -> None:
 # ------------------------------------------------------------------ feed against the fake
 async def test_adding_a_market_requests_its_snapshot_and_raises_no_false_gap() -> None:
     server = FakeBookServer()
-    async with running(server) as url, asyncio.timeout(15):
+    async with running(server) as url, asyncio.timeout(HANG_GUARD):
         ws, feed = make(url, ["A", "B"])
         async with ws, feed:
             first = await collect(feed, 2)  # snapshots of A and B
@@ -275,7 +276,7 @@ async def test_adding_a_market_requests_its_snapshot_and_raises_no_false_gap() -
 
 async def test_removing_a_market_drops_it_and_ignores_stragglers_without_a_gap() -> None:
     server = FakeBookServer()
-    async with running(server) as url, asyncio.timeout(15):
+    async with running(server) as url, asyncio.timeout(HANG_GUARD):
         ws, feed = make(url, ["A", "B"])
         async with ws, feed:
             await collect(feed, 2)
@@ -293,7 +294,7 @@ async def test_removing_a_market_drops_it_and_ignores_stragglers_without_a_gap()
 
 async def test_adding_or_removing_nothing_sends_no_command() -> None:
     server = FakeBookServer()
-    async with running(server) as url, asyncio.timeout(15):
+    async with running(server) as url, asyncio.timeout(HANG_GUARD):
         ws, feed = make(url, ["A"])
         async with ws, feed:
             await collect(feed, 1)
@@ -305,7 +306,7 @@ async def test_adding_or_removing_nothing_sends_no_command() -> None:
 
 async def test_removing_the_last_market_unsubscribes_instead_of_sending_an_empty_list() -> None:
     server = FakeBookServer()
-    async with running(server) as url, asyncio.timeout(15):
+    async with running(server) as url, asyncio.timeout(HANG_GUARD):
         ws, feed = make(url, ["A"])
         async with ws, feed:
             await collect(feed, 1)
@@ -324,7 +325,7 @@ async def test_removing_the_last_market_unsubscribes_instead_of_sending_an_empty
 
 async def test_a_feed_started_with_no_markets_subscribes_to_nothing_until_one_is_added() -> None:
     server = FakeBookServer()
-    async with running(server) as url, asyncio.timeout(15):
+    async with running(server) as url, asyncio.timeout(HANG_GUARD):
         ws, feed = make(url, [])
         async with ws, feed:
             await asyncio.sleep(0.1)
@@ -338,7 +339,7 @@ async def test_a_feed_started_with_no_markets_subscribes_to_nothing_until_one_is
 
 async def test_a_reconnect_resubscribes_to_the_updated_market_set() -> None:
     server = FakeBookServer()
-    async with running(server) as url, asyncio.timeout(15):
+    async with running(server) as url, asyncio.timeout(HANG_GUARD):
         ws, feed = make(url, ["A", "B"])
         async with ws, feed:
             await collect(feed, 2)
@@ -356,7 +357,7 @@ async def test_a_reconnect_resubscribes_to_the_updated_market_set() -> None:
 
 async def test_periodic_snapshots_are_spread_round_robin_and_stop_with_the_feed() -> None:
     server = FakeBookServer()
-    async with running(server) as url, asyncio.timeout(15):
+    async with running(server) as url, asyncio.timeout(HANG_GUARD):
         signer = KalshiSigner("kid", Ed25519PrivateKey.generate())
         ws = KalshiWebSocket(KalshiSettings(), signer, url=url, reconnect_base=0.01)
         feed = OrderBookFeed(
@@ -379,7 +380,7 @@ async def test_periodic_snapshots_are_spread_round_robin_and_stop_with_the_feed(
 
 async def test_periodic_snapshots_follow_the_watch_set_as_it_changes() -> None:
     server = FakeBookServer()
-    async with running(server) as url, asyncio.timeout(15):
+    async with running(server) as url, asyncio.timeout(HANG_GUARD):
         signer = KalshiSigner("kid", Ed25519PrivateKey.generate())
         ws = KalshiWebSocket(KalshiSettings(), signer, url=url, reconnect_base=0.01)
         feed = OrderBookFeed(

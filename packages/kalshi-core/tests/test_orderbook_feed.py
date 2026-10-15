@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 import respx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from hang_guard import HANG_GUARD
 from kalshi_core.auth import KalshiSigner
 from kalshi_core.config import KalshiSettings
 from kalshi_core.orderbook import (
@@ -87,7 +88,7 @@ async def test_builds_book_from_snapshot_and_deltas_and_passes_other_messages() 
         await ws.send(json.dumps({"type": "trade", "sid": 9, "seq": 1, "msg": {}}))
         await ws.wait_closed()
 
-    async with fake_server(handler) as url, asyncio.timeout(5):
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD):
         ws, rest = make(url)
         async with ws, rest, OrderBookFeed(ws, rest, ["A"]) as feed:
             events = await take(feed, 3)
@@ -113,7 +114,7 @@ async def test_gap_is_repaired_by_in_stream_snapshot_without_touching_rest() -> 
 
     with respx.mock(assert_all_called=False) as router:
         rest_route = router.get(f"{REST}/markets/A/orderbook").respond(500)
-        async with fake_server(handler) as url, asyncio.timeout(5):
+        async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD):
             ws, rest = make(url)
             async with ws, rest, OrderBookFeed(ws, rest, ["A"]) as feed:
                 events = await take(feed, 4)
@@ -141,7 +142,7 @@ async def test_rejected_get_snapshot_falls_back_to_rest_and_is_flagged_approxima
     }
     with respx.mock as router:
         router.get(f"{REST}/markets/A/orderbook").respond(json=body)
-        async with fake_server(handler) as url, asyncio.timeout(5):
+        async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD):
             ws, rest = make(url)
             async with ws, rest, OrderBookFeed(ws, rest, ["A"]) as feed:
                 events = await take(feed, 3)
@@ -163,7 +164,7 @@ async def test_unanswered_get_snapshot_times_out_into_rest_fallback() -> None:
     body = {"orderbook_fp": {"yes_dollars": [["0.3000", "1.00"]], "no_dollars": []}}
     with respx.mock as router:
         router.get(f"{REST}/markets/A/orderbook").respond(json=body)
-        async with fake_server(handler) as url, asyncio.timeout(5):
+        async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD):
             ws, rest = make(url)
             async with ws, rest, OrderBookFeed(ws, rest, ["A"], snapshot_timeout=0.2) as feed:
                 events = await take(feed, 3)
@@ -181,7 +182,7 @@ async def test_rest_failure_is_reported_and_book_stays_stale() -> None:
 
     with respx.mock as router:
         router.get(f"{REST}/markets/A/orderbook").respond(404)
-        async with fake_server(handler) as url, asyncio.timeout(5):
+        async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD):
             ws, rest = make(url)
             async with ws, rest, OrderBookFeed(ws, rest, ["A"], snapshot_timeout=0.1) as feed:
                 events = await take(feed, 3)
@@ -208,7 +209,7 @@ async def test_gap_resyncs_every_market_in_the_subscription() -> None:
             seq += 1
         await ws.wait_closed()
 
-    async with fake_server(handler) as url, asyncio.timeout(5):
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD):
         ws, rest = make(url)
         async with ws, rest, OrderBookFeed(ws, rest, ["A", "B"]) as feed:
             events = await take(feed, 5)
@@ -235,7 +236,7 @@ async def test_reconnect_resets_books_and_new_snapshots_rebuild_them() -> None:
             await ws.send(delta(1, 2, "A", "yes", "0.50", "1.00"))
             await ws.wait_closed()
 
-    async with fake_server(handler) as url, asyncio.timeout(5):
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD):
         ws, rest = make(url)
         async with ws, rest, OrderBookFeed(ws, rest, ["A"]) as feed:
             events = await take(feed, 4)
@@ -260,7 +261,7 @@ async def test_failed_orderbook_resubscribe_is_reported() -> None:
             await ws.send(json.dumps({"id": cmd["id"], "type": "error", "msg": err}))
             await ws.wait_closed()
 
-    async with fake_server(handler) as url, asyncio.timeout(5):
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD):
         ws, rest = make(url)
         async with ws, rest, OrderBookFeed(ws, rest, ["A"]) as feed:
             events = await take(feed, 3)
@@ -274,7 +275,7 @@ async def test_terminal_connection_loss_raises_from_events() -> None:
         await reply_subscribed(ws, cmd, 1)
         await ws.close()
 
-    async with fake_server(handler) as url, asyncio.timeout(5):
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD):
         ws, rest = make(url, auto_reconnect=False)
         async with ws, rest, OrderBookFeed(ws, rest, ["A"]) as feed:
             from kalshi_core.ws import KalshiWSError

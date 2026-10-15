@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from hang_guard import HANG_GUARD
 from kalshi_core.auth import HEADER_KEY, HEADER_SIGNATURE, HEADER_TIMESTAMP, KalshiSigner
 from kalshi_core.config import KalshiSettings
 from kalshi_core.ws import KalshiWebSocket, KalshiWSError
@@ -58,7 +59,7 @@ async def test_handshake_is_signed_over_ws_path() -> None:
         await ws.wait_closed()
 
     async with fake_server(handler) as url:
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(HANG_GUARD):
             async with make_ws(url, key):
                 await asyncio.sleep(0.05)
     assert seen[HEADER_KEY] == "kid"
@@ -82,7 +83,7 @@ async def test_subscribe_and_unsubscribe_send_commands_and_return_sid() -> None:
                     json.dumps({"id": cmd["id"], "sid": 42, "seq": 1, "type": "unsubscribed"})
                 )
 
-    async with fake_server(handler) as url, asyncio.timeout(5), make_ws(url) as ws:
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD), make_ws(url) as ws:
         sid = await ws.subscribe("trade", market_tickers=["A", "B"])
         await ws.unsubscribe(sid)
     assert sid == 42
@@ -108,7 +109,7 @@ async def test_error_response_raises_with_code() -> None:
                 )
             )
 
-    async with fake_server(handler) as url, asyncio.timeout(5), make_ws(url) as ws:
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD), make_ws(url) as ws:
         with pytest.raises(KalshiWSError) as exc:
             await ws.subscribe("nope")
     assert exc.value.code == 8
@@ -143,7 +144,7 @@ async def test_data_messages_are_streamed_and_typed() -> None:
         await ws.send(json.dumps({"type": "market_lifecycle_v2", "sid": 3, "seq": 1, "msg": life}))
         await ws.wait_closed()
 
-    async with fake_server(handler) as url, asyncio.timeout(5), make_ws(url) as ws:
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD), make_ws(url) as ws:
         await ws.subscribe("trade")
         stream = ws.messages()
         trade = await anext(stream)
@@ -163,7 +164,7 @@ async def test_command_times_out_when_server_is_silent() -> None:
 
     async with (
         fake_server(handler) as url,
-        asyncio.timeout(5),
+        asyncio.timeout(HANG_GUARD),
         make_ws(url, command_timeout=0.2) as ws,
     ):
         with pytest.raises(KalshiWSError, match="timed out"):
@@ -175,7 +176,7 @@ async def test_dropped_connection_raises_not_ends() -> None:
         await ws.recv()
         await ws.close()
 
-    async with fake_server(handler) as url, asyncio.timeout(5):
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD):
         ws = make_ws(url)
         await ws.connect()
         with pytest.raises(KalshiWSError, match="connection closed"):
@@ -189,7 +190,7 @@ async def test_deliberate_close_ends_stream_cleanly() -> None:
     async def handler(ws: ServerConnection) -> None:
         await ws.wait_closed()
 
-    async with fake_server(handler) as url, asyncio.timeout(5):
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD):
         ws = make_ws(url)
         await ws.connect()
         await ws.close()
@@ -201,12 +202,12 @@ async def test_client_answers_server_pings() -> None:
 
     async def handler(ws: ServerConnection) -> None:
         pong = await ws.ping(b"heartbeat")
-        await asyncio.wait_for(pong, 2)
+        await asyncio.wait_for(pong, HANG_GUARD)
         ponged.set()
         await ws.wait_closed()
 
-    async with fake_server(handler) as url, asyncio.timeout(5), make_ws(url):
-        await asyncio.wait_for(ponged.wait(), 3)
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD), make_ws(url):
+        await asyncio.wait_for(ponged.wait(), HANG_GUARD)
 
 
 async def test_messages_are_stamped_with_their_receipt_time() -> None:
@@ -218,7 +219,7 @@ async def test_messages_are_stamped_with_their_receipt_time() -> None:
         await ws.send(json.dumps({"type": "trade", "sid": 1, "seq": 1, "msg": {}}))
         await ws.wait_closed()
 
-    async with fake_server(handler) as url, asyncio.timeout(5), make_ws(url) as ws:
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD), make_ws(url) as ws:
         before = time.time()
         await ws.subscribe("trade")
         message = await anext(ws.messages())

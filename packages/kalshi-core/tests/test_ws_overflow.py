@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from hang_guard import HANG_GUARD
 from kalshi_core.auth import KalshiSigner
 from kalshi_core.config import KalshiSettings
 from kalshi_core.orderbook import DELTA, SNAPSHOT, OrderBookFeed
@@ -78,7 +79,7 @@ async def test_overflow_forces_a_reconnect_with_an_ordered_signal() -> None:
 
     async with (
         fake_server(handler) as url,
-        asyncio.timeout(10),
+        asyncio.timeout(HANG_GUARD),
         make_ws(url, max_queue_messages=100) as ws,
     ):
         await ws.subscribe("trade")
@@ -108,7 +109,7 @@ async def test_overflow_without_auto_reconnect_ends_the_stream_with_an_error() -
 
     async with (
         fake_server(handler) as url,
-        asyncio.timeout(10),
+        asyncio.timeout(HANG_GUARD),
         make_ws(url, max_queue_messages=50, auto_reconnect=False) as ws,
     ):
         await ws.subscribe("trade")
@@ -131,7 +132,7 @@ async def test_no_overflow_when_the_consumer_keeps_up() -> None:
 
     async with (
         fake_server(handler) as url,
-        asyncio.timeout(10),
+        asyncio.timeout(HANG_GUARD),
         make_ws(url, max_queue_messages=1000) as ws,
     ):
         await ws.subscribe("trade")
@@ -161,7 +162,7 @@ async def test_feed_applies_backpressure_so_the_backlog_stays_in_the_bounded_que
             )
         await ws.wait_closed()
 
-    async with fake_server(handler) as url, asyncio.timeout(10):
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD):
         ws = make_ws(url, max_queue_messages=100_000)
         async with (
             ws,
@@ -197,7 +198,7 @@ async def test_reconnect_after_overflow_waits_for_the_consumer_to_drain() -> Non
 
     async with (
         fake_server(handler) as url,
-        asyncio.timeout(10),
+        asyncio.timeout(HANG_GUARD),
         make_ws(url, max_queue_messages=100) as ws,
     ):
         await ws.subscribe("trade")
