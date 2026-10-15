@@ -15,7 +15,9 @@ from pathlib import Path
 import pytest
 
 DEPLOY = Path(__file__).resolve().parents[3] / "deploy"
-BASH = "/bin/bash" if sys.platform == "darwin" else "bash"
+# macOS: its own bash 3.2. Elsewhere: an absolute path, because some tests run the script with a
+# stripped PATH, where a bare "bash" cannot be found.
+BASH = "/bin/bash" if sys.platform == "darwin" else (shutil.which("bash") or "bash")
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="needs bash and POSIX permissions")
 
 PEM = "-----BEGIN PRIVATE KEY-----\nTOPSECRETKEYBYTES\n-----END PRIVATE KEY-----\n"
