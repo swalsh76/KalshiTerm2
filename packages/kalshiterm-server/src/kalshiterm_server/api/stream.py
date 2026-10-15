@@ -176,6 +176,14 @@ def book_side(prices: list[int], sizes: list[int]) -> list[dict[str, str | None]
 
 
 def event_for(table: str, row: Any, ticker: str, replay: bool = False) -> dict[str, Any]:
+    """One stored row as the stream event a client receives.
+
+    ``table`` says what kind of row it is: ``trades`` becomes a ``trade``, ``tickers`` a ``ticker``,
+    ``orderbook_snapshots`` a ``book_snapshot`` and anything else a ``book_delta``. Prices and
+    counts are exact decimal strings (``fmt``), never floats. A live event carries the row's
+    ``cursor`` (its ingest sequence number, which a client resumes from); an event sent while
+    catching up is marked ``replay`` instead.
+    """
     base: dict[str, Any] = {"ticker": ticker, "time": fmt.moment(row.ts)}
     if table == "trades":
         base |= {

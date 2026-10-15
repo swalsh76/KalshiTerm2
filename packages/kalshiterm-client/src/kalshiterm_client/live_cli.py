@@ -85,6 +85,14 @@ def watch_command(
     interactive = book and sys.stdout.isatty() and not as_json
 
     async def work() -> None:
+        """Follow the stream and show it until --count events have been seen or Ctrl-C.
+
+        A line per trade or ticker update (JSON with --json). The order book is kept from the
+        snapshots and deltas; with --book on a terminal it is redrawn live, otherwise the final book
+        is printed at the end. Connection changes (connected, reconnected and resumed, disconnected,
+        resynced) are shown as notes, never as data. A resync resets the book, because what was
+        missed could not be replayed.
+        """
         stream = StreamClient.for_profile(
             profile, channels=channels, markets=tickers or (), watchlist=watchlist
         )
