@@ -6,6 +6,16 @@ design and the slice-by-slice detail are in [docs/PLAN.md](docs/PLAN.md).
 
 ## Unreleased
 
+### Cleanup C2: before Phase 7 (2026-10-15)
+- **Fixed:** on a clean clone `kterm ui` showed a page saying the front end was not built, without
+  saying how. The page and the README now name the one-time build command (Node 22), until Phase 8
+  packages it.
+- **Changed:** the server image pins the uv version it builds with, so a new uv release cannot change
+  a deploy; CI uses current action versions; Dependabot (monthly, grouped, at most three open
+  pull requests) keeps the actions, the Docker image, npm and uv current.
+- Tests: 19 new cases for the order write client's retry rules, the kill switch, cancel-by-id, the
+  order tracker and the risk config reader; branch coverage of the money-handling code 97% to 99%.
+
 ### Cleanup C1: reuse and maintainability (2026-10-14 to 2026-10-15)
 - **Changed:** money scaling lives in one place, `kalshi_core.fixedpoint`, instead of ten copies of
   the constants and two differing `to_e6`. The old `kalshiterm_server.fixedpoint` and

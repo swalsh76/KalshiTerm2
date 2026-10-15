@@ -1306,3 +1306,24 @@ changes beyond what each step says, no test deleted or weakened, one commit per 
 Reviewed and left alone: ten functions with complexity of 13 to 17 (none worse; moderate, and not
 on the Phase 7 path); the repository settings that are off today (GitHub private vulnerability
 reporting, secret scanning and push protection), which are the maintainer's decision and not code.
+
+**Done 2026-10-15.**
+- **C2.1:** the placeholder page and the README now name the build command.
+- **C2.2:** the image was built and smoke-tested with the pinned uv (it reports 0.12.23 and has the
+  PostgreSQL 18 tools; the CLI runs).
+- **C2.3:** the workflow uses checkout v7, setup-node v7 and setup-uv v10.3.0, and
+  `.github/dependabot.yml` covers the actions, the Docker image, npm and uv. A workflow cannot be run
+  locally, so it was run by CI on a pull request before it reached `main`.
+- **C2.4:** 19 new test cases. Branch coverage of the seven money-handling modules went from 97% to
+  99% (the write client, the risk layer and `fixedpoint` and `fees` are at 100%; the two lines left
+  are an `if None` in a conversion wrapper and the trimming of an in-memory fills list). Twelve
+  deliberate breakages of the source (a 400 treated as retryable, one retry pause too few, an
+  idempotent 5xx not retried, a kill switch that hides a failed listing or forgets what still
+  rests, `cancel_by_ids` letting an unknown outcome escape, pruning that also drops resting
+  orders, a spent order counted against the limits, an unreadable `risk.toml` treated as the
+  defaults, non-table sections accepted) were each caught by a new test, and by no older one for
+  the behaviours that had no test before.
+- **Noted, not changed:** when the order listing never works, the kill switch's report is correctly
+  not clean and lists every listing error, but its last line says "orders were still resting after
+  the last pass", which overstates what is known. Changing a message is a behaviour change, so it
+  is left for the maintainer.
