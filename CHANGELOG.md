@@ -6,6 +6,12 @@ design and the slice-by-slice detail are in [docs/PLAN.md](docs/PLAN.md).
 
 ## Unreleased
 
+### Host: the NAS share stays mounted (2026-10-15)
+- **Added:** `deploy/host/keep-mounted.sh` and a launchd LaunchAgent template that keep an SMB share
+  mounted at login and every minute: nothing when it answers, a forced unmount and remount when it
+  has gone stale (a network change), and no attempt (only a log line) when no password is saved.
+  Needed because backups will go to the NAS and a hand-made mount did not survive a network change.
+
 ### Dependency updates (2026-10-15)
 - **Changed:** pydantic 2.14, pydantic-core 2.50, platformdirs 4.13 and ruff (Dependabot's first
   grouped Python update). pydantic 2.14 stopped putting the numeric pattern on `Decimal` fields in
