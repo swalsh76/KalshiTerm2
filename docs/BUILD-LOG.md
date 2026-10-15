@@ -16,6 +16,7 @@ points into PLAN.md.
 - [10.8 Phase 7 slices (terminal UI)](#108-phase-7-slices-terminal-ui)
 - [10.9 Cleanup C1: reuse and maintainability (decided 2026-10-14, by the user)](#109-cleanup-c1-reuse-and-maintainability-decided-2026-10-14-by-the-user)
 - [10.10 Cleanup C2: first run, reproducible builds, CI hygiene, recovery-path tests (decided 2026-10-15, by the user)](#1010-cleanup-c2-first-run-reproducible-builds-ci-hygiene-recovery-path-tests-decided-2026-10-15-by-the-user)
+- [10.11 Host: keep the NAS share mounted (decided 2026-10-15, by the user)](#1011-host-keep-the-nas-share-mounted-decided-2026-10-15-by-the-user)
 
 ## 10.1 Phase 2 slices
 
@@ -1327,3 +1328,29 @@ reporting, secret scanning and push protection), which are the maintainer's deci
   not clean and lists every listing error, but its last line says "orders were still resting after
   the last pass", which overstates what is known. Changing a message is a behaviour change, so it
   is left for the maintainer.
+
+## 10.11 Host: keep the NAS share mounted (decided 2026-10-15, by the user)
+
+The hard-power-cut test (see 10.2, step 5) showed the database cannot be trusted to survive an
+unplanned power loss on this host, so backups to the NAS (the share `kdb` on `navi`) stopped being
+optional. The share was mounted by hand through Finder, and it disappeared the moment the Mac's
+network changed (Wi-Fi to Ethernet): the mount died, and the copy to it died with `Socket is not
+connected`. A mount that needs a person is not a place to put backups.
+
+`deploy/host/keep-mounted.sh SHARE_URL MOUNT_POINT`, run by a launchd **LaunchAgent** at login and
+every 60 seconds (`com.kalshiterm.keepmounted.plist.template`), keeps the share mounted at the same
+path (`/Volumes/kdb`):
+- mounted and answering: it does nothing;
+- mounted but not answering (the stale mount after a network change): it forces it off, then remounts;
+- not mounted: it mounts it with the credential already saved in the login keychain. If there is no
+  saved credential it does **not** try, because the only result would be a password dialog on a
+  screen nobody is watching; it logs that and exits;
+- every wait is bounded, so a stuck mount cannot pile up jobs.
+
+It runs in the user's session, so after a reboot it starts once FileVault is unlocked, which is the
+accepted trade-off (the stack already waits for that unlock). The log is
+`~/Library/Logs/kalshiterm-keep-mounted.log`.
+
+Out of scope here, for the backup work that follows: the backup container must fail loudly when the
+share is missing (the same bind-mount trap as the key file: Docker creates an empty directory for a
+missing host path), and a NAS account limited to the one share is better than a personal login.
