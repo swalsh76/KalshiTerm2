@@ -64,13 +64,34 @@ confirm() { # confirm PROMPT -> succeeds on yes; --yes answers yes
 
 # ------------------------------------------------------------------------------ the checks
 
+# `ssh host 'command'` runs a non-interactive shell that skips the login profile, so Docker's
+# CLI is often not on its PATH even though it works in a terminal. Look where Docker puts it.
+docker_dirs="${KTERM_DOCKER_DIRS:-$HOME/.docker/bin:/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin}"
+
+find_docker() { # succeeds when docker is usable from here; puts its directory on PATH if needed
+  local d old_ifs="$IFS"
+  command -v docker >/dev/null 2>&1 && return 0
+  IFS=:
+  for d in $docker_dirs; do
+    if [ -x "$d/docker" ]; then
+      IFS="$old_ifs"
+      PATH="$d:$PATH"
+      docker_note=" (found in $d; it is not on this shell's PATH)"
+      return 0
+    fi
+  done
+  IFS="$old_ifs"
+  return 1
+}
+
+docker_note=""
 check_docker() {
-  if ! command -v docker >/dev/null 2>&1; then
-    bad "docker is not installed (or not on PATH)"
+  if ! find_docker; then
+    bad "docker not found on PATH or in: $docker_dirs. If Docker Desktop is installed, add its directory to PATH in ~/.zshenv so that 'ssh host command' sees it too"
   elif ! docker info >/dev/null 2>&1; then
     bad "docker is installed but not running (start Docker Desktop and wait for it to be ready)"
   else
-    good "docker is running"
+    good "docker is running$docker_note"
   fi
 }
 

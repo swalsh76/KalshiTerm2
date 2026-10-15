@@ -173,6 +173,69 @@ def test_check_rejects_a_relative_drive_path(deploy: Path, tmp_path: Path) -> No
     assert result.returncode == 1 and "must be absolute" in result.stderr
 
 
+# ---------------------------------------------------------------- docker off the PATH
+
+TOOLS = (
+    "dirname",
+    "df",
+    "awk",
+    "sed",
+    "head",
+    "grep",
+    "tr",
+    "stat",
+    "date",
+    "cat",
+    "rm",
+    "uname",
+    "id",
+)
+
+
+def check_with_bare_path(
+    deploy: Path, tmp_path: Path, docker_dirs: Path, *, daemon_up: bool | None
+) -> subprocess.CompletedProcess[str]:
+    """Run `check` the way `ssh host 'cmd'` does: a PATH with the basic tools and no Docker."""
+    farm = tmp_path / "farm"
+    farm.mkdir(exist_ok=True)
+    for tool in TOOLS:
+        found = shutil.which(tool)
+        if found and not (farm / tool).exists():
+            (farm / tool).symlink_to(found)
+    if daemon_up is not None:
+        docker_dirs.mkdir(exist_ok=True)
+        script = docker_dirs / "docker"
+        script.write_text(f"#!/bin/sh\nexit {0 if daemon_up else 1}\n")
+        script.chmod(0o755)
+    env = {"PATH": str(farm), "HOME": str(tmp_path), "KTERM_DOCKER_DIRS": str(docker_dirs)}
+    return subprocess.run(
+        [BASH, str(deploy / "host" / "install.sh"), "check"],
+        input="", capture_output=True, text=True, env=env, timeout=60,
+    )  # fmt: skip
+
+
+def test_docker_is_found_in_its_usual_place_when_it_is_not_on_the_path(
+    deploy: Path, tmp_path: Path
+) -> None:
+    result = check_with_bare_path(deploy, tmp_path, tmp_path / "dockerbin", daemon_up=True)
+    assert result.returncode == 0, result.stderr
+    assert "docker is running" in result.stdout and "not on this shell's PATH" in result.stdout
+
+
+def test_a_docker_that_is_found_but_not_running_is_said_so(deploy: Path, tmp_path: Path) -> None:
+    result = check_with_bare_path(deploy, tmp_path, tmp_path / "dockerbin", daemon_up=False)
+    assert result.returncode == 1 and "not running" in result.stderr
+
+
+def test_a_missing_docker_names_where_it_looked_and_how_to_fix_the_path(
+    deploy: Path, tmp_path: Path
+) -> None:
+    result = check_with_bare_path(deploy, tmp_path, tmp_path / "nowhere", daemon_up=None)
+    assert result.returncode == 1
+    assert "docker not found" in result.stderr and str(tmp_path / "nowhere") in result.stderr
+    assert ".zshenv" in result.stderr
+
+
 # ---------------------------------------------------------------- install --dry-run
 
 
