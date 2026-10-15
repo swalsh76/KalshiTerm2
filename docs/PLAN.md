@@ -78,19 +78,41 @@ so each install pulls in only what it needs.
 ```
 KalshiTerm2/
 ├── pyproject.toml                  # workspace root; ruff/mypy/pytest config
+├── uv.lock
+├── README.md  CHANGELOG.md  SECURITY.md  CLAUDE.md  LICENSE
 ├── packages/
 │   ├── kalshi-core/
-│   │   └── src/kalshi_core/{auth,rest,ws,models,ratelimit,config}.py
+│   │   ├── src/kalshi_core/        # auth, config, rest, ws, ws_models, models, orderbook, trading,
+│   │   │                           #   portfolio, fees, fixedpoint, ratelimit, clock
+│   │   ├── bench/                  # throughput and soak benchmarks
+│   │   └── tests/
 │   ├── kalshiterm-server/
-│   │   └── src/kalshiterm_server/{ingest/,storage/,analytics/,api/,ops/,migrations/}
+│   │   ├── src/kalshiterm_server/
+│   │   │   ├── ingest/             # stream, discovery, backfill, combos, watchlist controller
+│   │   │   ├── storage/            # tables, reference-data upserts, market ids
+│   │   │   ├── analytics/          # the framework (base, registry, runner) and builtin/ analyzers
+│   │   │   ├── api/                # the FastAPI app: markets, raw data, analytics, alerts,
+│   │   │   │                       #   watchlist, layouts, the live stream
+│   │   │   ├── migrations/         # Alembic
+│   │   │   └── ...                 # db, auth, tls, governor, status, backup, init, alerts,
+│   │   │                           #   watchlists, layouts; cli.py and cli_*.py are `kterm-server`
+│   │   └── tests/
 │   └── kalshiterm-client/
-│       └── src/kalshiterm_client/{data/,trading/,risk/,cli/,ui/}
-├── frontend/                       # only if web UI is chosen (§7)
+│       ├── src/kalshiterm_client/
+│       │   ├── ui/                 # the local web UI backend (FastAPI on 127.0.0.1)
+│       │   ├── ui_assets/          # the built front end, written by `npm run build` (not committed)
+│       │   └── ...                 # client, stream, models, orders, risk, account, pinning,
+│       │                           #   profiles, secrets; cli.py and *_cli.py are `kterm`
+│       ├── frontend/               # the React front end (Vite, TypeScript); see §7
+│       └── tests/
 ├── deploy/
-│   ├── docker-compose.yml
-│   └── Dockerfile
+│   ├── docker-compose.yml          # the server stack: db, ingest, analyze, api
+│   ├── docker-compose.setup.yml    # the one-off `init` and `cert` commands
+│   ├── docker-compose.dev.yml      # the development TimescaleDB
+│   ├── Dockerfile
+│   └── host/                       # install.sh, the drive check and the LAN announcement
 ├── docs/                           # PLAN.md (design), BUILD-LOG.md (how it was built)
-└── .github/workflows/              # CI
+└── .github/workflows/ci.yml        # CI
 ```
 
 **Standards**
