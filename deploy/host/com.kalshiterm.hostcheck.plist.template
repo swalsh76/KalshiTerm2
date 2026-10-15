@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
+  NORMAL ROUTE: run host/install.sh install (see docs/PLAN.md, section 8.2). It asks which
+  volume holds the data, fills in this template, installs the drive check job and checks
+  that it works. The manual steps below are what it does, for when you cannot use it.
+
   Data-drive check: a LaunchDaemon that runs every 60 s, from boot, with no login needed.
 
   WHY: the server runs in a container and cannot see whether macOS mounted the SSD. This job runs

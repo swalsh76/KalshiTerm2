@@ -158,7 +158,7 @@ def test_bad_arguments_are_reported_not_crashed(
         runner.invoke(
             app, ["init", "--key-id", KEY_ID, "--key-file", str(tmp_path / "missing")]
         ).exit_code
-        == 2
+        == 1  # explained by run_init (click's usage error, exit 2, before 2.11)
     )
 
 
@@ -219,4 +219,25 @@ def test_a_backup_dir_must_be_a_plain_absolute_host_path(
 ) -> None:
     result = init(deploy, key_file, "--backup-dir", bad)
     assert result.exit_code == 1 and "--backup-dir" in result.output  # type: ignore[attr-defined]
+    assert list(deploy.iterdir()) == []
+
+
+def test_a_key_path_that_is_a_directory_is_explained(deploy: Path, tmp_path: Path) -> None:
+    # What `docker compose run init` sees when the host KEY_FILE path did not exist and Docker
+    # created an empty directory there.
+    stray = tmp_path / "server_key.pem"
+    stray.mkdir()
+    result = init(deploy, stray)
+    output = result.output  # type: ignore[attr-defined]
+    assert result.exit_code == 1  # type: ignore[attr-defined]
+    assert "is a directory" in output and "rmdir" in output and "KEY_FILE" in output
+    assert list(deploy.iterdir()) == []  # nothing written
+
+
+def test_a_missing_key_file_is_explained_and_nothing_is_written(
+    deploy: Path, tmp_path: Path
+) -> None:
+    result = init(deploy, tmp_path / "nothing.pem")
+    output = result.output  # type: ignore[attr-defined]
+    assert result.exit_code == 1 and "does not exist" in output and "KEY_FILE" in output  # type: ignore[attr-defined]
     assert list(deploy.iterdir()) == []
