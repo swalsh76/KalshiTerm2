@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 import websockets.asyncio.client
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from hang_guard import HANG_GUARD
 from kalshi_core.auth import HEADER_SIGNATURE, HEADER_TIMESTAMP, KalshiSigner
 from kalshi_core.config import KalshiSettings
 from kalshi_core.ws import RECONNECTED, KalshiWebSocket, KalshiWSError
@@ -99,7 +100,7 @@ async def test_reconnect_resubscribes_with_same_params_and_signals() -> None:
             await ws.send(trade(9, 1))
             await ws.wait_closed()
 
-    async with fake_server(handler) as url, asyncio.timeout(5), make_ws(url) as ws:
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD), make_ws(url) as ws:
         await ws.subscribe("trade", market_tickers=["M"])
         stream = ws.messages()
         first = await anext(stream)
@@ -125,7 +126,7 @@ async def test_backoff_grows_and_gives_up_after_max_attempts() -> None:
     flaky = Flaky(fails=100)
     async with (
         fake_server(handler) as url,
-        asyncio.timeout(5),
+        asyncio.timeout(HANG_GUARD),
         make_ws(
             url, connect=flaky, sleep=sleeps.sleep, max_reconnect_attempts=4, reconnect_base=1.0
         ) as ws,
@@ -146,7 +147,7 @@ async def test_backoff_is_capped() -> None:
     sleeps = Sleeps()
     async with (
         fake_server(handler) as url,
-        asyncio.timeout(5),
+        asyncio.timeout(HANG_GUARD),
         make_ws(
             url,
             connect=Flaky(fails=100),
@@ -177,7 +178,7 @@ async def test_recovers_after_transient_connect_failures() -> None:
     sleeps = Sleeps()
     async with (
         fake_server(handler) as url,
-        asyncio.timeout(5),
+        asyncio.timeout(HANG_GUARD),
         make_ws(url, connect=Flaky(fails=2), sleep=sleeps.sleep) as ws,
     ):
         await ws.subscribe("trade")
@@ -197,7 +198,7 @@ async def test_deliberate_close_during_backoff_ends_cleanly() -> None:
         backing_off.set()
         await asyncio.Event().wait()
 
-    async with fake_server(handler) as url, asyncio.timeout(5):
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD):
         ws = make_ws(url, connect=Flaky(fails=100), sleep=hang)
         await ws.connect()
         await ws._conn.send(json.dumps({"id": 1, "cmd": "list_subscriptions"}))
@@ -221,7 +222,7 @@ async def test_each_connection_is_signed_freshly() -> None:
         else:
             await ws.wait_closed()
 
-    async with fake_server(handler) as url, asyncio.timeout(5), make_ws(url, key) as ws:
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD), make_ws(url, key) as ws:
         await ws.subscribe("trade")
         await anext(ws.messages())
     assert len(seen) == 2
@@ -245,7 +246,7 @@ async def test_rejected_resubscribe_is_reported_and_dropped() -> None:
             await ws.send(json.dumps({"id": cmd["id"], "type": "error", "msg": err}))
             await ws.wait_closed()
 
-    async with fake_server(handler) as url, asyncio.timeout(5), make_ws(url) as ws:
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD), make_ws(url) as ws:
         await ws.subscribe("trade")
         event = await anext(ws.messages())
         subs = ws.subscriptions
@@ -278,7 +279,7 @@ async def test_unsubscribed_channels_are_not_resubscribed() -> None:
                 second_connection.append(cmd)
                 await reply_subscribed(ws, cmd, 10 + len(second_connection))
 
-    async with fake_server(handler) as url, asyncio.timeout(5), make_ws(url) as ws:
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD), make_ws(url) as ws:
         first = await ws.subscribe("trade")
         await ws.subscribe("ticker")
         await ws.unsubscribe(first)
@@ -308,7 +309,7 @@ async def test_drop_during_resubscribe_discards_held_data_and_retries() -> None:
                 await reply_subscribed(ws, json.loads(await ws.recv()), sid)
             await ws.wait_closed()
 
-    async with fake_server(handler) as url, asyncio.timeout(5), make_ws(url) as ws:
+    async with fake_server(handler) as url, asyncio.timeout(HANG_GUARD), make_ws(url) as ws:
         await ws.subscribe("trade")
         await ws.subscribe("ticker")
         stream = ws.messages()

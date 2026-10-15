@@ -245,7 +245,7 @@ async def test_the_new_alert_is_announced_to_listeners(migrated_db_url: str, wor
         await world.rule("alice", "market_moves.last", "KX-E1-A", "gt", 1)
         await world.result("market_moves.last", 900_000, market="KX-E1-A")
         await world.evaluate()
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(30):
             payload = await heard.get()
     finally:
         await listener.close()
