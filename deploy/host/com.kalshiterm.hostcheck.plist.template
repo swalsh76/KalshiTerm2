@@ -1,12 +1,48 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Runs the data-drive check every minute, from boot, as a LaunchDaemon (no login needed).
-  Install on the Mac Studio (replace the two placeholders, then):
-    sed -e 's|__DEPLOY_DIR__|/path/to/KalshiTerm2/deploy|' -e 's|__DRIVE_PATH__|/Volumes/KalshiData|' \
-        host/com.kalshiterm.hostcheck.plist.template | sudo tee /Library/LaunchDaemons/com.kalshiterm.hostcheck.plist
+  Data-drive check: a LaunchDaemon that runs every 60 s, from boot, with no login needed.
+
+  WHY: the server runs in a container and cannot see whether macOS mounted the SSD. This job runs
+  check-data-drive.sh on the host and writes deploy/state/host.json. The server reads that file,
+  and "kterm-server status" reports a missing, read-only or nearly full drive (or a report that
+  is more than 5 minutes old).
+
+  BEFORE YOU START (on the Mac Studio):
+    1. "init" has run, so deploy/state/ exists (init creates it).
+    2. The SSD is mounted. Find its path with:  ls /Volumes   (for example /Volumes/KalshiData).
+       DRIVE_PATH must be the mount point itself, not a folder inside it. A plain folder on the
+       boot disk fails the mount test; see the comments in check-data-drive.sh for the option
+       that accepts one.
+    3. Use absolute paths. launchd does not expand ~ or $HOME.
+
+  INSTALL (copy and paste; set your own two values on the second line):
+    cd /Users/YOU/KalshiTerm2/deploy
+    DEPLOY_DIR="$PWD"; DRIVE_PATH=/Volumes/KalshiData
+    sed -e "s|__DEPLOY_DIR__|$DEPLOY_DIR|g" -e "s|__DRIVE_PATH__|$DRIVE_PATH|g" \
+        host/com.kalshiterm.hostcheck.plist.template \
+      | sudo tee /Library/LaunchDaemons/com.kalshiterm.hostcheck.plist >/dev/null
     sudo chown root:wheel /Library/LaunchDaemons/com.kalshiterm.hostcheck.plist
+    sudo chmod 644 /Library/LaunchDaemons/com.kalshiterm.hostcheck.plist
     sudo launchctl bootstrap system /Library/LaunchDaemons/com.kalshiterm.hostcheck.plist
+  macOS may show a "background item added" notification; that is expected.
+
+  VERIFY (within a minute):
+    cat state/host.json     "mounted" and "writable" should be true; "checked_at" is recent
+    docker compose exec ingest kterm-server status     the "host drive" problem is gone
+
+  TROUBLESHOOTING:
+    "Bootstrap failed: 5: Input/output error": it is already loaded, or the file is not
+      root:wheel with mode 644. Run the bootout line below, fix the file, bootstrap again.
+    No state/host.json: run the script once by hand and read its output:
+      sudo host/check-data-drive.sh "$DRIVE_PATH" state/host.json
+      Also check that it is executable:  ls -l host/check-data-drive.sh
+    "mounted": false although the SSD is attached: DRIVE_PATH is wrong or is not the mount point.
+    After editing the file: bootout, then bootstrap again.
+
+  REMOVE:
+    sudo launchctl bootout system/com.kalshiterm.hostcheck
+    sudo rm /Library/LaunchDaemons/com.kalshiterm.hostcheck.plist
 -->
 <plist version="1.0">
 <dict>
