@@ -7,12 +7,15 @@
 #   install.sh check     [--key-file PATH] [--drive PATH] [--allow-plain-directory]
 #   install.sh install   [--drive PATH] [--advertise | --no-advertise] [--port N] [--yes]
 #                        [--dry-run] [--allow-plain-directory]
+#   install.sh verify
 #   install.sh uninstall [--yes] [--dry-run]
 #
 # Order of a stand-up (docs/PLAN.md, section 8.2):  check -> init -> up -> install.
 # `check` is read-only and runs BEFORE init. `install` runs AFTER init (it needs .env, state/ and
 # the TLS certificate that init creates). Over SSH, use `ssh -t` so sudo can ask for a password.
 # --dry-run changes nothing: it prints the plists and the commands it would run.
+# `verify` waits for the next report of the installed drive check (up to a minute) and says
+# whether it sees a mounted, writable drive; use it after fixing a permission problem.
 # The macOS launchd steps only run on macOS; check and --dry-run work anywhere with bash.
 #
 # Written for bash 3.2 (the version macOS ships): no mapfile, no associative arrays.
@@ -247,21 +250,47 @@ install_daemon() { # install_daemon LABEL RENDERED_FILE
   run sudo launchctl bootstrap system "$dest" || die "launchctl bootstrap failed for $label (see the troubleshooting notes in host/$label.plist.template)"
 }
 
-wait_for_report() { # the first host.json written after the install started
-  local state="$deploy_dir/state/host.json" start="$1" t mounted writable
-  echo "Waiting for the first drive report (up to 90 s)..."
-  while [ $(($(date +%s) - start)) -lt 90 ]; do
+privacy_help() {
+  cat >&2 <<'MSG'
+
+The drive is mounted but the background job cannot WRITE to it, while you (and root, run by
+hand) can. On macOS this is the privacy protection for external volumes: it applies to
+background jobs, not to your login session. To fix it:
+  1. On the Mac itself (or over Screen Sharing; it cannot be done over ssh):
+     System Settings > Privacy & Security > Full Disk Access > "+" > press Cmd-Shift-G >
+     type /bin/bash > Add, and make sure its switch is on.
+  2. Check again:  host/install.sh verify
+To confirm that this is the cause first:
+  sudo log show --last 15m --predicate 'process == "tccd"' | grep -i removable
+The daemons stay installed meanwhile; nothing else needs to be redone.
+MSG
+}
+
+wait_for_report() { # wait for a host.json written at or after $1 that shows a mounted, writable drive
+  local state="$deploy_dir/state/host.json" start="$1" t mounted="" writable="" limit="${KTERM_VERIFY_TIMEOUT:-90}"
+  echo "Waiting for a fresh drive report (up to $limit s)..."
+  while [ $(($(date +%s) - start)) -lt "$limit" ]; do
     if [ -f "$state" ]; then
       t="$(sed -n 's/.*"checked_at": *\([0-9][0-9]*\).*/\1/p' "$state")"
-      [ -n "$t" ] && [ "$t" -ge "$start" ] && break
+      if [ -n "$t" ] && [ "$t" -ge "$start" ]; then
+        mounted="$(sed -n 's/.*"mounted": *\([a-z]*\).*/\1/p' "$state")"
+        writable="$(sed -n 's/.*"writable": *\([a-z]*\).*/\1/p' "$state")"
+        [ "$mounted" = true ] && [ "$writable" = true ] && break
+      fi
     fi
     sleep 2
   done
-  [ -f "$state" ] || die "no $state appeared; run host/check-data-drive.sh by hand to see why"
-  mounted="$(sed -n 's/.*"mounted": *\([a-z]*\).*/\1/p' "$state")"
-  writable="$(sed -n 's/.*"writable": *\([a-z]*\).*/\1/p' "$state")"
+  [ -n "$mounted" ] || die "no fresh $state appeared; is the job running? (sudo launchctl print system/$hc_label) Or run host/check-data-drive.sh by hand to see why"
   echo "  host drive report: mounted=$mounted writable=$writable"
-  [ "$mounted" = true ] && [ "$writable" = true ] || die "the drive check ran but does not see a mounted, writable drive: $(cat "$state")"
+  [ "$mounted" = true ] && [ "$writable" = true ] && return 0
+  if [ "$mounted" = true ]; then privacy_help; fi
+  die "the drive check does not see a mounted, writable drive: $(cat "$state")"
+}
+
+do_verify() { # after a fix: wait for the next report from the installed drive check
+  [ -d "$deploy_dir/state" ] || die "$deploy_dir/state not found: run init first"
+  wait_for_report "$(date +%s)"
+  echo "The drive check works."
 }
 
 do_install() {
@@ -351,6 +380,7 @@ do_uninstall() {
 case "$cmd" in
   check) do_check ;;
   install) do_install ;;
+  verify) do_verify ;;
   uninstall) do_uninstall ;;
   help | -h | --help) usage ;;
   *) echo "unknown command: $cmd (try: install.sh help)" >&2; exit 2 ;;

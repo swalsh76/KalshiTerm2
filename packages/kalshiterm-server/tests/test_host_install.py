@@ -253,7 +253,10 @@ def test_a_dry_run_renders_both_valid_plists_with_the_right_paths(
     )  # the instruction comment is stripped from the installed file
     rendered = plists(result.stdout)
     assert set(rendered) == {"com.kalshiterm.hostcheck", "com.kalshiterm.advertise"}
+    # started as /bin/bash, not through the script's `env` shebang: macOS privacy (TCC) then sees
+    # bash as the responsible program, which is the narrow thing to grant access to
     assert rendered["com.kalshiterm.hostcheck"]["ProgramArguments"] == [
+        "/bin/bash",
         str(deploy / "host" / "check-data-drive.sh"),
         str(drive),
         str(deploy / "state" / "host.json"),
@@ -286,7 +289,7 @@ def test_a_drive_path_with_a_space_survives_into_the_plist(deploy: Path, tmp_pat
         "--no-advertise", "--dry-run",
     )  # fmt: skip
     assert result.returncode == 0, result.stderr
-    assert plists(result.stdout)["com.kalshiterm.hostcheck"]["ProgramArguments"][1] == str(spaced)  # type: ignore[index]
+    assert plists(result.stdout)["com.kalshiterm.hostcheck"]["ProgramArguments"][2] == str(spaced)  # type: ignore[index]
 
 
 def test_install_needs_init_to_have_run(deploy: Path, tmp_path: Path, drive: Path) -> None:
@@ -339,7 +342,7 @@ def test_the_volume_prompt_lists_volumes_and_takes_a_number(
     assert result.returncode == 0, result.stderr
     assert "1) " in result.stderr and "Alpha" in result.stderr and "Beta" in result.stderr
     args = plists(result.stdout)["com.kalshiterm.hostcheck"]["ProgramArguments"]
-    assert args[1] == str(volumes / "Beta")  # type: ignore[index]
+    assert args[2] == str(volumes / "Beta")  # type: ignore[index]
 
 
 def test_the_volume_prompt_also_takes_a_typed_path(
@@ -350,7 +353,7 @@ def test_the_volume_prompt_also_takes_a_typed_path(
         stdin=f"{drive}\n", volumes=volumes,
     )  # fmt: skip
     assert result.returncode == 0, result.stderr
-    assert plists(result.stdout)["com.kalshiterm.hostcheck"]["ProgramArguments"][1] == str(drive)  # type: ignore[index]
+    assert plists(result.stdout)["com.kalshiterm.hostcheck"]["ProgramArguments"][2] == str(drive)  # type: ignore[index]
 
 
 def test_the_volume_prompt_rejects_a_number_out_of_range_and_no_answer(
@@ -396,3 +399,70 @@ def test_a_real_install_refuses_to_run_outside_macos(
         deploy, tmp_path, "install", "--drive", drive, "--allow-plain-directory", "--no-advertise"
     )
     assert result.returncode == 1 and "macOS launchd" in result.stderr
+
+
+# ---------------------------------------------------------------- verify (after a permission fix)
+
+
+def write_report(
+    deploy: Path, *, mounted: bool, writable: bool, checked_at: int | None = None
+) -> None:
+    import json
+    import time
+
+    report = {
+        "checked_at": checked_at if checked_at is not None else int(time.time()) + 1000,
+        "path": "/Volumes/X",
+        "mounted": mounted,
+        "writable": writable,
+        "free_pct": 99.0,
+        "error": "" if writable else "cannot write to /Volumes/X",
+    }
+    (deploy / "state" / "host.json").write_text(json.dumps(report))
+
+
+def verify(deploy: Path, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    import os
+
+    env = dict(os.environ, KTERM_VERIFY_TIMEOUT="3")
+    return subprocess.run(
+        [BASH, str(deploy / "host" / "install.sh"), "verify"],
+        input="", capture_output=True, text=True, env=env, timeout=60,
+    )  # fmt: skip
+
+
+def test_verify_passes_on_a_fresh_good_report(deploy: Path, tmp_path: Path) -> None:
+    write_report(deploy, mounted=True, writable=True)
+    result = verify(deploy, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "The drive check works" in result.stdout
+
+
+def test_verify_explains_the_macos_privacy_block_when_the_drive_is_not_writable(
+    deploy: Path, tmp_path: Path
+) -> None:
+    write_report(deploy, mounted=True, writable=False)
+    result = verify(deploy, tmp_path)
+    assert result.returncode == 1
+    assert "Full Disk Access" in result.stderr and "/bin/bash" in result.stderr
+    assert "host/install.sh verify" in result.stderr and "tccd" in result.stderr
+
+
+def test_verify_does_not_blame_privacy_when_the_drive_is_not_even_mounted(
+    deploy: Path, tmp_path: Path
+) -> None:
+    write_report(deploy, mounted=False, writable=False)
+    result = verify(deploy, tmp_path)
+    assert result.returncode == 1 and "Full Disk Access" not in result.stderr
+
+
+def test_verify_ignores_a_stale_report_and_says_the_job_may_not_be_running(
+    deploy: Path, tmp_path: Path
+) -> None:
+    write_report(deploy, mounted=True, writable=True, checked_at=1_000_000)  # long ago
+    result = verify(deploy, tmp_path)
+    assert (
+        result.returncode == 1
+        and "no fresh" in result.stderr
+        and "launchctl print" in result.stderr
+    )

@@ -991,10 +991,23 @@ the fix is a host-side script plus two small guards:
     declined), waits for the first fresh `state/host.json` and prints `mounted`/`writable`.
     Re-running is safe (boot out, then bootstrap). `--dry-run` changes nothing and prints the
     plists and commands.
+  - `verify`: waits for the next report of the installed drive check and says whether it sees
+    a mounted, writable drive (use it after fixing a permission problem); the same wait ends
+    `install`, which polls for a good report instead of judging the first one.
   - `uninstall`: boots out and removes both daemons; leaves `state/` alone.
 - `docker-compose.setup.yml` mounts the key with `bind.create_host_path: false`, so a wrong
   `KEY_FILE` fails at once ("bind source path does not exist") instead of creating a directory;
   and `init`'s `--key-file` error names that cause.
+- **Found on the Mac Studio (2026-10-14): a launchd job cannot write to an external drive until
+  macOS privacy (TCC, `kTCCServiceSystemPolicyRemovableVolumes`) allows it,** even though the
+  same user, and root run from ssh, can. The drive check reported `mounted: true, writable:
+  false`; `tccd` logged the denial. The script's `#!/usr/bin/env bash` line made `/usr/bin/env`
+  the responsible program (a grant to `env` would be far too broad), so the hostcheck plist now
+  starts `/bin/bash` explicitly and the operator grants Full Disk Access to `/bin/bash` (Mac's
+  screen or Screen Sharing; not possible over ssh). `install` and `verify` print these steps
+  when they see mounted-but-not-writable. Not yet decided: whether the drive check should keep
+  a write probe at all, since the process that really writes the data is Docker Desktop (an
+  app with its own permission); parked below until the Mac Studio run shows how it behaves.
 - Reminded, not automated: Docker Desktop's disk-image location is an app setting the script
   cannot read reliably; `install` prints the reminder.
 
@@ -2184,6 +2197,7 @@ opt-in (decision 3, changed the same day: switched on and off inside the app, wi
 Ideas raised but **not** in scope. Not to be built until promoted into a phase.
 
 - Automated trading strategies (decision #2: manual first; strategy interface later).
+- Drive check without a write probe (mount status and free space only), so the host job needs no Full Disk Access; the real writer is Docker Desktop, which has its own permission, and Postgres failing is the real alarm. Raised 2026-10-14 from the first Mac Studio install; decide after seeing the Studio run with the permission granted.
 - A trigram index for `/v1/markets?q=` substring search (today a scan of 0.1-0.2 s at 816k markets). Raised 2026-10-08; add if search latency or the market count grows.
 - Run the containers as a non-root user (needs a uid strategy that works on both Docker Desktop and Linux bind mounts). Raised 2026-10-08; today they run as root with a read-only key mount, no published ports and an internal-only database network.
 - Make the first watchlist cycle retry after ~1 minute while there are no trades to rank, instead of waiting the full 5 minutes.
