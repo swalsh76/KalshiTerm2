@@ -13,12 +13,11 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, TypeVar
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from kalshiterm_client import secrets
 from kalshiterm_client.errors import (
     ApiProblem,
     CertificateChanged,
@@ -54,7 +53,7 @@ from kalshiterm_client.models import (
     TradePage,
     Watchlist,
 )
-from kalshiterm_client.pinning import fetch_certificate, fingerprint_of_pem, trusting
+from kalshiterm_client.pinning import credentials_for, fetch_certificate, fingerprint_of_pem
 from kalshiterm_client.profiles import Profile, ProfileError
 
 M = TypeVar("M", bound=BaseModel)
@@ -187,13 +186,7 @@ class ServerClient:
     def for_profile(cls, profile: Profile, token: str | None = None, **kw: Any) -> "ServerClient":
         """A client for a saved server: the token from the keyring (or ``KTERM_TOKEN``) and, for
         https, TLS that trusts exactly the certificate pinned with ``kterm server trust``."""
-        token = token or secrets.get_token(profile.name)
-        if not token:
-            raise ConnectionProblem(
-                f"no token for {profile.name}: run `kterm config token {profile.name}`"
-            )
-        secure = urlsplit(profile.url).scheme == "https"
-        verify: ssl.SSLContext | bool = trusting(profile) if secure else False
+        token, verify = credentials_for(profile, token)
         return cls(profile.url, token, verify=verify, profile=profile, **kw)
 
     async def __aenter__(self) -> "ServerClient":

@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
+from kalshiterm_client import secrets
+from kalshiterm_client.errors import ConnectionProblem
 from kalshiterm_client.profiles import Profile, ProfileError, pin_path
 
 
@@ -109,6 +111,24 @@ def trusting(profile: Profile) -> ssl.SSLContext:
     """A TLS context that accepts exactly the pinned certificate (and checks name and expiry)."""
     pem = pinned_pem(profile)
     return ssl.create_default_context(cadata=pem.decode())
+
+
+def credentials_for(
+    profile: Profile, token: str | None = None
+) -> tuple[str, ssl.SSLContext | bool]:
+    """What a client needs to talk to a saved server: its token and its TLS setting.
+
+    The token is the one given, else the one in the keyring (or ``KTERM_TOKEN``). For https the
+    TLS context trusts exactly the certificate pinned with ``kterm server trust``; plain http (a
+    loopback server) needs none. Shared by the REST and the stream client, which must agree.
+    """
+    token = token or secrets.get_token(profile.name)
+    if not token:
+        raise ConnectionProblem(
+            f"no token for {profile.name}: run `kterm config token {profile.name}`"
+        )
+    secure = urlsplit(profile.url).scheme == "https"
+    return token, trusting(profile) if secure else False
 
 
 def local_time(moment: datetime) -> str:

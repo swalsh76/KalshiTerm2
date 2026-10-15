@@ -34,10 +34,9 @@ from urllib.parse import urlsplit
 import websockets.asyncio.client
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
-from kalshiterm_client import secrets
 from kalshiterm_client.client import explain_tls_failure, ssl_cause
 from kalshiterm_client.errors import ConnectionProblem, InvalidRequest, Unauthorized
-from kalshiterm_client.pinning import trusting
+from kalshiterm_client.pinning import credentials_for
 from kalshiterm_client.profiles import Profile
 from kalshiterm_client.stream_events import (
     AlertEvent,
@@ -141,13 +140,7 @@ class StreamClient:
     ) -> "StreamClient":
         """A stream for a saved server: token from the keyring (or ``KTERM_TOKEN``) and, for
         https, TLS that trusts exactly the pinned certificate."""
-        token = token or secrets.get_token(profile.name)
-        if not token:
-            raise ConnectionProblem(
-                f"no token for {profile.name}: run `kterm config token {profile.name}`"
-            )
-        secure = urlsplit(profile.url).scheme == "https"
-        verify: ssl.SSLContext | bool = trusting(profile) if secure else False
+        token, verify = credentials_for(profile, token)
         return cls(profile.url, token, verify=verify, profile=profile, **kw)
 
     # ------------------------------------------------------------------ the public loop
