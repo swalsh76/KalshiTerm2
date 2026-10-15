@@ -901,6 +901,15 @@ so "BUILD-LOG §10.6" is BUILD-LOG section 10.6 there.
 
 ## 11. Risks & Notes
 
+- **Unplanned power loss can corrupt the database on the Mac Studio (found 2026-10-15, BUILD-LOG
+  §10.2).** After a cord pull, Postgres would not start: a small file it had written a minute earlier
+  held zeros (a lost write below Postgres, in the Docker VM's disk image on the external drive). It was
+  repaired by hand with no loss of what had been stored, but the tickers and orderbook rows of the
+  outage (97 minutes) are gone for good and the repair could not prove that no other page was lost.
+  A graceful reboot is safe. **Mitigations, in order of value:** the nightly NAS backup (§8, BUILD-LOG
+  §10.11) so that a bad day costs at most a day; a UPS so that a power failure is a shutdown, not a
+  crash; and a decision on whether Postgres should run in Docker on macOS at all (§8.1 and §12 are
+  where to record it). With FileVault on, any restart also waits for a person to unlock the Mac.
 - **Client throughput (offline benchmark, `packages/kalshi-core/bench/throughput.py`,
   2026-10-06, M4 MacBook Pro, one core):** the WebSocket client reads and dispatches
   ~120–220k msgs/s (4–8 µs each; the low end with `permessage-deflate`, which Kalshi

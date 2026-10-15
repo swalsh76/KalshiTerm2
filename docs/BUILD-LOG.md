@@ -106,9 +106,48 @@ APFS. Steps 1 and 2 are done; the drive's own endurance rating is not checked.
   `sudo pmset -a sleep 0 disksleep 0` and "Start up automatically after a power failure", and
   keep it on mains. The host drive check does not see sleep; it would show up as the drive
   check going stale and then as an unmount.
-- Not yet done: steps 3, 5 and 6 (real server key, host LaunchDaemon, reboot and power-loss
-  behaviour, power-fail restart) and a Thunderbolt link. The test above was a software
-  unmount, not a physical unplug or power cut.
+- Done since: steps 3 and 5 (real server key, the host LaunchDaemons, reboot and power loss), on
+  the Mac Studio itself; see "Mac Studio, 2026-10-15" below. Still not done: step 6's sign-off and a
+  Thunderbolt link.
+
+**Mac Studio, 2026-10-15 (steps 3 and 5).** Host: FileVault **on**, so no auto-login and no
+unattended boot; the maintainer accepted that a restart needs a person to unlock the Mac, after
+which everything is automatic. Start-up after a power failure is on, sleep is off, Docker Desktop
+starts at login and keeps its disk image on the 2 TB external drive (APFS, unencrypted), every
+service has `restart: unless-stopped`, no UPS. The reboot and the power cut were watched by a
+script that timed each stage and compared row counts and database size against a baseline taken
+beforehand (an emptied database would show as a collapse, which guards against Docker starting
+before the drive is mounted).
+- **Graceful reboot (`shutdown -r now`, then unlock):** SSH was back 73 s after it went down; Docker
+  answered 2 s later and the four services were healthy 9 s later; ingest repaired its downtime gap
+  by itself (17,882 trades found, 12,482 added, 2,272 duplicates skipped); the data was intact
+  (27.2 to 28.1 GB, every table's row count at or above the baseline, 0 checksum failures). Postgres
+  very probably did not shut down cleanly (the Docker VM is stopped before it can), and recovered
+  without help; the evidence is indirect, because the container log shows no start-up lines.
+- **Hard power cut (cord pulled with the Mac running, restored shortly after):** the Mac powered on
+  by itself (confirmed by the maintainer) and, after the unlock, Docker and the containers started.
+  **The database did not.** Postgres replayed its write-ahead log and then stopped with
+  `PANIC: replication checkpoint has wrong magic 0 instead of 307747550`: the small file
+  `pg_logical/replorigin_checkpoint` (written at a checkpoint a minute before the cut) was 8 bytes
+  of zeros, the size of a valid empty file with none of its content. The file's length reached the
+  disk and its data did not: a lost write below Postgres, in the Docker VM's disk on the external
+  drive. Ingest, analysis and the API were down for 97 minutes (21:52 to 23:29 UTC).
+- **Repair (with the maintainer's go-ahead):** a full copy of the 27 GB data directory first, to a
+  plain folder on the external drive and to the NAS (1,950 files, no differences by size and time);
+  then the zeroed file was renamed aside (`replorigin_checkpoint.bad`; it is safe to be absent, and
+  the system uses no logical replication). Postgres started in 15 s with no recovery error; every
+  table's row count was at or above the pre-cut baseline; after a clean stop, `pg_checksums`
+  verified 3,452,227 pages in 1,866 files with **0 bad checksums**; ingest then fetched 1,020,124
+  missed trades. **Not recoverable:** the tickers and orderbook rows of those 97 minutes (Kalshi keeps
+  no history for them; the gap log tracks trades only, see PLAN §13). **Not provable:** that no
+  other page was lost, because a checksum scan accepts a page that is entirely zeros, and that is
+  exactly how this file was lost.
+- **What it means.** An unplanned power loss can corrupt the database on this host (Docker Desktop's
+  disk image on an external drive; the cause below Postgres is a hypothesis, not a finding: the
+  VM's disk probably honours a flush without forcing the data to the medium). There was no backup
+  behind it. So: the NAS backup (10.11 and PLAN §8) is no longer optional, a UPS is the cheapest
+  protection against the event itself, and whether the database should stay in Docker on macOS is
+  an open design question for PLAN §8.1 and §12.
 
 Exit criteria: measured numbers recorded in PLAN §9 and PLAN §11, retention defaults retuned or
 explicitly confirmed, the open questions above closed, the Mac Studio running and healthy.
