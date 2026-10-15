@@ -28,6 +28,9 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
+from kalshi_core.fixedpoint import E6, PrecisionError
+from kalshi_core.fixedpoint import to_e2 as exact_e2
+from kalshi_core.fixedpoint import to_e6 as exact_e6
 from kalshi_core.models import ExchangeStatus
 from kalshi_core.portfolio import Balance, MarketPosition, Order
 from kalshi_core.ws_models import FillMsg, MarketPositionMsg, UserOrderMsg, WsMessage
@@ -45,7 +48,6 @@ from kalshiterm_client.trading_state import TradingState, utc_day
 
 log = logging.getLogger("kalshiterm_client.account")
 
-E6 = 1_000_000
 RECONNECTED = "reconnected"
 CHANNELS = ("fill", "user_orders", "market_positions")
 BALANCE_INTERVAL = 5.0
@@ -69,23 +71,25 @@ class AccountSocket(Protocol):
 
 
 def to_e6(value: Decimal | None, what: str = "amount") -> int:
-    """Dollars as integer millionths, refusing anything finer."""
+    """Dollars as integer millionths, refusing anything finer; a missing figure counts as zero.
+
+    The shared exact conversion with a label added to the error, which reaches the user."""
     if value is None:
         return 0
-    scaled = value * E6
-    if scaled != scaled.to_integral_value():
-        raise ValueError(f"{what} {value} has more than six decimal places")
-    return int(scaled)
+    try:
+        return exact_e6(value)
+    except PrecisionError as exc:
+        raise ValueError(f"{what} {value} has more than six decimal places") from exc
 
 
 def to_e2(value: Decimal | None, what: str = "count") -> int:
-    """Contracts as integer hundredths, refusing anything finer."""
+    """Contracts as integer hundredths, refusing anything finer; a missing figure counts as zero."""
     if value is None:
         return 0
-    scaled = value * 100
-    if scaled != scaled.to_integral_value():
-        raise ValueError(f"{what} {value} has more than two decimal places")
-    return int(scaled)
+    try:
+        return exact_e2(value)
+    except PrecisionError as exc:
+        raise ValueError(f"{what} {value} has more than two decimal places") from exc
 
 
 @dataclass

@@ -47,6 +47,7 @@ from typing import Any
 
 import asyncpg  # type: ignore[import-untyped]
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from kalshi_core.fixedpoint import E6
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -64,7 +65,6 @@ TICKER_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 MAX_FRAME = 64 * 1024
 SEND_TIMEOUT = 10.0
 WATCHLIST_REFRESH = 15.0
-ONE_DOLLAR_E6 = 1_000_000
 
 # (table, columns beyond the common ones); every table also has ingest_seq, ts, market_id
 TABLE_COLUMNS = {
@@ -182,7 +182,7 @@ def event_for(table: str, row: Any, ticker: str, replay: bool = False) -> dict[s
             "type": "trade",
             "trade_id": str(row.trade_id),
             "yes_price": fmt.dollars(row.yes_price_e6),
-            "no_price": fmt.dollars(ONE_DOLLAR_E6 - row.yes_price_e6),
+            "no_price": fmt.dollars(E6 - row.yes_price_e6),
             "count": fmt.count(row.count_e2),
             "taker_side": row.taker_side,
             "is_block_trade": row.is_block_trade,

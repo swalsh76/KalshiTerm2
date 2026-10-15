@@ -10,6 +10,8 @@ from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
+from kalshi_core.fixedpoint import E6
+
 AGG_FIELDS = (
     "created",
     "determined",
@@ -23,7 +25,7 @@ AGG_FIELDS = (
 _AGG_INDEX = {name: i for i, name in enumerate(AGG_FIELDS)}
 
 # Taker dollars at risk in a combo trade of this size or more are logged individually.
-LARGE_TRADE_E6 = 500 * 1_000_000
+LARGE_TRADE_E6 = 500 * E6
 
 UPSERT_STATS = """
 INSERT INTO combo_stats_1m
@@ -58,7 +60,7 @@ def notional_e6(count: Decimal, price_paid: Decimal) -> int:
     A derived statistic, not a stored fact: price (up to 6 decimals) times count (2 decimals)
     can have 8, so this rounds (half-even) instead of raising like the fixed-point converters.
     """
-    return int((count * price_paid * 1_000_000).quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
+    return int((count * price_paid * E6).quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
 
 
 class Aggregates:

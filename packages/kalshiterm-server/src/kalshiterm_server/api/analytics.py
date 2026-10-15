@@ -7,13 +7,13 @@ from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Query, Request
+from kalshi_core.fixedpoint import E6, PrecisionError, to_e6
 from sqlalchemy import text
 
 from kalshiterm_server.analytics.catalog import CATALOG
 from kalshiterm_server.api import format as fmt
 from kalshiterm_server.api.errors import ApiError
 from kalshiterm_server.api.markets import Reader
-from kalshiterm_server.fixedpoint import PrecisionError, to_e6
 
 router = APIRouter(prefix="/v1/analytics")
 Ticker = Annotated[str, Path(pattern=r"^[A-Za-z0-9._-]{1,128}$")]
@@ -222,10 +222,10 @@ async def arbitrage(
                 "size": fmt.dollars(e.get("size")),  # contracts
                 "fees": fmt.dollars(e.get("fees")),
                 "profit": fmt.dollars(e["profit"]),
-                "legs": None if "legs" not in e else e["legs"] // 1_000_000,
-                "legs_total": None if "legs_total" not in e else e["legs_total"] // 1_000_000,
+                "legs": None if "legs" not in e else e["legs"] // E6,
+                "legs_total": None if "legs_total" not in e else e["legs_total"] // E6,
                 "oldest_quote_age_seconds": (
-                    None if "oldest_quote_age" not in e else e["oldest_quote_age"] // 1_000_000
+                    None if "oldest_quote_age" not in e else e["oldest_quote_age"] // E6
                 ),
             }
             for event, e in complete[:limit]

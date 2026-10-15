@@ -15,10 +15,11 @@ Only the ``quadratic`` family is modelled. ``flat`` (a separate table) and the m
 type are not, and ``taker_multiplier`` returns None for them so callers skip rather than guess.
 """
 
+from kalshi_core.fixedpoint import E6
+
 QUADRATIC_FAMILY = frozenset(
     {"quadratic", "quadratic_with_maker_fees", "quadratic_with_combo_maker_fees"}
 )
-E6 = 1_000_000
 
 
 def taker_multiplier(fee_type: str | None, fee_multiplier_e6: int | None) -> int | None:

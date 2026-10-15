@@ -1,7 +1,7 @@
 from decimal import ROUND_CEILING, Decimal
 
 import pytest
-from kalshiterm_server.analytics.fees import round_up, taker_fee_e6, taker_multiplier
+from kalshi_core.fees import round_up, taker_fee_e6, taker_multiplier
 
 
 def test_kalshis_own_worked_example() -> None:

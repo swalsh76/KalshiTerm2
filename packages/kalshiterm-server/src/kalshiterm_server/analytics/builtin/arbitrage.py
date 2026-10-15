@@ -22,15 +22,13 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 
+from kalshi_core.fees import round_up, taker_fee_e6, taker_multiplier
+from kalshi_core.fixedpoint import E2_TO_E6, E6
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import text
 
 from kalshiterm_server.analytics.base import AnalysisContext, Result
-from kalshiterm_server.analytics.fees import round_up, taker_fee_e6, taker_multiplier
 from kalshiterm_server.analytics.universe import covered_since
-
-E2_TO_E6 = 10_000
-ONE_DOLLAR_E6 = 1_000_000
 
 
 class ArbitrageSettings(BaseSettings):
@@ -103,7 +101,7 @@ class ArbitrageBid:
                     {
                         "since": since,
                         "now": ctx.now,
-                        "threshold": ONE_DOLLAR_E6 + self.min_edge_e6,
+                        "threshold": E6 + self.min_edge_e6,
                     },
                 )
             ).all()
@@ -120,7 +118,7 @@ class ArbitrageBid:
         if multiplier is None:
             return []  # a fee schedule we do not model: say nothing rather than guess
         bid_sum = sum(leg.yes_bid_e6 for leg in legs)
-        edge = bid_sum - ONE_DOLLAR_E6
+        edge = bid_sum - E6
         if edge <= self.min_edge_e6:
             return []
         size_e2 = min(leg.yes_bid_size_e2 for leg in legs)
@@ -140,7 +138,7 @@ class ArbitrageBid:
             result("size", size_e2 * E2_TO_E6),
             result("fees", fees),
             result("profit", profit),
-            result("legs", len(legs) * 1_000_000),
-            result("legs_total", legs[0].legs_total * 1_000_000),
-            result("oldest_quote_age", round(oldest * 1_000_000)),
+            result("legs", len(legs) * E6),
+            result("legs_total", legs[0].legs_total * E6),
+            result("oldest_quote_age", round(oldest * E6)),
         ]

@@ -16,12 +16,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from kalshi_core.fixedpoint import PrecisionError
 from kalshi_core.models import Event, Market
 from kalshi_core.rest import KalshiRestClient
 from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from kalshiterm_server.fixedpoint import PrecisionError
 from kalshiterm_server.storage import reference, tables
 
 log = logging.getLogger("kalshiterm_server")

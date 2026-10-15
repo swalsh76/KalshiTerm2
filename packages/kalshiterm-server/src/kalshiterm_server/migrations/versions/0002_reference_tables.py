@@ -4,7 +4,7 @@ Revision ID: 0002
 Revises: 0001
 Create Date: 2026-10-07
 
-Numbers are bigint fixed-point (see kalshiterm_server.fixedpoint): ``*_e6`` = millionths.
+Numbers are bigint fixed-point (see kalshi_core.fixedpoint): ``*_e6`` = millionths.
 No foreign keys on purpose: discovery fetches series, events and markets independently, in any
 order, and a strict reference could block ingestion.
 """

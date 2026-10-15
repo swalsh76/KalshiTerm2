@@ -293,7 +293,7 @@ One Docker image, three service roles: `kterm-server ingest`, `kterm-server anal
 No `numeric`, no `float`, no `int4` in the schema. Two scales, carried in column names:
 dollar amounts and strike levels in millionths (`*_e6`, e.g. `price_e6`, `floor_strike_e6`),
 contract counts in hundredths (`*_e2`, e.g. `size_e2`, `volume_e2`). One Python module
-(`kalshiterm_server.fixedpoint`) converts at the edge and **raises** on any value finer than
+(`kalshi_core.fixedpoint`) converts at the edge and **raises** on any value finer than
 the scale — never rounds silently. SQL views expose readable decimals. Measured (2 M synthetic
 ticker rows, compressed): `bigint` 10⁻⁴/10⁻² = 11.7 B/row, with 10⁻⁶ dollars = 16.1 B/row,
 `numeric` 33.5, `float8` 54.0; declared integer width does not matter after compression, but

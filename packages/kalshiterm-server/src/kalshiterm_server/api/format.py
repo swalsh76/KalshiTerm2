@@ -10,7 +10,8 @@ import binascii
 from datetime import UTC, datetime
 from decimal import Decimal
 
-DOLLAR_SCALE = 1_000_000  # *_e6 columns
+from kalshi_core.fixedpoint import E6
+
 COUNT_SCALE = 100  # *_e2 columns
 
 
@@ -30,7 +31,7 @@ def _fixed(value: int | Decimal | None, scale: int, places: int) -> str | None:
 
 def dollars(e6: int | Decimal | None) -> str | None:
     """``560000`` -> ``"0.560000"``."""
-    return _fixed(e6, DOLLAR_SCALE, 6)
+    return _fixed(e6, E6, 6)
 
 
 def count(e2: int | Decimal | None) -> str | None:

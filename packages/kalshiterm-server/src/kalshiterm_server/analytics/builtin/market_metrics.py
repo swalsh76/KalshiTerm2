@@ -15,12 +15,11 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 
+from kalshi_core.fixedpoint import E2_TO_E6, E6
 from sqlalchemy import text
 
 from kalshiterm_server.analytics.base import AnalysisContext, Result
 from kalshiterm_server.analytics.universe import covered_since, watched_market_ids
-
-E2_TO_E6 = 10_000  # hundredths of a contract -> millionths
 
 
 class MarketQuotes:
@@ -70,9 +69,7 @@ class MarketQuotes:
                 Result("mid", (bid + ask + 1) // 2, market_id=m),  # rounded half up
                 Result("spread", ask - bid, market_id=m),
                 Result("spread_avg_15m", r.avg_spread_e6, market_id=m),
-                Result(
-                    "quote_age", round((ctx.now - r.ts).total_seconds() * 1_000_000), market_id=m
-                ),
+                Result("quote_age", round((ctx.now - r.ts).total_seconds() * E6), market_id=m),
             ]
             if r.yes_bid_size_e2 is not None:
                 out.append(Result("bid_size", r.yes_bid_size_e2 * E2_TO_E6, market_id=m))

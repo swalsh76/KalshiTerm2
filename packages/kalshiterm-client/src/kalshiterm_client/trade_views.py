@@ -8,6 +8,7 @@ Kalshi is wrapped in ``Text`` so it cannot change the display, times are UTC.
 from collections.abc import Sequence
 from decimal import Decimal
 
+from kalshi_core.fixedpoint import E6
 from kalshi_core.portfolio import Balance, Fill, MarketPosition, Order
 from kalshi_core.trading import AmendedOrder, CreatedOrder
 from rich.console import Group, RenderableType
@@ -173,7 +174,7 @@ def placement_lines(placement: Placement) -> list[str]:
     lines = []
     for t in placement.transfers:
         lines.append(
-            f"moved ${t.amount_e6 / 1_000_000:.4f} from shard {t.source} to shard {t.destination}"
+            f"moved ${t.amount_e6 / E6:.4f} from shard {t.source} to shard {t.destination}"
         )
     how = " (found by looking after an unclear answer)" if created.recovered else ""
     lines.append(f"order {created.order_id} placed{how}")
@@ -191,7 +192,7 @@ def amendment_lines(amendment: Amendment) -> list[str]:
     lines = []
     for t in amendment.transfers:
         lines.append(
-            f"moved ${t.amount_e6 / 1_000_000:.4f} from shard {t.source} to shard {t.destination}"
+            f"moved ${t.amount_e6 / E6:.4f} from shard {t.source} to shard {t.destination}"
         )
     lines.append(f"order {amendment.order_id} amended")
     lines.append(

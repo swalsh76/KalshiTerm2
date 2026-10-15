@@ -28,7 +28,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 
-from kalshi_core.fees import E6, round_up, taker_fee_e6
+from kalshi_core.fees import round_up, taker_fee_e6
+from kalshi_core.fixedpoint import E6
 
 CENTICENT_E6 = 100  # transfers are whole centicents ($0.0001)
 FEE_UNIT_E6 = 10_000  # fees are rounded up to a cent per order, the conservative alignment

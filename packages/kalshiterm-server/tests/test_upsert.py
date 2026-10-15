@@ -3,9 +3,9 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from kalshi_core.fixedpoint import PrecisionError
 from kalshi_core.models import Market
 from kalshiterm_server import db
-from kalshiterm_server.fixedpoint import PrecisionError
 from kalshiterm_server.storage import reference, tables
 from sqlalchemy import text
 

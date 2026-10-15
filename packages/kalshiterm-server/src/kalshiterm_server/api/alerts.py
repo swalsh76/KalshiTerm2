@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Query, Request
+from kalshi_core.fixedpoint import PrecisionError, to_e6
 from pydantic import BaseModel, ConfigDict, Field
 
 from kalshiterm_server import alerts
@@ -11,7 +12,6 @@ from kalshiterm_server.analytics.catalog import CATALOG
 from kalshiterm_server.api import format as fmt
 from kalshiterm_server.api.errors import ApiError
 from kalshiterm_server.api.markets import Reader
-from kalshiterm_server.fixedpoint import PrecisionError, to_e6
 
 router = APIRouter(prefix="/v1")
 Id = Annotated[int, Path(ge=1, le=2**62)]

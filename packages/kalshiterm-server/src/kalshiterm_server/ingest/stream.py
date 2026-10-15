@@ -28,6 +28,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from kalshi_core.fixedpoint import E6, PrecisionError, to_e2, to_e6
 from kalshi_core.models import Trade
 from kalshi_core.orderbook import (
     DELTA,
@@ -50,7 +51,6 @@ from kalshi_core.ws_models import (
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from kalshiterm_server.fixedpoint import PrecisionError, to_e2, to_e6
 from kalshiterm_server.ingest.combos import (
     LARGE_TRADE_COLUMNS,
     LARGE_TRADE_E6,
@@ -148,7 +148,7 @@ def trade_row(item: Item, market_id: int) -> tuple[Any, ...]:
     yes_price, count = to_e6(p.yes_price_dollars), to_e2(p.count_fp)
     assert yes_price is not None and count is not None
     no_price = to_e6(p.no_price_dollars)
-    if no_price is not None and yes_price + no_price != 1_000_000:
+    if no_price is not None and yes_price + no_price != E6:
         log.warning(
             "trade %s: yes %s + no %s != 1", p.trade_id, p.yes_price_dollars, p.no_price_dollars
         )

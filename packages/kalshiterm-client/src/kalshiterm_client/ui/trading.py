@@ -35,6 +35,7 @@ from typing import Any
 import httpx
 from kalshi_core.auth import AuthError
 from kalshi_core.config import KalshiSettings
+from kalshi_core.fixedpoint import E6
 from kalshi_core.rest import KalshiAPIError
 from kalshi_core.trading import TimeInForce, TradingRefused
 
@@ -55,7 +56,6 @@ from kalshiterm_client.ui import trading_models as tm
 
 log = logging.getLogger(__name__)
 
-E6 = 1_000_000
 PREPARE_TTL_SECONDS = 60
 WATCH_INTERVAL_SECONDS = 5.0
 ACCOUNT_PUSH_SECONDS = 0.5

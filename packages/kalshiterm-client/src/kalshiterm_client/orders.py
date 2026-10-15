@@ -25,6 +25,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
 from kalshi_core.fees import QUADRATIC_FAMILY, taker_multiplier
+from kalshi_core.fixedpoint import E6
 from kalshi_core.models import Event, Market, Series
 from kalshi_core.portfolio import Order
 from kalshi_core.rest import KalshiAPIError
@@ -55,7 +56,6 @@ from kalshiterm_client.risk import (
 
 log = logging.getLogger("kalshiterm_client.orders")
 
-E6 = 1_000_000
 TRADABLE_STATUSES = frozenset({"active", "open"})
 KILL_PASSES = 10
 FUNDING_POLLS = 20
@@ -208,10 +208,11 @@ def multiplier_e6(series: Series) -> int | None:
     if series.fee_type not in QUADRATIC_FAMILY or series.fee_multiplier is None:
         return None
     number = Decimal(repr(series.fee_multiplier))  # the JSON number as written
-    scaled = number * E6
-    if scaled != scaled.to_integral_value():
+    try:
+        scaled = to_e6(number, "fee multiplier")
+    except ValueError:  # finer than a millionth: not a multiplier we can model exactly
         return None
-    return taker_multiplier(series.fee_type, int(scaled))
+    return taker_multiplier(series.fee_type, scaled)
 
 
 def intent_from(request: OrderRequest, market: MarketInfo) -> OrderIntent:
