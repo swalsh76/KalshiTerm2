@@ -8,14 +8,52 @@ field these models do not cover, which is how the two are kept in step.
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# What a decimal string looks like, as published in the API's JSON schema: an optional sign and
+# digits with at most one point, never just a sign or a point.
+DECIMAL_PATTERN = r"^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$"
+
+
+def _holds_decimal(annotation: Any) -> bool:
+    """Decimal itself, or a union or container that includes it (``Decimal | None``)."""
+    return annotation is Decimal or any(_holds_decimal(a) for a in get_args(annotation))
+
+
+def _add_pattern(node: Any) -> None:
+    """Put the pattern on the string schemas in ``node``: a string, or any of a union, a list or a
+    tuple of them."""
+    if not isinstance(node, dict):
+        return
+    if node.get("type") == "string" and "format" not in node:
+        node.setdefault("pattern", DECIMAL_PATTERN)
+    for branch in (*node.get("anyOf", ()), *node.get("prefixItems", ())):
+        _add_pattern(branch)
+    _add_pattern(node.get("items"))
+
+
+def document_decimals(schema: dict[str, Any], model: type[BaseModel]) -> None:
+    """Say in the JSON schema that every ``Decimal`` field is a numeric string.
+
+    pydantic 2.13 added this pattern to every Decimal field by itself; 2.14 no longer does. The
+    published API contract (and the types generated from it) says money fields are numeric
+    strings, so the models keep saying it. It adds nothing that is already there.
+    """
+    for name, field in model.model_fields.items():
+        if _holds_decimal(field.annotation):
+            _add_pattern(schema.get("properties", {}).get(field.alias or name))
+
 
 class ApiModel(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+    model_config = ConfigDict(
+        frozen=True,
+        extra="ignore",
+        populate_by_name=True,
+        json_schema_extra=document_decimals,
+    )
 
 
 # ---------------------------------------------------------------- who you are, how it is

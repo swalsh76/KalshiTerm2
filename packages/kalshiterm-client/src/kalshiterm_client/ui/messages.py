@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kalshiterm_client.models import document_decimals
 from kalshiterm_client.stream_events import AlertEvent, TickerEvent, TradeEvent
 
 Channel = Literal["ticker", "trades", "book"]
@@ -17,7 +18,7 @@ TickerSymbol = Annotated[str, Field(pattern=r"^[A-Za-z0-9._-]{1,128}$")]
 
 
 class _Out(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=document_decimals)
 
 
 # ---------------------------------------------------------------- browser -> backend
