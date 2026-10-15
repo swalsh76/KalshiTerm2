@@ -254,6 +254,162 @@ def _count(value_e2: int) -> str:
     return f"{value_e2 / 100:g}"
 
 
+def _snapshot_refusals(
+    snapshot: AccountSnapshot, policy: RiskPolicy, now: datetime
+) -> list[Refusal]:
+    """Is the picture of the account fresh and trustworthy enough to check limits against?"""
+    out: list[Refusal] = []
+    if snapshot.halted:
+        out.append(
+            Refusal(
+                Code.HALTED,
+                "trading is halted by the kill switch; no new orders until it is cleared",
+            )
+        )
+    age = now - snapshot.as_of
+    if age > timedelta(seconds=policy.snapshot_max_age_seconds) or age < -FUTURE_TOLERANCE:
+        out.append(
+            Refusal(
+                Code.STALE_SNAPSHOT,
+                f"the account snapshot is {age.total_seconds():.0f}s old "
+                f"(limit {policy.snapshot_max_age_seconds}s)",
+            )
+        )
+    if not snapshot.stream_ok:
+        out.append(
+            Refusal(
+                Code.STREAM_DOWN, "the private account stream is down, so positions may be stale"
+            )
+        )
+    return out
+
+
+def _shard_refusals(
+    snapshot: AccountSnapshot, intent: OrderIntent
+) -> tuple[ShardState | None, list[Refusal]]:
+    """The shard the order would trade on (None if unknown), and why it cannot be used, if so."""
+    shard = snapshot.shards.get(intent.exchange_index)
+    if shard is None:
+        message = f"exchange shard {intent.exchange_index} is not in the snapshot"
+        return None, [Refusal(Code.UNKNOWN_SHARD, message)]
+    if not shard.trading_active:
+        message = f"trading is not active on exchange shard {shard.index}"
+        return shard, [Refusal(Code.SHARD_NOT_TRADING, message)]
+    return shard, []
+
+
+def _size_refusals(intent: OrderIntent, cost: int | None, policy: RiskPolicy) -> list[Refusal]:
+    """The per-order limits: contract count and worst-case cost."""
+    out: list[Refusal] = []
+    if intent.count_e2 > policy.max_order_count_e2:
+        out.append(
+            Refusal(
+                Code.ORDER_TOO_LARGE,
+                f"{_count(intent.count_e2)} contracts exceeds the limit of "
+                f"{_count(policy.max_order_count_e2)} per order",
+            )
+        )
+    if cost is not None and cost > policy.max_order_notional_e6:
+        out.append(
+            Refusal(
+                Code.NOTIONAL_TOO_LARGE,
+                f"worst-case cost {_dollars(cost)} exceeds the per-order limit "
+                f"of {_dollars(policy.max_order_notional_e6)}",
+            )
+        )
+    return out
+
+
+def _position_refusals(
+    intent: OrderIntent, market: MarketState, policy: RiskPolicy
+) -> list[Refusal]:
+    """The per-market position limit, counting resting orders as if they had filled."""
+    if intent.adds_yes:
+        worst = market.position_e2 + market.resting_yes_e2 + intent.count_e2
+        side = "YES"
+    else:
+        worst = -market.position_e2 + market.resting_no_e2 + intent.count_e2
+        side = "NO"
+    if worst > policy.max_position_e2:
+        return [
+            Refusal(
+                Code.POSITION_LIMIT,
+                f"{intent.ticker}: this could leave {_count(worst)} {side} contracts "
+                f"(limit {_count(policy.max_position_e2)} per market)",
+            )
+        ]
+    return []
+
+
+def _capacity_refusals(
+    snapshot: AccountSnapshot, cost: int | None, policy: RiskPolicy
+) -> list[Refusal]:
+    """The account-wide limits: how many orders are open and how much money is at risk."""
+    out: list[Refusal] = []
+    if snapshot.open_orders + 1 > policy.max_open_orders:
+        out.append(
+            Refusal(
+                Code.TOO_MANY_ORDERS,
+                f"{snapshot.open_orders} orders are already open (limit {policy.max_open_orders})",
+            )
+        )
+    if cost is not None and snapshot.exposure_e6 + cost > policy.max_open_exposure_e6:
+        out.append(
+            Refusal(
+                Code.EXPOSURE_LIMIT,
+                f"exposure would reach {_dollars(snapshot.exposure_e6 + cost)} "
+                f"(limit {_dollars(policy.max_open_exposure_e6)})",
+            )
+        )
+    return out
+
+
+def _daily_loss_refusal(snapshot: AccountSnapshot, policy: RiskPolicy) -> Refusal | None:
+    """The daily loss limit; reaching it is also what makes the kill switch fire."""
+    if snapshot.realized_pnl_today_e6 <= -policy.max_daily_loss_e6:
+        return Refusal(
+            Code.DAILY_LOSS,
+            f"today's realized loss {_dollars(-snapshot.realized_pnl_today_e6)} has reached the "
+            f"daily limit of {_dollars(policy.max_daily_loss_e6)}",
+        )
+    return None
+
+
+def _funding(
+    snapshot: AccountSnapshot, shard: ShardState | None, cost: int | None, policy: RiskPolicy
+) -> tuple[tuple[Transfer, ...], list[Refusal]]:
+    """The transfers that put ``cost`` on the order's shard, or why the account cannot."""
+    if cost is None or shard is None or not shard.trading_active:
+        return (), []  # nothing to fund; the reason is already a refusal
+    planned = plan_funding(snapshot, shard.index, cost - shard.balance_e6)
+    if planned is None:
+        free = sum(s.balance_e6 for s in snapshot.shards.values())
+        if cost > free:
+            why = f"the account has only {_dollars(free)} in total, {_dollars(cost - free)} short"
+        else:
+            why = "the other shards' funds cannot be moved right now"
+        message = (
+            f"the order needs {_dollars(cost)} on shard {shard.index}, which has "
+            f"{_dollars(shard.balance_e6)}; {why}"
+        )
+        return (), [Refusal(Code.INSUFFICIENT_FUNDS, message)]
+    moved = sum(t.amount_e6 for t in planned)
+    if moved > policy.max_transfer_per_order_e6:
+        message = (
+            f"funding the shard needs a {_dollars(moved)} transfer "
+            f"(limit {_dollars(policy.max_transfer_per_order_e6)} per order)"
+        )
+        return planned, [Refusal(Code.TRANSFER_LIMIT, message)]
+    if snapshot.transferred_today_e6 + moved > policy.max_transfer_per_day_e6:
+        message = (
+            "funding the shard would move "
+            f"{_dollars(snapshot.transferred_today_e6 + moved)} today "
+            f"(limit {_dollars(policy.max_transfer_per_day_e6)})"
+        )
+        return planned, [Refusal(Code.TRANSFER_LIMIT, message)]
+    return planned, []
+
+
 def check(
     intent: OrderIntent,
     snapshot: AccountSnapshot | None,
@@ -262,136 +418,60 @@ def check(
     now: datetime,
     production: bool,
 ) -> Verdict:
+    """Decide whether ``intent`` may be sent. The only way to obtain an ``ApprovedOrder``.
+
+    Every rule runs, in the fixed order below, so the operator sees all the reasons at once
+    instead of fixing them one at a time. Only a missing snapshot stops early: nothing is known
+    about the account, so only the production switch and the fee are checked. The verdict
+    carries the worst-case cost, the funding transfers that would be needed, and ``trip_kill``
+    when the daily loss limit has been reached (the caller then fires the kill switch).
+
+    Order: production switch, fee, snapshot, shard, per-order size, per-market position,
+    account capacity, daily loss, funding.
+    """
     refusals: list[Refusal] = []
-
-    def refuse(code: Code, message: str) -> None:
-        refusals.append(Refusal(code, message))
-
     if production and not policy.production_enabled:
-        refuse(
-            Code.PRODUCTION_DISABLED,
-            "trading on the production account is switched off "
-            "(production_enabled = false in risk.toml)",
+        refusals.append(
+            Refusal(
+                Code.PRODUCTION_DISABLED,
+                "trading on the production account is switched off "
+                "(production_enabled = false in risk.toml)",
+            )
         )
 
     fee = worst_case_fee_e6(intent)
     if fee is None:
-        refuse(
-            Code.UNKNOWN_FEE, f"{intent.ticker}: the fee cannot be modelled, so the cost is unknown"
+        refusals.append(
+            Refusal(
+                Code.UNKNOWN_FEE,
+                f"{intent.ticker}: the fee cannot be modelled, so the cost is unknown",
+            )
         )
 
     if snapshot is None:
-        refuse(Code.NO_SNAPSHOT, "no account snapshot yet, so limits cannot be checked")
+        refusals.append(
+            Refusal(Code.NO_SNAPSHOT, "no account snapshot yet, so limits cannot be checked")
+        )
         return _refused(refusals, fee)
 
-    if snapshot.halted:
-        refuse(
-            Code.HALTED, "trading is halted by the kill switch; no new orders until it is cleared"
-        )
-
-    age = now - snapshot.as_of
-    if age > timedelta(seconds=policy.snapshot_max_age_seconds) or age < -FUTURE_TOLERANCE:
-        refuse(
-            Code.STALE_SNAPSHOT,
-            f"the account snapshot is {age.total_seconds():.0f}s old "
-            f"(limit {policy.snapshot_max_age_seconds}s)",
-        )
-    if not snapshot.stream_ok:
-        refuse(Code.STREAM_DOWN, "the private account stream is down, so positions may be stale")
-
-    shard = snapshot.shards.get(intent.exchange_index)
-    if shard is None:
-        refuse(Code.UNKNOWN_SHARD, f"exchange shard {intent.exchange_index} is not in the snapshot")
-    elif not shard.trading_active:
-        refuse(Code.SHARD_NOT_TRADING, f"trading is not active on exchange shard {shard.index}")
+    refusals += _snapshot_refusals(snapshot, policy, now)
+    shard, shard_refusals = _shard_refusals(snapshot, intent)
+    refusals += shard_refusals
 
     market = snapshot.markets.get(intent.ticker, MarketState())
-    cost: int | None = None
-    if fee is not None:
-        cost = collateral_e6(intent, market.position_e2) + fee
+    cost = None if fee is None else collateral_e6(intent, market.position_e2) + fee
 
-    if intent.count_e2 > policy.max_order_count_e2:
-        refuse(
-            Code.ORDER_TOO_LARGE,
-            f"{_count(intent.count_e2)} contracts exceeds the limit of "
-            f"{_count(policy.max_order_count_e2)} per order",
-        )
-    if cost is not None and cost > policy.max_order_notional_e6:
-        refuse(
-            Code.NOTIONAL_TOO_LARGE,
-            f"worst-case cost {_dollars(cost)} exceeds the per-order limit "
-            f"of {_dollars(policy.max_order_notional_e6)}",
-        )
-
-    if intent.adds_yes:
-        worst = market.position_e2 + market.resting_yes_e2 + intent.count_e2
-        side = "YES"
-    else:
-        worst = -market.position_e2 + market.resting_no_e2 + intent.count_e2
-        side = "NO"
-    if worst > policy.max_position_e2:
-        refuse(
-            Code.POSITION_LIMIT,
-            f"{intent.ticker}: this could leave {_count(worst)} {side} contracts "
-            f"(limit {_count(policy.max_position_e2)} per market)",
-        )
-
-    if snapshot.open_orders + 1 > policy.max_open_orders:
-        refuse(
-            Code.TOO_MANY_ORDERS,
-            f"{snapshot.open_orders} orders are already open (limit {policy.max_open_orders})",
-        )
-    if cost is not None and snapshot.exposure_e6 + cost > policy.max_open_exposure_e6:
-        refuse(
-            Code.EXPOSURE_LIMIT,
-            f"exposure would reach {_dollars(snapshot.exposure_e6 + cost)} "
-            f"(limit {_dollars(policy.max_open_exposure_e6)})",
-        )
-
-    trip = snapshot.realized_pnl_today_e6 <= -policy.max_daily_loss_e6
-    if trip:
-        refuse(
-            Code.DAILY_LOSS,
-            f"today's realized loss {_dollars(-snapshot.realized_pnl_today_e6)} has reached the "
-            f"daily limit of {_dollars(policy.max_daily_loss_e6)}",
-        )
-
-    funding: tuple[Transfer, ...] = ()
-    if cost is not None and shard is not None and shard.trading_active:
-        need = cost - shard.balance_e6
-        planned = plan_funding(snapshot, shard.index, need)
-        if planned is None:
-            free = sum(s.balance_e6 for s in snapshot.shards.values())
-            if cost > free:
-                why = (
-                    f"the account has only {_dollars(free)} in total, {_dollars(cost - free)} short"
-                )
-            else:
-                why = "the other shards' funds cannot be moved right now"
-            refuse(
-                Code.INSUFFICIENT_FUNDS,
-                f"the order needs {_dollars(cost)} on shard {shard.index}, which has "
-                f"{_dollars(shard.balance_e6)}; {why}",
-            )
-        else:
-            funding = planned
-            moved = sum(t.amount_e6 for t in funding)
-            if moved > policy.max_transfer_per_order_e6:
-                refuse(
-                    Code.TRANSFER_LIMIT,
-                    f"funding the shard needs a {_dollars(moved)} transfer "
-                    f"(limit {_dollars(policy.max_transfer_per_order_e6)} per order)",
-                )
-            elif snapshot.transferred_today_e6 + moved > policy.max_transfer_per_day_e6:
-                refuse(
-                    Code.TRANSFER_LIMIT,
-                    "funding the shard would move "
-                    f"{_dollars(snapshot.transferred_today_e6 + moved)} today "
-                    f"(limit {_dollars(policy.max_transfer_per_day_e6)})",
-                )
+    refusals += _size_refusals(intent, cost, policy)
+    refusals += _position_refusals(intent, market, policy)
+    refusals += _capacity_refusals(snapshot, cost, policy)
+    loss = _daily_loss_refusal(snapshot, policy)
+    if loss is not None:
+        refusals.append(loss)
+    funding, funding_refusals = _funding(snapshot, shard, cost, policy)
+    refusals += funding_refusals
 
     if refusals:
-        return Verdict(None, tuple(refusals), fee, cost, (), trip_kill=trip)
+        return Verdict(None, tuple(refusals), fee, cost, (), trip_kill=loss is not None)
     assert fee is not None and cost is not None
     approved = ApprovedOrder(intent, fee, cost, funding, production, now, _MINT)
     return Verdict(approved, (), fee, cost, funding)
