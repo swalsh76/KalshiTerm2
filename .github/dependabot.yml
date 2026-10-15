@@ -22,6 +22,12 @@ updates:
     groups:
       frontend-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # typescript-eslint accepts typescript >=4.8.4 <6.1.0 and openapi-typescript only ^5.x, so
+      # Dependabot's jump to TypeScript 7 cannot resolve and made the whole npm run fail
+      # (2026-10-15). Revisit when both support a newer TypeScript.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: uv # the Python workspace (uv.lock)
     directory: /
