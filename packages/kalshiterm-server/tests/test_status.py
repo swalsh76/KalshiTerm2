@@ -9,7 +9,7 @@ from kalshiterm_server import db
 from kalshiterm_server.cli import app
 from kalshiterm_server.status import collect_status, quick_health, render, unhealthy_jobs
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from typer.testing import CliRunner
 
 pytestmark = pytest.mark.db
@@ -59,6 +59,23 @@ async def healthy(engine: AsyncEngine) -> None:
         )
 
 
+async def age_trades(conn: AsyncConnection, interval: str) -> None:
+    """Make every stored trade `interval` old (for example '20 minutes').
+
+    Not an UPDATE of ts: Timescale does not move a row into another chunk, and trades are
+    chunked by UTC day, so in the first minutes after midnight (UTC) an UPDATE that crosses the
+    boundary fails with a check-constraint violation. An INSERT is routed to the right chunk.
+    """
+    await conn.execute(text("delete from trades"))
+    await conn.execute(
+        text(
+            "insert into trades (ts, received_at, market_id, trade_id, yes_price_e6, count_e2) "
+            f"select now() - interval '{interval}', now(), id, :t, 500000, 100 from markets"
+        ),
+        {"t": uuid.uuid4()},
+    )
+
+
 async def test_a_fresh_empty_server_reports_what_is_missing_without_failing(
     engine: AsyncEngine, tmp_path: Path
 ) -> None:
@@ -96,7 +113,7 @@ async def test_a_healthy_server_has_no_problems_and_prints_one_reassuring_line(
 async def test_stale_data_is_called_out(engine: AsyncEngine, tmp_path: Path) -> None:
     await healthy(engine)
     async with engine.begin() as conn:
-        await conn.execute(text("update trades set ts = now() - interval '10 minutes'"))
+        await age_trades(conn, "10 minutes")
     report = await collect_status(engine, 100, str(tmp_path))
     assert any("newest trades row is" in p for p in report["problems"])
     assert not any("tickers" in p for p in report["problems"])
@@ -188,7 +205,7 @@ async def test_the_quick_health_check_names_what_is_wrong(engine: AsyncEngine) -
     assert "no trades stored in the last 5 minutes" in empty
     await healthy(engine)
     async with engine.begin() as conn:
-        await conn.execute(text("update trades set ts = now() - interval '20 minutes'"))
+        await age_trades(conn, "20 minutes")
         await conn.execute(text("update alembic_version set version_num = '0001'"))
     problems = await quick_health(engine)
     assert any("revision 0001" in p for p in problems)
@@ -285,3 +302,15 @@ async def test_a_recent_backup_is_fine_and_an_old_one_is_a_problem_with_the_reas
     assert any("last good backup was 2d ago" in p for p in stale["problems"])
     assert any("the NAS dropped off the network" in p for p in stale["problems"])
     assert "last failure" in render(stale)
+
+
+async def test_trades_can_be_aged_across_a_day_boundary_whatever_the_time(
+    engine: AsyncEngine,
+) -> None:
+    # Three days is always another chunk. The old UPDATE-based ageing failed this way for real
+    # whenever the tests ran in the first 10-20 minutes after midnight UTC (CI, 2026-10-14).
+    await healthy(engine)
+    async with engine.begin() as conn:
+        await age_trades(conn, "3 days")
+    problems = await quick_health(engine)
+    assert any("no trades" in p for p in problems) and not any("tickers" in p for p in problems)
