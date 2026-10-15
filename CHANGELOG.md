@@ -6,6 +6,12 @@ design and the slice-by-slice detail are in [docs/PLAN.md](docs/PLAN.md).
 
 ## Unreleased
 
+### Dependency updates (2026-10-15)
+- **Changed:** pydantic 2.14, pydantic-core 2.50, platformdirs 4.13 and ruff (Dependabot's first
+  grouped Python update). pydantic 2.14 stopped putting the numeric pattern on `Decimal` fields in
+  the JSON schema, so the models now say it themselves (`document_decimals`): the published API
+  schema and the types generated from it are byte-for-byte unchanged.
+
 ### Cleanup C2: before Phase 7 (2026-10-15)
 - **Fixed:** on a clean clone `kterm ui` showed a page saying the front end was not built, without
   saying how. The page and the README now name the one-time build command (Node 22), until Phase 8
