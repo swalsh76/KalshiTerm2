@@ -15,6 +15,7 @@ points into PLAN.md.
 - [10.7 Phase 6 slices (client trading)](#107-phase-6-slices-client-trading)
 - [10.8 Phase 7 slices (terminal UI)](#108-phase-7-slices-terminal-ui)
 - [10.9 Cleanup C1: reuse and maintainability (decided 2026-10-14, by the user)](#109-cleanup-c1-reuse-and-maintainability-decided-2026-10-14-by-the-user)
+- [10.10 Cleanup C2: first run, reproducible builds, CI hygiene, recovery-path tests (decided 2026-10-15, by the user)](#1010-cleanup-c2-first-run-reproducible-builds-ci-hygiene-recovery-path-tests-decided-2026-10-15-by-the-user)
 
 ## 10.1 Phase 2 slices
 
@@ -1286,3 +1287,22 @@ Out of scope on purpose (reviewed and rejected): blanket docstring coverage, del
 tests, splitting large test files, a docstring lint rule. Reviewed and left alone because they only
 share a name: the two `money()` functions (a `Decimal` with a dash for "missing" vs integer
 millionths) and the two `aware()` functions (the client UI raises HTTP 400, the server its own 422).
+
+## 10.10 Cleanup C2: first run, reproducible builds, CI hygiene, recovery-path tests (decided 2026-10-15, by the user)
+
+A second review, made before starting Phase 7, looked at what the first one did not: a clean
+clone, supply-chain and CI hygiene, a secrets sweep of the public repository, dead code and the
+coverage of the money-handling code. The sweep found no secrets in the tree or the history, no dead
+code and no stale skipped tests; four things were worth fixing. Same rules as C1: no behaviour
+changes beyond what each step says, no test deleted or weakened, one commit per step.
+
+| Step | Finding | Work |
+|---|---|---|
+| C2.1 | `kterm ui` on a clean clone serves only a placeholder, because the front end is built by `npm run build` into the git-ignored `ui_assets/` and the only place that runs it is a CI check. The placeholder says "not built yet" without saying how, and the README's `kterm ui` line implied it just works | The README says to build the front end once (Node 22) and why; the placeholder page names the command. Phase 8 (packaging) will bundle the build into the client wheel and make this unnecessary |
+| C2.2 | The server image copies `uv:latest`, and the Mac Studio rebuilds on every deploy, so a new uv release can change or break the build | Pin the uv image to the version in use (0.12.23, checked to exist). Python dependencies were already pinned by `uv.lock` and `--frozen` |
+| C2.3 | CI warns on every run that `checkout@v4`, `setup-uv@v5` and `setup-node@v4` run on a deprecated Node, and nothing keeps them current | Move to checkout v7, setup-node v7 and setup-uv v10.3.0 (setup-uv publishes no moving major tag, so the exact version is pinned), and add a Dependabot file for the actions, the Docker image, npm and uv, monthly and capped at three open pull requests so a solo maintainer is not buried |
+| C2.4 | The 25 lines the tests never reach in the money code are the recovery paths: the write client's retry after a transport error, a 429 and an ambiguous status, the kill switch's retry and error reporting, and the cancel error cases. Phase 7 puts a browser order ticket on the same service | Focused tests for exactly those branches, written to the code's documented contract (never to what a line happens to do). Measured before and after with branch coverage |
+
+Reviewed and left alone: ten functions with complexity of 13 to 17 (none worse; moderate, and not
+on the Phase 7 path); the repository settings that are off today (GitHub private vulnerability
+reporting, secret scanning and push protection), which are the maintainer's decision and not code.
