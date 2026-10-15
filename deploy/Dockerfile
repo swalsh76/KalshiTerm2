@@ -11,7 +11,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends postgresql-client-18 \
  && apt-get purge -y curl gnupg && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Pinned: the server is rebuilt on every deploy, and a new uv release must not change that build
+# (the Python dependencies are already fixed by uv.lock and --frozen). Bump it on purpose.
+COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /usr/local/bin/uv
 WORKDIR /app
 COPY pyproject.toml uv.lock LICENSE ./
 COPY packages/kalshi-core packages/kalshi-core
