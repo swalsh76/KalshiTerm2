@@ -1,13 +1,50 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Announces the server on the LAN (mDNS, _kterm._tcp) with its certificate fingerprint, from boot,
-  as a LaunchDaemon. Optional: clients can always be given the address by hand.
-  Install on the Mac Studio (replace the placeholders, then):
-    sed -e 's|__DEPLOY_DIR__|/path/to/KalshiTerm2/deploy|' -e 's|__PORT__|8700|' \
-        host/com.kalshiterm.advertise.plist.template | sudo tee /Library/LaunchDaemons/com.kalshiterm.advertise.plist
+  LAN announcement: a LaunchDaemon that publishes the server over mDNS (_kterm._tcp) together
+  with its certificate fingerprint, from boot, with no login needed. It is restarted if it dies.
+
+  OPTIONAL. Clients can always be given the address by hand (kterm config add NAME with the
+  server's URL). The announcement only lets "kterm server discover" find the server and
+  cross-check the fingerprint. It is never a trust anchor: the fingerprint printed by
+  "kterm-server cert show" on the server is the authority.
+
+  WHY it runs on the host: the server is in a container behind Docker's VM and cannot announce
+  itself on the LAN. The certificate is re-read every minute, so "cert rotate" is re-announced
+  without a restart.
+
+  BEFORE YOU START (on the Mac Studio):
+    1. "init" has run, so deploy/secrets/tls_cert.pem exists. Without it the job exits and
+       launchd keeps retrying.
+    2. The port is the API port, 8700 unless you changed it.
+    3. Use absolute paths. launchd does not expand ~ or $HOME.
+
+  INSTALL (copy and paste):
+    cd /Users/YOU/KalshiTerm2/deploy
+    DEPLOY_DIR="$PWD"; PORT=8700
+    sed -e "s|__DEPLOY_DIR__|$DEPLOY_DIR|g" -e "s|__PORT__|$PORT|g" \
+        host/com.kalshiterm.advertise.plist.template \
+      | sudo tee /Library/LaunchDaemons/com.kalshiterm.advertise.plist >/dev/null
     sudo chown root:wheel /Library/LaunchDaemons/com.kalshiterm.advertise.plist
+    sudo chmod 644 /Library/LaunchDaemons/com.kalshiterm.advertise.plist
     sudo launchctl bootstrap system /Library/LaunchDaemons/com.kalshiterm.advertise.plist
+
+  VERIFY:
+    On the Studio:  sudo launchctl print system/com.kalshiterm.advertise
+      shows the job as running. (advertise.sh has a dry-run option, described in its header.)
+    On the laptop:  uv run kterm server discover
+      lists the server and its fingerprint (give it a few seconds).
+
+  TROUBLESHOOTING:
+    "Bootstrap failed: 5: Input/output error": it is already loaded, or the file is not
+      root:wheel with mode 644. Run the bootout line below, fix the file, bootstrap again.
+    Not found from the laptop: the laptop and the Studio must be on the same LAN segment (mDNS
+      does not cross routers or most VPNs). Adding the server by address always works.
+    After editing the file: bootout, then bootstrap again.
+
+  REMOVE:
+    sudo launchctl bootout system/com.kalshiterm.advertise
+    sudo rm /Library/LaunchDaemons/com.kalshiterm.advertise.plist
 -->
 <plist version="1.0">
 <dict>
