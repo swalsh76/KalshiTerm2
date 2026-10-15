@@ -15,6 +15,7 @@ from kalshi_core.trading import (
     WriteOutcomeUnknown,
 )
 from kalshiterm_client.orders import (
+    KILL_PASSES,
     FundingShort,
     OrderNotFound,
     OrderRefused,
@@ -588,6 +589,68 @@ async def test_kill_reports_orders_that_will_not_cancel(tmp_path: Path) -> None:
         await service._tracker.stop()
 
 
+async def test_kill_forgets_a_listing_error_once_later_looks_are_clean(tmp_path: Path) -> None:
+    rest = FakeRest()
+    service, _, trading, _ = await build(tmp_path, rest=rest)
+    real, looks = rest.iter_orders, []
+
+    async def flaky(**params: Any) -> Any:
+        looks.append(params)
+        if len(looks) == 1:
+            raise TimeoutError("listing down")
+        async for o in real(**params):
+            yield o
+
+    rest.iter_orders = flaky  # type: ignore[method-assign]
+    try:
+        report = await service.kill()
+        assert len(looks) == 3  # the failed look, then two empty ones a second apart
+        assert report.clean and report.errors == []  # the later clean looks settle it
+    finally:
+        await service._tracker.stop()
+
+
+async def test_kill_is_never_clean_when_it_cannot_see_the_orders(tmp_path: Path) -> None:
+    rest = FakeRest()
+    service, _, trading, _ = await build(tmp_path, rest=rest)
+    looks: list[int] = []
+
+    async def down(**params: Any) -> Any:
+        looks.append(1)
+        raise TimeoutError("listing down")
+        yield  # pragma: no cover  (makes this an async generator)
+
+    rest.iter_orders = down  # type: ignore[method-assign]
+    try:
+        report = await service.kill()
+        assert len(looks) == KILL_PASSES  # it keeps trying, then stops
+        assert not report.clean and report.cancelled == []
+        assert sum("listing orders" in e for e in report.errors) == KILL_PASSES
+    finally:
+        await service._tracker.stop()
+
+
+async def test_kill_names_what_still_rests_when_the_batch_cancel_keeps_failing(
+    tmp_path: Path,
+) -> None:
+    rest = FakeRest()
+    rest.orders = resting("stuck-1", "stuck-2")
+    service, _, trading, _ = await build(tmp_path, rest=rest)
+    try:
+        trading.cancel_all_clears = False
+
+        async def broken(targets: list[CancelTarget]) -> list[CancelledOrder]:
+            raise RuntimeError("no route")
+
+        trading.cancel_orders = broken  # type: ignore[method-assign]
+        report = await service.kill()
+        assert not report.clean
+        assert report.remaining == ["stuck-1", "stuck-2"] and report.cancelled == []
+        assert sum(e.startswith("cancel: RuntimeError") for e in report.errors) == KILL_PASSES
+    finally:
+        await service._tracker.stop()
+
+
 # --- the loss guard ---------------------------------------------------------------------------
 
 
@@ -814,6 +877,23 @@ async def test_cancel_by_ids_uses_kalshis_record_and_one_failure_does_not_stop_t
         CancelTarget("o-1", 0, "KXT-1"),
         CancelTarget("o-2", 0, "KXA-1"),
     ]
+
+
+async def test_cancel_by_ids_reports_an_unknown_outcome_and_carries_on(tmp_path: Path) -> None:
+    rest = FakeRest()
+    rest.orders = [order("o-1", "KXT-1"), order("o-2", "KXA-1")]
+    trading = FakeTrading(rest, TradingState(tmp_path / "s.json"))
+    real = trading.cancel_order
+
+    async def unsure(target: CancelTarget) -> CancelledOrder:
+        if target.order_id == "o-1":
+            raise WriteOutcomeUnknown("cancel_order", "o-1")
+        return await real(target)
+
+    trading.cancel_order = unsure  # type: ignore[method-assign]
+    outcomes = await cancel_by_ids(rest, trading, ["o-1", "o-2"])
+    assert [(o.order_id, o.ok) for o in outcomes] == [("o-1", False), ("o-2", True)]
+    assert outcomes[0].message == "no clear answer; look at `kterm orders`"
 
 
 # --- cancelling everything without halting; the typed order phrase -------------------------------
