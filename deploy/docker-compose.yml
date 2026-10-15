@@ -151,7 +151,7 @@ services:
     stop_grace_period: 20s
     logging: *logging
 
-  # Nightly backup of the database to a directory on another machine (PLAN §10.4). Enabled by
+  # Nightly backup of the database to a directory on another machine (BUILD-LOG §10.4). Enabled by
   # COMPOSE_PROFILES=backup, which `kterm-server init --backup-dir` writes into .env. It has no
   # route to the internet and holds only the database password.
   backup:

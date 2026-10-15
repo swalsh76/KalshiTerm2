@@ -81,7 +81,7 @@ You need separate API keys, created in your Kalshi account:
 
 The client reads its `KALSHI_*` settings from the environment or a `.env` file (`KALSHI_ENV`,
 `KALSHI_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH`, `KALSHI_TRADING_KEY_ID`, ...). The trading key must
-differ from the data key, and the trading code refuses to run otherwise. PLAN §10.7 describes what each
+differ from the data key, and the trading code refuses to run otherwise. BUILD-LOG §10.7 describes what each
 key does.
 
 ## Try it
@@ -196,7 +196,8 @@ packages/kalshi-core/         the Kalshi SDK
 packages/kalshiterm-server/   ingestion, storage, analytics, the API; the `kterm-server` command
 packages/kalshiterm-client/   the `kterm` command, the web UI backend and frontend/ (React)
 deploy/                       Compose files, the Dockerfile, and host/ (installer, LaunchDaemon templates)
-docs/PLAN.md                  the design, the decisions and the build history
+docs/PLAN.md                  the design and the decisions
+docs/BUILD-LOG.md             how each slice was built and verified
 ```
 
 ## Development
@@ -220,7 +221,8 @@ objects and local fakes rather than mocks; `-m db` selects only the database tes
 
 ## Documentation
 
-- [docs/PLAN.md](docs/PLAN.md): the design, the decisions and the build history.
+- [docs/PLAN.md](docs/PLAN.md): the design and the decisions.
+- [docs/BUILD-LOG.md](docs/BUILD-LOG.md): how each slice was built and verified, with the measurements.
 - [CHANGELOG.md](CHANGELOG.md): what was built, by phase.
 - [SECURITY.md](SECURITY.md): reporting a vulnerability, and what the design relies on.
 - [CLAUDE.md](CLAUDE.md): the working rules for AI-assisted changes in this repository.

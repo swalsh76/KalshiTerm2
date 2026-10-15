@@ -219,7 +219,7 @@ SELECT n, setval('ingest_seq', n + $1 - 1) FROM first
 """
 # Advance the committed watermark and wake listeners, inside the batch's own transaction: both
 # take effect at commit, together with the rows, so a reader that trusts ``last_seq`` never
-# skips a row that is not yet visible (PLAN §10.3, slice 3.7). Single writer: the sequence's
+# skips a row that is not yet visible (BUILD-LOG §10.3, slice 3.7). Single writer: the sequence's
 # last value is this batch's highest.
 PUBLISH = """
 UPDATE ingest_progress SET last_seq = coalesce(pg_sequence_last_value('ingest_seq'::regclass), 0),

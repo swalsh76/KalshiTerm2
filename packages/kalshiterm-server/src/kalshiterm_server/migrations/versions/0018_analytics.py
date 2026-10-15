@@ -4,7 +4,7 @@ Revision ID: 0018
 Revises: 0017
 Create Date: 2026-10-10
 
-``analysis_results`` is one narrow table for every analyzer (decision in PLAN §10.5): a metric
+``analysis_results`` is one narrow table for every analyzer (decision in BUILD-LOG §10.5): a metric
 name, a subject (a market id or an event ticker) and ``value_e6``, a ``bigint`` in millionths,
 so ratios such as volatility are stored as scaled integers and nothing numeric lives in JSON
 (decision 14). It is a hypertable, compressed after 1 day and dropped after 30 days; the

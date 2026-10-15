@@ -1,4 +1,4 @@
-"""JSON representation of stored values (PLAN §10.3).
+"""JSON representation of stored values (BUILD-LOG §10.3).
 
 Prices and counts leave the server as decimal **strings**, built from the stored integers with
 no floating point anywhere, so a client reading them gets exactly what was stored. Timestamps

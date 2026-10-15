@@ -15,7 +15,8 @@ design and the slice-by-slice detail are in [docs/PLAN.md](docs/PLAN.md).
   command definitions are ordinary functions; `risk.check` is one function per rule group.
 - **Changed:** `kterm-server init` reports a key path that is a directory, or missing, with an
   explanation and exit code 1 (it was the bare option error, exit code 2).
-- Documentation: docstrings on the large undocumented functions; a real README quickstart.
+- Documentation: docstrings on the large undocumented functions; a real README quickstart; PLAN.md
+  now holds the design and `docs/BUILD-LOG.md` the build history (section numbers 10.1 to 10.9 kept).
 - Tests: the pinning tests skip the LAN-announcement wait (42 s to 11 s for that file); the
   websocket tests use one generous hang guard so a slow CI runner cannot fail healthy tests; a
   time-of-day flake in two status tests is fixed.

@@ -1,4 +1,4 @@
-"""deploy/host/install.sh: the host-side stand-up (PLAN.md section 10.2, slice 2.11).
+"""deploy/host/install.sh: the host-side stand-up (BUILD-LOG.md section 10.2, slice 2.11).
 
 The script drives macOS launchd, so these tests only run it in its read-only `check` mode and in
 `--dry-run`, which prints the plists and the commands and changes nothing. On macOS the script is

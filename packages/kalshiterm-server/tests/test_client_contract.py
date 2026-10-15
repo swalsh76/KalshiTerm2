@@ -1,6 +1,6 @@
 """The client library against the real server: the real app, a real database, real TLS with the
 certificate pinned. If the server grows or renames a field these fail, which is the point
-(PLAN §10.6: the client does not import the server, so this is what keeps them in step)."""
+(BUILD-LOG §10.6: the client does not import the server, so this is what keeps them in step)."""
 
 import asyncio
 from collections.abc import AsyncIterator, Iterator

@@ -1,4 +1,4 @@
-"""The server's JSON as typed objects (PLAN §10.6).
+"""The server's JSON as typed objects (BUILD-LOG §10.6).
 
 Prices, sizes and counts arrive as decimal strings and become ``Decimal`` here, exactly: nothing
 in this package turns a market value into a ``float``. Unknown fields are ignored so a newer server

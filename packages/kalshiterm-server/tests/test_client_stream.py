@@ -1,7 +1,7 @@
 """StreamClient against the real server, over real TLS, through a proxy that breaks the link.
 
 The point of these tests: while rows keep being committed, the connection is cut again and again,
-and every committed event still reaches the caller exactly once, in order (PLAN §10.6)."""
+and every committed event still reaches the caller exactly once, in order (BUILD-LOG §10.6)."""
 
 import asyncio
 from collections.abc import Callable, Iterator

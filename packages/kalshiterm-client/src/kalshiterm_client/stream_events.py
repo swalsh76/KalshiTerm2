@@ -1,4 +1,4 @@
-"""What comes out of a live stream (PLAN §10.6): market data, alerts, and a few control events.
+"""What comes out of a live stream (BUILD-LOG §10.6): market data, alerts, and a few control events.
 
 Data events carry the server's ``cursor`` (an integer here). Orderbook events marked ``replay``
 are the book state sent when you subscribe, not part of the live sequence, so they have none.

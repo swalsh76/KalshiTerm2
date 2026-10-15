@@ -144,7 +144,7 @@ def restore_command(
         True, help="Create the database (else it must exist and be empty)."
     ),
 ) -> None:
-    """Restore a backup into a new database; never touches the live one. See PLAN §10.4."""
+    """Restore a backup into a new database; never touches the live one. See BUILD-LOG §10.4."""
     settings = server_settings()
 
     def restore() -> dict[str, object]:
