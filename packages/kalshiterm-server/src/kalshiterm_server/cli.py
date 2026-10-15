@@ -152,6 +152,18 @@ def ingest_command(
             raise typer.BadParameter(str(exc), param_hint="--watchlist") from exc
 
     async def run() -> None:
+        """Run the ingest service until it is stopped: stream market data into the database.
+
+        It subscribes the websocket to tickers, trades and market lifecycle events. With --watch or
+        --watchlist it also keeps orderbooks for the watched markets (the watchlist controller adds
+        the markets; the feed starts with none). Alongside the ingestor it runs, as background
+        tasks, the gap backfiller (trades missed while it was down, up to --max-backfill-hours), the
+        storage governor, discovery when --discover-every is set, the watchlist controller and a
+        statistics printer. They share one REST client, so one rate limit covers them all.
+
+        It stops after --seconds if given. SIGTERM or Ctrl-C lets the ingestor flush its buffered
+        rows first, so `docker stop` does not lose data.
+        """
         cancel_on_sigterm()  # `docker stop` must drain buffered rows, not kill us mid-flush
         settings = KalshiSettings()
         signer = KalshiSigner.from_settings(settings)

@@ -128,6 +128,13 @@ class MarketMoves:
     )
 
     async def run(self, ctx: AnalysisContext) -> Sequence[Result]:
+        """Compute the move metrics for every watched market from the stored tickers.
+
+        Per market: the latest price (``last``) and, for each look-back window, the price change and
+        (except for the 15-minute window) the volume traded in it, all in millionths. A window is
+        skipped when recording was interrupted inside it (``covered_since``), because the comparison
+        would mislead. Returns nothing when no market is watched.
+        """
         ids = await watched_market_ids(ctx.engine)
         if not ids:
             return []

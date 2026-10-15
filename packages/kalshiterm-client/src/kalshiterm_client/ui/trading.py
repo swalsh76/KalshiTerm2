@@ -214,6 +214,16 @@ class TradingSession:
         )
 
     async def enable(self, phrase: str) -> tm.ModeInfo:
+        """Switch trading on, if the typed phrase is right and nothing blocks it.
+
+        Already on returns the current state. Otherwise it refuses, with a code the page can show,
+        when the risk or state file is damaged, when ``risk.toml`` does not permit production
+        trading (this page cannot change that file), when the phrase is wrong, or when the trading
+        key is missing or Kalshi cannot be reached. On success it opens the trading runtime, starts
+        the daily-loss guard and the idle and disconnect watcher that will switch trading off again,
+        and announces the new mode to the browser. A lock serializes it, so two clicks cannot open
+        trading twice.
+        """
         async with self._switch_lock:
             if self._runtime is not None:
                 return self.info()
