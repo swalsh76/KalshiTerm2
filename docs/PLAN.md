@@ -840,8 +840,11 @@ matched.
 
 - One `backup` Compose service (profile `backup`, switched on by `kterm-server init
   --backup-dir <host path of the mounted NAS directory>`) runs `backup loop`: daily at
-  `KTERM_BACKUP_AT` (default 07:00 UTC), and after a failure retries every
-  `KTERM_BACKUP_RETRY_MINUTES` (30) until it works. The image carries PostgreSQL 18 client tools
+  `KTERM_BACKUP_AT` (default 07:00 UTC). If there is no good backup from the last 24 hours at
+  start-up (the container was down at 07:00, or it is the first run) it backs up at once. After a
+  failure it waits `KTERM_BACKUP_RETRY_MINUTES` (30) and then **exits**, so that Docker restarts it
+  with a fresh view of the share: a retry inside the same process cannot repair a stale mount of the
+  NAS (see BUILD-LOG §10.11), and the start-up rule retries immediately. The image carries PostgreSQL 18 client tools
   from PGDG (Debian's are 17, which cannot dump an 18 server); CI checks this.
 - The dump is taken under an exported snapshot (`pg_export_snapshot`), so the file and its
   manifest (per-table row counts, compressed chunks, jobs, aggregates, revision, `last_seq`,

@@ -1393,3 +1393,30 @@ accepted trade-off (the stack already waits for that unlock). The log is
 Out of scope here, for the backup work that follows: the backup container must fail loudly when the
 share is missing (the same bind-mount trap as the key file: Docker creates an empty directory for a
 missing host path), and a NAS account limited to the one share is better than a personal login.
+
+**Deployed on the Mac Studio, 2026-10-15.**
+- **Set up:** the three settings `init --backup-dir` writes (`COMPOSE_PROFILES=backup`,
+  `KTERM_BACKUP_DIR=/Volumes/kdb/kterm-backups`, `KTERM_BACKUP_TARGET=/backup`) were added to `.env` by
+  hand, because `init` must not be re-run; the marker file was created with `backup init-target`. The
+  first start needed macOS's one-time **Network Volumes** permission for Docker (a dialog on the
+  Studio's screen); until it is granted, bind-mounting a folder from the NAS hangs.
+- **First backup:** `kterm-20261015-235818.dump`, 3,030 MB, 306 s, for a 28.5 GB database; checksum and
+  listing verified.
+- **Restore proof, without touching the live database:** the dump was restored with the project's own
+  `restore` command into a throwaway Postgres container on the internal network (5 min 40 s; 23 GB).
+  Every row count, the jobs, the aggregates and the revision matched the manifest; live ingest was
+  unaffected throughout (tickers 792 rows/s, ages about 1 s). One difference was reported,
+  `compressed_chunks: dump had 0, restore has 6`: the restored database's compression policy ran as
+  soon as the restore ended, after the one-day mark (the live database had last run it before
+  midnight and had 0 of 25 chunks compressed). The comparison now treats more compressed chunks as
+  expected and fewer as a difference.
+- **Found, then fixed:** after the NAS was dropped and put back by the mount keeper, the host saw the
+  share again but the running backup container saw `Bad file descriptor` for good. The loop now
+  backs up at start-up when there is no good backup from the last 24 hours, and after a failure waits
+  the retry interval and exits so Docker restarts it with a fresh mount (PLAN §9.5). Not tested live:
+  the exit-and-restart path on the Studio itself (it is covered by the unit tests, which fail fast
+  if the loop retries in-process); the scheduled 07:00 UTC run had not yet happened when this was
+  written.
+- **Still true:** a backup is the database only (not `.env`, `secrets/`, `config/`); the recovery
+  point is up to a day; 11 retained dumps of about 3 GB use about 33 GB of the NAS's 4.8 TB free, and
+  grow with the database.
