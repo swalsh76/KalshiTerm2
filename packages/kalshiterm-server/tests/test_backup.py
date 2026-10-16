@@ -14,6 +14,7 @@ from kalshiterm_server import db
 from kalshiterm_server.backup import (
     MARKER,
     BackupError,
+    BackupNeedsRestart,
     Conn,
     PgTools,
     backup_loop,
@@ -346,37 +347,84 @@ async def test_the_dump_listing_shows_sizes_and_manifests(
     assert entry["manifest"]["tables"]["markets"] == 25
 
 
-async def test_the_schedule_waits_for_the_time_of_day_retries_failures_and_goes_on(
-    migrated_db_url: str, engine: AsyncEngine, tools: ContainerTools, target: Path
-) -> None:
-    await seed(engine)
-    clock = {"now": datetime(2026, 10, 9, 5, 0, tzinfo=UTC)}
+def loop_clock(hour: int = 5) -> tuple[dict[str, datetime], list[float], Any]:
+    clock = {"now": datetime(2026, 10, 9, hour, 0, tzinfo=UTC)}
     slept: list[float] = []
-    attempts = {"n": 0}
-    real_dump = tools.dump
-
-    def flaky(conn: Conn, snapshot: str, out: Path) -> None:
-        attempts["n"] += 1
-        if attempts["n"] == 1:
-            raise BackupError("the NAS dropped off the network")
-        real_dump(conn, snapshot, out)
-
-    tools.dump = flaky  # type: ignore[method-assign]
 
     async def sleep(seconds: float) -> None:
         slept.append(seconds)
+        assert len(slept) <= 5, "the loop is spinning (retrying in-process instead of ending)"
         clock["now"] += timedelta(seconds=seconds)
 
+    return clock, slept, sleep
+
+
+async def run_loop(
+    url: str, engine: AsyncEngine, tools: ContainerTools, target: Path, clock: Any, sleep: Any
+) -> None:
     await backup_loop(
-        engine, tools, migrated_db_url, target, at="07:00", keep_daily=7, keep_weekly=4,
+        engine, tools, url, target, at="07:00", keep_daily=7, keep_weekly=4,
         retry_minutes=30, sleep=sleep, now=lambda: clock["now"], iterations=1,
     )  # fmt: skip
-    assert slept == [2 * 3600, 30 * 60]  # until 07:00, then 30 minutes after the failure
-    assert attempts["n"] == 2 and len(list_backups(target)) == 1
+
+
+async def test_the_first_run_backs_up_at_once_without_waiting_for_the_time_of_day(
+    migrated_db_url: str, engine: AsyncEngine, tools: ContainerTools, target: Path
+) -> None:
+    await seed(engine)
+    clock, slept, sleep = loop_clock()
+    await run_loop(migrated_db_url, engine, tools, target, clock, sleep)
+    assert slept == [] and len(list_backups(target)) == 1  # nothing to wait for: none exists yet
+
+
+async def test_with_a_recent_good_backup_the_loop_waits_for_the_time_of_day(
+    migrated_db_url: str, engine: AsyncEngine, tools: ContainerTools, target: Path
+) -> None:
+    await seed(engine)
+    await run_backup(engine, tools, migrated_db_url, target)  # a good one, just now
+    clock, slept, sleep = loop_clock()
+    await run_loop(migrated_db_url, engine, tools, target, clock, sleep)
+    assert slept == [2 * 3600]  # until 07:00
+    assert len(list_backups(target)) == 2
+
+
+async def test_after_a_day_without_a_good_backup_the_loop_catches_up_at_start(
+    migrated_db_url: str, engine: AsyncEngine, tools: ContainerTools, target: Path
+) -> None:
+    # the container was down at 07:00 (a reboot, an outage): do not wait another day
+    await seed(engine)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO backup_runs (started_at, finished_at, status) "
+                "VALUES (now() - interval '3 days', now() - interval '3 days', 'ok')"
+            )
+        )
+    clock, slept, sleep = loop_clock()
+    await run_loop(migrated_db_url, engine, tools, target, clock, sleep)
+    assert slept == [] and len(list_backups(target)) == 1
+
+
+async def test_a_failed_backup_ends_the_process_after_the_retry_wait_so_docker_restarts_it(
+    migrated_db_url: str, engine: AsyncEngine, tools: ContainerTools, target: Path
+) -> None:
+    # a retry in the same process cannot fix a stale mount of the share, a restart does
+    await seed(engine)
+    attempts = {"n": 0}
+
+    def broken(conn: Conn, snapshot: str, out: Path) -> None:
+        attempts["n"] += 1
+        raise BackupError("the NAS dropped off the network")
+
+    tools.dump = broken  # type: ignore[method-assign]
+    clock, slept, sleep = loop_clock()
+    with pytest.raises(BackupNeedsRestart, match="the NAS dropped off the network"):
+        await run_loop(migrated_db_url, engine, tools, target, clock, sleep)
+    assert attempts["n"] == 1 and slept == [30 * 60]  # one try, the wait, then it gives up
     statuses = [
         r[0] for r in await _rows(migrated_db_url, "select status from backup_runs order by id")
     ]
-    assert statuses == ["failed", "ok"]
+    assert statuses == ["failed"] and list_backups(target) == []
 
 
 async def _rows(url: str, sql: str) -> list[tuple[Any, ...]]:

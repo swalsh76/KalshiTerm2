@@ -6,6 +6,15 @@ design and the slice-by-slice detail are in [docs/PLAN.md](docs/PLAN.md).
 
 ## Unreleased
 
+### Nightly backups to the NAS are live (2026-10-15)
+- **Changed:** the backup loop backs up at start-up when there is no good backup from the last 24
+  hours, and after a failure exits so Docker restarts it with a fresh view of the share (a retry in
+  the same process could not repair a stale mount of the NAS).
+- **Fixed:** a restore no longer reports a difference when the restored database has compressed more
+  chunks than the dump had (its compression policy runs the moment the restore ends).
+- First real backup and an isolated restore test on the Mac Studio: 3 GB dump, restored and matched
+  in under six minutes.
+
 ### Host: the NAS share stays mounted (2026-10-15)
 - **Added:** `deploy/host/keep-mounted.sh` and a launchd LaunchAgent template that keep an SMB share
   mounted at login and every minute: nothing when it answers, a forced unmount and remount when it

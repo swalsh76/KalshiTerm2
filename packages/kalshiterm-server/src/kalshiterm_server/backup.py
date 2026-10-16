@@ -46,6 +46,11 @@ class BackupError(Exception):
     """Something the operator must fix; the message says what."""
 
 
+class BackupNeedsRestart(BackupError):
+    """The last backup failed: the process should exit so Docker restarts it with a fresh view of
+    the share (a retry inside the same process cannot repair a stale mount)."""
+
+
 # ---------------------------------------------------------------- the tools
 
 
@@ -500,6 +505,20 @@ async def _last_size(engine: AsyncEngine) -> int:
     return int(found or 0)
 
 
+async def _hours_since_last_ok(engine: AsyncEngine) -> float | None:
+    """Hours since the last good backup finished (by the database's clock), or None if never."""
+    async with engine.connect() as conn:
+        seconds = (
+            await conn.execute(
+                text(
+                    "SELECT EXTRACT(EPOCH FROM (now() - max(finished_at))) "
+                    "FROM backup_runs WHERE status = 'ok'"
+                )
+            )
+        ).scalar_one_or_none()
+    return None if seconds is None else float(seconds) / 3600
+
+
 # ---------------------------------------------------------------- the schedule
 
 
@@ -520,34 +539,50 @@ async def backup_loop(
     keep_daily: int,
     keep_weekly: int,
     retry_minutes: float = 30,
+    catch_up_after_hours: float = 24,
     sleep: Callable[[float], Any] = asyncio.sleep,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     iterations: int | None = None,
 ) -> None:
-    """Back up daily at ``at`` (UTC); after a failure keep retrying until it works."""
+    """Back up daily at ``at`` (UTC). Two rules keep it honest across outages:
+
+    * **Catch up at start.** If there is no good backup from the last ``catch_up_after_hours``
+      (the container was down at the scheduled time, or this is the first run), back up at once
+      instead of waiting for the next ``at``.
+    * **Restart after a failure.** Wait ``retry_minutes``, then raise ``BackupNeedsRestart`` so
+      the process exits and Docker restarts it (``restart: unless-stopped``). A retry inside the
+      same process cannot repair a stale bind mount of the share: after the NAS was remounted the
+      container saw ``Bad file descriptor`` for good (found on the Mac Studio, 2026-10-15). The
+      restart gets a fresh mount, and the catch-up rule retries immediately.
+    """
     done = 0
+    age = await _hours_since_last_ok(engine)
+    catch_up = age is None or age > catch_up_after_hours
     while iterations is None or done < iterations:
-        wait = (next_run(now(), at) - now()).total_seconds()
-        await sleep(max(0.0, wait))
-        while True:
-            try:
-                result = await run_backup(
-                    engine,
-                    tools,
-                    db_url,
-                    target,
-                    keep_daily=keep_daily,
-                    keep_weekly=keep_weekly,
-                    now=now,
-                )
-                log.info(
-                    "backup ok: %s (%d MB, %.0f s)",
-                    result.path.name,
-                    result.size // 2**20,
-                    result.seconds,
-                )
-                break
-            except Exception:
-                log.exception("BACKUP FAILED; retrying in %.0f minutes", retry_minutes)
-                await sleep(retry_minutes * 60)
+        if catch_up:
+            log.info("no good backup in the last %.0f hours: backing up now", catch_up_after_hours)
+            catch_up = False
+        else:
+            wait = (next_run(now(), at) - now()).total_seconds()
+            await sleep(max(0.0, wait))
+        try:
+            result = await run_backup(
+                engine,
+                tools,
+                db_url,
+                target,
+                keep_daily=keep_daily,
+                keep_weekly=keep_weekly,
+                now=now,
+            )
+        except Exception as exc:
+            log.exception("BACKUP FAILED; restarting in %.0f minutes", retry_minutes)
+            await sleep(retry_minutes * 60)
+            raise BackupNeedsRestart(f"the backup failed ({type(exc).__name__}: {exc})") from exc
+        log.info(
+            "backup ok: %s (%d MB, %.0f s)",
+            result.path.name,
+            result.size // 2**20,
+            result.seconds,
+        )
         done += 1
