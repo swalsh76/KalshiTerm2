@@ -1435,3 +1435,37 @@ missing host path), and a NAS account limited to the one share is better than a 
 - **Still true:** a backup is the database only (not `.env`, `secrets/`, `config/`); the recovery
   point is up to a day; 11 retained dumps of about 3 GB use about 33 GB of the NAS's 4.8 TB free, and
   grow with the database.
+
+## 10.12 Teardown of the Mac Studio deployment (decided 2026-10-16, by the user)
+
+The server was removed from the Mac Studio and the development tooling from the laptop. Nothing in the
+repository changed; the code, `main` and the Postgres line remain the reference. PLAN §12 decision 15
+is still open, and a Windows-native alternative is proposed in `docs/windows/` (merged as a proposal only).
+
+- **Last facts recorded before the removal.** The scheduled 07:00 UTC backup ran by itself:
+  `kterm-20261016-070000.dump`, 4,157 MB, finished within about 7 minutes (the first dump was 3,030 MB),
+  so the nightly schedule is proven once. Never tested live: the exit-and-restart path after a failed
+  backup, and whether the live database's compressed-chunk count rose from 0 to about 6. At removal the
+  database volume measured 50.96 GB (Docker's figure, including write-ahead log).
+- **Studio, removed:** the five containers, the networks, the database volume, both images, the three
+  launchd jobs (`hostcheck`, `advertise`, `keepmounted`) and the keep-mounted log, the repo with its
+  `deploy/.env`, `secrets/`, `config/` and `state/`, both copies of the server key, and the two dumps
+  and the marker file on the NAS (the user chose to delete the history). **Kept, by choice:** Docker
+  Desktop (stopped; its 3.1 GB data folder is still on the external SSD), the ssh keys and
+  no-password ssh, the sleep and auto-restart settings, the Docker PATH lines in the shell files, and
+  the NAS mount. The privacy grants (Full Disk Access, Removable and Network Volumes) can only be
+  removed by hand in System Settings.
+- **Laptop, removed:** the repo's `.venv` and `node_modules`, the uv and pre-commit caches, uv with its
+  managed Python 3.12, the Homebrew `node@22` and `python@3.14`, Homebrew `postgresql@16` with its data
+  directory (an unrelated 156 MB database that was there before this project, deleted at the user's
+  instruction), Docker Desktop with its data, the client profile, pinned certificate, risk limits and
+  trading state, the client's keychain token, and the Docker lines in `~/.zprofile`. **Kept:** the repo,
+  and `~/.kalshiterm` with the two Kalshi key files (they stay valid at Kalshi until revoked there).
+- **What the removal taught.** (1) Deleted files on the NAS stayed as `.smbdelete*` placeholders because
+  Docker Desktop's virtual machine held them open; stopping Docker Desktop released them. (2) Removing
+  the LaunchDaemons needs `sudo`, so over ssh it needs `ssh -t` and the user at the keyboard, and the
+  command must be typed after the login prompt appears (pasted lines are consumed before it). (3)
+  `launchctl bootout gui/...` does nothing from an ssh session; a LaunchAgent that is not loaded in the
+  console session is simply gone once its plist is removed. (4) `brew uninstall --cask docker-desktop`
+  also needs a real terminal for `sudo`; macOS keeps one protected, empty container folder behind.
+  (5) Look at a path before deleting it: a Homebrew Postgres on the laptop turned out not to be ours.
