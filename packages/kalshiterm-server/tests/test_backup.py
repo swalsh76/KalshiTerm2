@@ -173,6 +173,27 @@ async def test_a_restore_reproduces_the_database_including_compression_jobs_and_
     assert await scalar(restored, "select nextval('ingest_seq')") >= 1
 
 
+async def test_a_restore_may_have_more_compressed_chunks_than_the_dump_but_not_fewer(
+    migrated_db_url: str,
+    engine: AsyncEngine,
+    tools: ContainerTools,
+    target: Path,
+    restored_name: str,
+) -> None:
+    # The compression policy runs in the restored database as soon as the restore ends, so a
+    # restore that finishes after the policy's age threshold has legitimately compressed more.
+    await seed(engine)
+    result = await run_backup(engine, tools, migrated_db_url, target)
+    manifest = await restore_backup(tools, migrated_db_url, result.path, restored_name)
+    assert manifest["compressed_chunks"] >= 1
+    fewer_in_the_dump = {**manifest, "compressed_chunks": manifest["compressed_chunks"] - 1}
+    assert await compare_restored(migrated_db_url, restored_name, fewer_in_the_dump) == []
+    more_in_the_dump = {**manifest, "compressed_chunks": manifest["compressed_chunks"] + 1}
+    problems = await compare_restored(migrated_db_url, restored_name, more_in_the_dump)
+    assert len(problems) == 1 and problems[0].startswith("compressed_chunks:")
+    assert "only" in problems[0]
+
+
 async def test_the_restore_matches_the_moment_of_the_backup_not_the_live_database(
     migrated_db_url: str,
     engine: AsyncEngine,
