@@ -431,17 +431,18 @@ async def compare_restored(db_url: str, database: str, manifest: dict[str, Any])
         for table, n in now["tables"].items()
         if n != manifest["tables"][table]
     ]
-    for key in (
-        "revision",
-        "hypertables",
-        "chunks",
-        "compressed_chunks",
-        "jobs",
-        "aggregates",
-        "last_seq",
-    ):
+    for key in ("revision", "hypertables", "chunks", "jobs", "aggregates", "last_seq"):
         if now[key] != manifest[key]:
             problems.append(f"{key}: dump had {manifest[key]}, restore has {now[key]}")
+    # TimescaleDB's background jobs start the moment the restore ends, and the compression policy
+    # compresses whatever has just crossed its age threshold (a restore that finishes after the
+    # one-day mark does exactly that). So the restore may have MORE compressed chunks than the
+    # dump, and that is not a difference; FEWER would be one.
+    if now["compressed_chunks"] < manifest["compressed_chunks"]:
+        problems.append(
+            f"compressed_chunks: dump had {manifest['compressed_chunks']}, "
+            f"restore has only {now['compressed_chunks']}"
+        )
     return problems
 
 
