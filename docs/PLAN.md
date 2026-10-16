@@ -909,6 +909,9 @@ so "BUILD-LOG §10.6" is BUILD-LOG section 10.6 there.
   held zeros (a lost write below Postgres, in the Docker VM's disk image on the external drive). It was
   repaired by hand with no loss of what had been stored, but the tickers and orderbook rows of the
   outage (97 minutes) are gone for good and the repair could not prove that no other page was lost.
+  **Measured (BUILD-LOG §10.2):** a durable 8 KB write takes 2.6 ms on that drive, but a sync inside
+  the container takes 0.1 ms, 27 times faster than the drive can commit: inside Docker on macOS,
+  "safely on disk" stops at the drive's cache. Where the database runs is therefore an open decision (§12).
   A graceful reboot is safe. **Mitigations, in order of value:** the nightly NAS backup (§8, BUILD-LOG
   §10.11) so that a bad day costs at most a day; a UPS so that a power failure is a shutdown, not a
   crash; and a decision on whether Postgres should run in Docker on macOS at all (§8.1 and §12 are
@@ -977,6 +980,7 @@ so "BUILD-LOG §10.6" is BUILD-LOG section 10.6 there.
 | 5b | Package names | Names as in §3 | **Decided** — keep as-is; no PyPI |
 | 6 | Distribution | — | **Decided** — git repo (made **public** 2026-10-08, which also makes CI free on standard runners), no PyPI; client native on Windows/macOS, server in Docker |
 | — | Server host runs Docker | Required | **Decided** |
+| 15 | Where the database runs, given that a sync inside Docker on macOS does not reach the flash (§11, BUILD-LOG §10.2) | Not chosen. **A** keep it and reduce the damage (UPS, nightly NAS backup, more frequent backups); **B** keep Docker on the Mac with a runtime or setting that really flushes (untested; the 3-minute measurement in BUILD-LOG §10.2 is the test); **C** Postgres directly on the Mac with `wal_sync_method = fsync_writethrough` (breaks "Docker only"); **D** the database, or the whole server, on a Linux host (keeps Docker). Interim: A, which is also needed under B, C and D | **[OPEN]** |
 | — | Server disk budget | **500 GB** on a dedicated 1 TB external Thunderbolt 4 SSD attached to the Mac Studio (decided 2026-10-08; was 100 GB internal); backups on NAS | **Decided** |
 | 8 | Key types | Ed25519 only; RSA-PSS not supported | **Decided** |
 | 7 | Multivariate (combo) markets | Keep: ingest and store them (decided 2026-10-06; they dominate the live trade stream) | **Decided** |

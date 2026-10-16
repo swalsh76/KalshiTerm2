@@ -142,9 +142,24 @@ before the drive is mounted).
   no history for them; the gap log tracks trades only, see PLAN §13). **Not provable:** that no
   other page was lost, because a checksum scan accepts a page that is entirely zeros, and that is
   exactly how this file was lost.
+- **Measurement the same evening (the experiment the 2026-10-09 note left undone):** an 8 KB
+  write followed by a sync, repeated for 3 s, on the Studio. Native macOS, external drive: plain
+  `fsync()` 26,106 /s (38 us), `F_FULLFSYNC` (the sync that reaches the flash) **387 /s (2,586 us)**;
+  internal disk: 54,952 /s and 250 /s (4.0 ms). Inside a container, on a new volume in the Docker VM's
+  disk (the production database's storage path), `pg_test_fsync -s 3`: `fdatasync` 10,432 /s (96 us),
+  `open_datasync` 11,130 /s (90 us), `fsync` 6,637 /s (151 us). So a sync inside the container
+  completes about **27 times faster than the drive can physically commit**, at roughly the rate of a
+  plain `fsync` plus VM overhead: the VM's "safely on disk" stops at the drive's cache, where a power
+  cut loses it, in no guaranteed order. This fits the symptom (a file whose length was saved and
+  whose contents were not) and the 2026-10-09 observation (0.6 ms commits against a 4.4 ms full
+  flush). It is a measurement of the effect, not proof of which layer is responsible. To repeat it:
+  `docker volume create t; docker run --rm -v t:/t --entrypoint pg_test_fsync <the db image> -s 3 -f
+  /t/f`, and a loop of `os.pwrite` plus `os.fsync` against `fcntl.F_FULLFSYNC` on the host. It also
+  gives a way to test any other runtime before trusting it. A durable commit costs about 2.6 ms
+  here, so about 390 serialized commits/s on this drive, far above what the batched ingest needs.
 - **What it means.** An unplanned power loss can corrupt the database on this host (Docker Desktop's
-  disk image on an external drive; the cause below Postgres is a hypothesis, not a finding: the
-  VM's disk probably honours a flush without forcing the data to the medium). There was no backup
+  disk image on an external drive; the layer below Postgres is not identified, but the measurement above
+  shows the VM's disk acknowledges a flush without forcing the data to the medium). There was no backup
   behind it. So: the NAS backup (10.11 and PLAN §8) is no longer optional, a UPS is the cheapest
   protection against the event itself, and whether the database should stay in Docker on macOS is
   an open design question for PLAN §8.1 and §12.

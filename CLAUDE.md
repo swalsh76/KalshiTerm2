@@ -17,7 +17,7 @@ verified live) are complete and merged to `main`. Remaining hardware/measurement
 (2.10b steps 3-6) is tracked in BUILD-LOG.md §10.2 and does **not** block later phases; the 48-hour
 calibration (2.10a) was dropped. Next: Phase 7 (terminal UI). Decisions made: web UI + Typer CLI, manual trading
 first, multi-user server, MIT license, no PyPI publishing, public GitHub repository (since 2026-10-08), multivariate markets kept,
-read-only production key for dev. No **[OPEN]** items remain in PLAN.md §12.
+read-only production key for dev. One **[OPEN]** item remains in PLAN.md §12: where the database runs (decision 15, durability on Docker for macOS).
 
 Live integration tests are opt-in: `KALSHI_INTEGRATION=1 uv run pytest
 packages/kalshi-core/tests/test_live.py -s` (read-only; skipped by default and in CI).
